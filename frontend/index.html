@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Stat-Arb Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/style.css" />
+<script src="/static/js/chart.umd.min.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">&#8862;</span>
+    <span class="brand-name">STAT-ARB TERMINAL</span>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab-btn active" data-tab="dashboard">Backbone</button>
+    <button class="tab-btn" data-tab="init">Initialization</button>
+    <button class="tab-btn" data-tab="settings">Settings &amp; Credentials</button>
+  </nav>
+
+  <div class="bot-control">
+    <div class="mode-select">
+      <label>Mode</label>
+      <select id="trading-mode-select">
+        <option value="paper">Paper</option>
+        <option value="live">Live</option>
+      </select>
+    </div>
+    <button id="bot-toggle" class="bot-toggle idle" title="Click to start/stop the bot">
+      <span class="dot"></span>
+      <span class="label">INACTIVE</span>
+    </button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ============================ BACKBONE / DASHBOARD TAB ============================ -->
+  <section class="tab-panel active" id="tab-dashboard">
+
+    <div class="dash-grid">
+
+      <aside class="group-picker panel">
+        <div class="panel-head">
+          <h2>Groups</h2>
+          <input id="group-search" type="text" placeholder="Filter symbols or name..." />
+        </div>
+        <div id="group-list" class="group-list"></div>
+      </aside>
+
+      <div class="dash-main">
+
+        <div class="panel plot-panel">
+          <div class="panel-head">
+            <h2 id="plot-title">Residual / Z-Score</h2>
+            <div class="plot-meta" id="plot-meta"></div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="residual-chart"></canvas>
+          </div>
+        </div>
+
+        <div class="panel trades-panel">
+          <div class="panel-head">
+            <h2>Trade Log</h2>
+          </div>
+          <div class="table-scroll">
+            <table id="trades-table">
+              <thead>
+                <tr>
+                  <th>Dir</th><th>Opened</th><th>Closed</th><th>Reason</th>
+                  <th>Entry Z</th><th>Close Z</th><th>PnL</th><th>Mode</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="panel perf-panel">
+      <div class="panel-head">
+        <h2>Performance Comparison</h2>
+        <span class="hint">Click a header to sort. Click a row for details.</span>
+      </div>
+      <div class="perf-body">
+        <div class="table-scroll">
+          <table id="perf-table">
+            <thead>
+              <tr>
+                <th data-key="name">Group</th>
+                <th data-key="status">Status</th>
+                <th data-key="trade_count">Trades</th>
+                <th data-key="win_rate">Win Rate</th>
+                <th data-key="total_pnl">PnL</th>
+                <th data-key="avg_pnl">Avg PnL</th>
+                <th data-key="max_drawdown">Max DD</th>
+                <th data-key="sharpe_ratio">Sharpe</th>
+                <th data-key="sortino_ratio">Sortino</th>
+                <th data-key="profit_factor">Profit Factor</th>
+                <th data-key="avg_holding_hours">Avg Hold (h)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="group-detail" id="group-detail">
+          <div class="detail-empty">Select a group in the table to see its profile.</div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ================================ INITIALIZATION TAB ================================ -->
+  <section class="tab-panel" id="tab-init">
+
+    <div class="init-grid">
+
+      <div class="panel">
+        <div class="panel-head"><h2>Backbone Parameters</h2></div>
+        <form id="backbone-form" class="param-form"></form>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Initialization Parameters</h2></div>
+        <div class="method-switch">
+          <button type="button" class="method-btn active" data-method="random">Random Groups</button>
+          <button type="button" class="method-btn" data-method="sector">Sector-Based</button>
+        </div>
+        <form id="init-form" class="param-form"></form>
+        <div class="init-actions">
+          <button id="save-config-btn" class="btn-secondary">Save Parameters</button>
+          <button id="run-init-btn" class="btn-primary">Run Initialization</button>
+        </div>
+        
+        <div class="init-progress-wrap" id="init-progress-wrap" hidden>
+          <div class="init-progress-meta">
+            <span id="init-progress-phase">Idle</span>
+            <span id="init-progress-pct">0%</span>
+          </div>
+          <div class="init-progress-track">
+            <div class="init-progress-bar" id="init-progress-bar" style="width:0%"></div>
+          </div>
+          <div class="init-progress-msg" id="init-progress-msg"></div>
+        </div>
+        <div id="init-status" class="init-status"></div>
+
+      </div>
+
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Candidate / Active Groups</h2>
+        <span class="hint">Newly discovered groups appear here after running initialization.</span>
+      </div>
+      <div class="table-scroll">
+        <table id="candidates-table">
+          <thead>
+            <tr>
+              <th>Name</th><th>Source</th><th>Sector</th><th>Symbols</th>
+              <th>Sharpe</th><th>PnL</th><th>Max DD</th><th>Win Rate</th><th>Trades</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ================================== SETTINGS TAB ================================== -->
+  <section class="tab-panel" id="tab-settings">
+    <div class="init-grid">
+      <div class="panel">
+        <div class="panel-head"><h2>Exchange Credentials (Live Trading)</h2></div>
+        <p class="warn-note">
+          Credentials are encrypted at rest and are only used when Mode is switched to
+          <strong>Live</strong> in the top bar. Paper mode never touches these. Live trading
+          places real orders on your Nobitex account -- test on the Nobitex testnet first.
+        </p>
+        <div id="cred-status" class="cred-status"></div>
+        <form id="cred-form" class="param-form">
+          <label>Auth Method
+            <select name="auth_method" id="auth-method-select">
+              <option value="token">API Token</option>
+              <option value="key_signature">API Key + Ed25519 Secret</option>
+            </select>
+          </label>
+          <div id="cred-fields-token">
+            <label>API Token
+              <input type="password" name="token" placeholder="Token from Nobitex API panel" />
+            </label>
+          </div>
+          <div id="cred-fields-key" style="display:none">
+            <label>API Key
+              <input type="text" name="api_key" placeholder="Public key" />
+            </label>
+            <label>Private Key (PEM, Ed25519)
+              <textarea name="api_secret_pem" rows="5" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+            </label>
+          </div>
+          <div class="init-actions">
+            <button type="submit" class="btn-primary">Save Credentials</button>
+            <button type="button" id="delete-cred-btn" class="btn-danger">Remove Credentials</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>System</h2></div>
+        <form id="system-form" class="param-form"></form>
+        <div class="init-actions">
+          <button id="save-system-btn" class="btn-secondary">Save</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/tables.js"></script>
+<script src="/static/js/main.js"></script>
+</body>
+</html>

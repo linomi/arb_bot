@@ -1,0 +1,31 @@
+# Defaults loaded into the DB the first time the app starts. After that,
+# the DB is the source of truth -- edit everything from the UI. This file
+# is only a starting point, not a hard limit on anything.
+
+backbone:
+  window_size: 100          # bars used to fit the OLS
+  sampling_time: 60         # seconds between bot cycles
+  adf_alpha: 0.05           # ADF p-value must be <= this
+  kpss_alpha: 0.05          # KPSS p-value must be >= this
+  z_entry: 2.0
+  z_close: 0.5
+  z_stop_loss: 3.5
+  fee_rate: 0.001           # exchange trading fee, fractional
+  slippage_rate: 0.0005     # modeled slippage, fractional
+  trade_notional: 100       # quote-currency notional per leg (paper + sizing hint for live)
+
+init:
+  method: random            # "random" | "sector"
+  min_group_size: 2
+  max_group_size: 4
+  top_n_liquid_symbols: 30
+  num_candidate_groups: 200 # only used by "random" method
+  max_combos_per_sector: 200  # only used by "sector" method
+  keep_top_n: 10
+  backtest_days: 30
+  quote_currency: IRT
+
+system:
+  # paper/live is controlled by BotState (POST /api/bot/mode), not here --
+  # this section only holds exchange connection settings.
+  base_url: https://apiv2.nobitex.ir
