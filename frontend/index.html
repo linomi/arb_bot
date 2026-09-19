@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/style.css" />
+<link rel="stylesheet" href="/static/css/style_extra.css" />
 <script src="/static/js/chart.umd.min.js"></script>
 </head>
 <body>
@@ -89,8 +90,51 @@
     <div class="panel perf-panel">
       <div class="panel-head">
         <h2>Performance Comparison</h2>
-        <span class="hint">Click a header to sort. Click a row for details.</span>
+        <span class="hint">Click a header to sort. Use filters below. Click a row for details.</span>
       </div>
+
+      <div class="perf-filters" id="perf-filters">
+        <div class="filter-row">
+          <label>Status
+            <select id="filter-status">
+              <option value="">Any</option>
+              <option value="active">active</option>
+              <option value="inactive">inactive</option>
+            </select>
+          </label>
+          <label>PnL
+            <select id="filter-pnl-op">
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
+              <option value="=">=</option>
+            </select>
+            <input id="filter-pnl-val" type="number" step="any" placeholder="e.g. 0.1" />
+          </label>
+          <label>Sharpe
+            <select id="filter-sharpe-op">
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
+            </select>
+            <input id="filter-sharpe-val" type="number" step="any" placeholder="e.g. 1" />
+          </label>
+          <label>Trades
+            <select id="filter-trades-op">
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
+            </select>
+            <input id="filter-trades-val" type="number" step="1" placeholder="e.g. 5" />
+          </label>
+          <button type="button" id="perf-filter-apply" class="btn-secondary">Apply</button>
+          <button type="button" id="perf-filter-clear" class="btn-secondary">Clear</button>
+        </div>
+      </div>
+
       <div class="perf-body">
         <div class="table-scroll">
           <table id="perf-table">
@@ -135,9 +179,36 @@
         <div class="method-switch">
           <button type="button" class="method-btn active" data-method="random">Random Groups</button>
           <button type="button" class="method-btn" data-method="sector">Sector-Based</button>
+          <button type="button" class="method-btn" data-method="manual">Manual Entry</button>
         </div>
         <form id="init-form" class="param-form"></form>
-        <div class="init-actions">
+
+        <!-- Manual group builder (visible only when method=manual) -->
+        <div id="manual-group-panel" class="manual-group-panel" hidden>
+          <div class="manual-group-inner">
+            <label class="full-row">Group name
+              <input type="text" id="manual-group-name" placeholder="e.g. my-btc-eth" />
+            </label>
+            <label class="full-row">Dependent symbol (y in OLS)
+              <select id="manual-dependent"></select>
+            </label>
+            <div class="symbol-picker">
+              <div class="symbol-picker-head">
+                <span>Select symbols (min 2)</span>
+                <input type="text" id="symbol-search" placeholder="Search symbols…" />
+              </div>
+              <div id="symbol-checklist" class="symbol-checklist"></div>
+              <div class="selected-symbols-bar">
+                Selected: <span id="selected-symbols-label">none</span>
+              </div>
+            </div>
+            <div class="init-actions" style="padding: 0 0 8px">
+              <button type="button" id="create-manual-group-btn" class="btn-primary">Create Manual Group</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="init-actions" id="init-auto-actions">
           <button id="save-config-btn" class="btn-secondary">Save Parameters</button>
           <button id="run-init-btn" class="btn-primary">Run Initialization</button>
         </div>
@@ -230,6 +301,7 @@
 
 <script src="/static/js/api.js"></script>
 <script src="/static/js/charts.js"></script>
+<script src="/static/js/charts_equity.js"></script>
 <script src="/static/js/tables.js"></script>
 <script src="/static/js/main.js"></script>
 </body>
