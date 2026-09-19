@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Stat-Arb Terminal</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/style.css" />
 <link rel="stylesheet" href="/static/css/style_extra.css" />
+<link rel="stylesheet" href="/static/css/mobile.css" />
 <script src="/static/js/chart.umd.min.js"></script>
 </head>
 <body>
@@ -42,7 +43,6 @@
 
 <main>
 
-  <!-- ============================ BACKBONE / DASHBOARD TAB ============================ -->
   <section class="tab-panel active" id="tab-dashboard">
 
     <div class="dash-grid">
@@ -155,8 +155,8 @@
                 <th data-key="status">Status</th>
                 <th data-key="trade_count">Trades</th>
                 <th data-key="win_rate">Win Rate</th>
-                <th data-key="avg_pnl">Avg PnL</th>
                 <th data-key="total_pnl">PnL</th>
+                <th data-key="avg_pnl">Avg PnL</th>
                 <th data-key="max_drawdown">Max DD</th>
                 <th data-key="sharpe_ratio">Sharpe</th>
                 <th data-key="sortino_ratio">Sortino</th>
@@ -175,7 +175,6 @@
 
   </section>
 
-  <!-- ================================ INITIALIZATION TAB ================================ -->
   <section class="tab-panel" id="tab-init">
 
     <div class="init-grid">
@@ -259,7 +258,6 @@
 
   </section>
 
-  <!-- ================================== SETTINGS TAB ================================== -->
   <section class="tab-panel" id="tab-settings">
     <div class="init-grid">
       <div class="panel">
