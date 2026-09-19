@@ -11,6 +11,10 @@ Per tick, for every group with status == "active":
   1. if it has an open trade -> check close/stop-loss (frozen OLS params)
   2. else -> refit OLS on the window, run ADF/KPSS, and on a pass, check
      for an entry signal
+
+PnL is stored as a *fraction of trade_notional* (unit-notional return).
+Absolute currency PnL is always: stored_fraction * current trade_notional,
+so changing trade_notional in the UI rescales all historical metrics.
 """
 import asyncio
 import datetime as dt
@@ -86,9 +90,6 @@ class BotEngine:
         bars_needed = configured_window + 5
         price_df = await fetch_price_df(md_client, group.symbols, resolution, bars_needed)
 
-        # Need at least a handful of bars to form a residual series for the chart.
-        # Prefer the configured window, but fall back to whatever history we got
-        # (common for thin altcoins / short minute history on Nobitex).
         min_bars = 30
         if price_df.empty or len(price_df) < min_bars:
             log.warning(
@@ -102,7 +103,6 @@ class BotEngine:
             log.warning("group %s: effective window %d too small", group.id, effective_window)
             return
 
-        # Temporarily override window size for this cycle so OLS uses available data.
         backbone_local = dict(backbone)
         backbone_local["window_size"] = effective_window
 
@@ -127,9 +127,11 @@ class BotEngine:
 
         num_legs = len(group.symbols)
         cost_rate = backbone["fee_rate"] + backbone["slippage_rate"]
-        notional = backbone["trade_notional"]
-        pnl_fraction = simulate_pnl(open_trade.entry_residual, resid_now, open_trade.direction, num_legs, cost_rate)
-        pnl = pnl_fraction * notional
+        notional = float(backbone.get("trade_notional", 100) or 100)
+        # Unit-notional (fractional) PnL — scale by current trade_notional on read
+        pnl_fraction = simulate_pnl(
+            open_trade.entry_residual, resid_now, open_trade.direction, num_legs, cost_rate
+        )
 
         # Execute closing legs (paper: simulated fill; live: real market orders).
         for sym in group.symbols:
@@ -143,8 +145,8 @@ class BotEngine:
         open_trade.close_z = exit_dec.z
         open_trade.close_residual = resid_now
         open_trade.close_prices = latest_prices
-        open_trade.pnl = pnl
-        open_trade.fee_paid = notional * cost_rate * num_legs
+        open_trade.pnl = float(pnl_fraction)  # fraction of notional
+        open_trade.fee_paid = float(cost_rate * num_legs)  # fraction of notional
         db.commit()
 
     async def _check_entry(self, db, group, price_df, latest_prices, backbone, trading_client, trading_mode, is_running: bool = True):
@@ -174,8 +176,6 @@ class BotEngine:
         db.commit()
         db.refresh(ols_row)
 
-        # Fits are always stored (so the residual chart works). Trading only
-        # when the bot is ACTIVE.
         if not is_running:
             return
         if not stat.passed or fit_res.resid_std == 0:
@@ -186,8 +186,7 @@ class BotEngine:
         if not entry_dec.should_enter:
             return
 
-        num_legs = len(group.symbols)
-        notional = backbone["trade_notional"]
+        notional = float(backbone.get("trade_notional", 100) or 100)
         for sym in group.symbols:
             side = self._opening_side(group, sym, entry_dec.direction)
             amount = notional / max(latest_prices[sym], 1e-12)
@@ -209,12 +208,6 @@ class BotEngine:
 
     @staticmethod
     def _opening_side(group: Group, symbol: str, direction: str) -> str:
-        """
-        short_residual  -> sell dependent, buy independents (beta-weighted)
-        long_residual   -> buy dependent, sell independents
-        (Sizing here is unit-per-leg via trade_notional; beta-weighting the
-        independents' notional is a refinement you can add in place.)
-        """
         is_dependent = symbol == group.dependent_symbol
         if direction == "short_residual":
             return "sell" if is_dependent else "buy"
