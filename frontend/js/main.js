@@ -11,6 +11,8 @@ const state = {
   fitPollTimer: null,
   lastFitAt: {},       // groupId -> timestamp ms of last live-fit
   lastFitData: {},     // groupId -> fit payload (cache)
+  liquidSymbols: [],   // for manual entry
+  selectedSymbols: new Set(),
 };
 
 // ------------------------------------------------------------------ tabs
@@ -268,6 +270,11 @@ async function showGroupDetail(row) {
     <div class="detail-sub">${(row.symbols || []).join(" / ")} · ${row.source || ""}${row.sector ? " · " + row.sector : ""}</div>
     ${liveNote}
     <div class="radar-wrap"><canvas id="radar-canvas"></canvas></div>
+    <div class="equity-section">
+      <div class="equity-title">Equity curve</div>
+      <div class="equity-wrap"><canvas id="equity-canvas"></canvas></div>
+      <div class="equity-empty" id="equity-empty" hidden>No closed trades yet.</div>
+    </div>
     <div class="detail-metrics">
       Trades: <b>${row.trade_count}</b><br/>
       Win rate: <b>${fmtPct(row.win_rate)}</b><br/>
@@ -281,8 +288,57 @@ async function showGroupDetail(row) {
     </div>
   `;
   requestAnimationFrame(() => renderRadarChart("radar-canvas", row));
-  if (row.group_id) selectGroup(row.group_id, true);
+  if (row.group_id) {
+    selectGroup(row.group_id, true);
+    // Load trades for equity chart
+    try {
+      const trades = await API.listTrades(row.group_id);
+      const closed = (trades || []).filter((t) => t.status === "closed" && t.pnl != null);
+      const emptyEl = document.getElementById("equity-empty");
+      if (!closed.length) {
+        if (emptyEl) emptyEl.hidden = false;
+      } else {
+        if (emptyEl) emptyEl.hidden = true;
+        requestAnimationFrame(() => renderEquityChart("equity-canvas", trades));
+      }
+    } catch (e) {
+      console.warn("equity chart load failed", e);
+    }
+  }
 }
+
+// -------------------- performance table filters --------------------
+function _collectPerfFiltersFromUI() {
+  clearPerfFilters();
+  const status = document.getElementById("filter-status").value;
+  if (status) setPerfFilter("status", "=", status);
+
+  const pnlVal = document.getElementById("filter-pnl-val").value;
+  if (pnlVal !== "") {
+    setPerfFilter("total_pnl", document.getElementById("filter-pnl-op").value, pnlVal);
+  }
+  const sharpeVal = document.getElementById("filter-sharpe-val").value;
+  if (sharpeVal !== "") {
+    setPerfFilter("sharpe_ratio", document.getElementById("filter-sharpe-op").value, sharpeVal);
+  }
+  const tradesVal = document.getElementById("filter-trades-val").value;
+  if (tradesVal !== "") {
+    setPerfFilter("trade_count", document.getElementById("filter-trades-op").value, tradesVal);
+  }
+}
+
+document.getElementById("perf-filter-apply").addEventListener("click", () => {
+  _collectPerfFiltersFromUI();
+  applyPerfFiltersAndRedraw(showGroupDetail);
+});
+document.getElementById("perf-filter-clear").addEventListener("click", () => {
+  document.getElementById("filter-status").value = "";
+  document.getElementById("filter-pnl-val").value = "";
+  document.getElementById("filter-sharpe-val").value = "";
+  document.getElementById("filter-trades-val").value = "";
+  clearPerfFilters();
+  applyPerfFiltersAndRedraw(showGroupDetail);
+});
 
 // -------------------------------------------------------------------- init tab
 document.querySelectorAll(".method-btn").forEach((btn) => {
@@ -290,8 +346,18 @@ document.querySelectorAll(".method-btn").forEach((btn) => {
     document.querySelectorAll(".method-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     state.initMethod = btn.dataset.method;
+    _syncManualPanelVisibility();
   });
 });
+
+function _syncManualPanelVisibility() {
+  const isManual = state.initMethod === "manual";
+  const panel = document.getElementById("manual-group-panel");
+  const autoActions = document.getElementById("init-auto-actions");
+  if (panel) panel.hidden = !isManual;
+  if (autoActions) autoActions.style.display = isManual ? "none" : "flex";
+  if (isManual) loadLiquidSymbols();
+}
 
 async function refreshInitTab() {
   const [backbone, init] = await Promise.all([
@@ -301,7 +367,9 @@ async function refreshInitTab() {
   state.backboneCfg = backbone;
   state.initCfg = init;
   state.initMethod = init.method || "random";
+  if (state.initMethod === "manual") state.initMethod = "random"; // config may not store manual
   document.querySelectorAll(".method-btn").forEach((b) => b.classList.toggle("active", b.dataset.method === state.initMethod));
+  _syncManualPanelVisibility();
 
   renderParamForm(document.getElementById("backbone-form"), backbone);
   renderParamForm(document.getElementById("init-form"), init);
@@ -312,13 +380,17 @@ async function refreshInitTab() {
 document.getElementById("save-config-btn").addEventListener("click", async () => {
   const backboneData = collectFormData(document.getElementById("backbone-form"));
   const initData = collectFormData(document.getElementById("init-form"));
-  initData.method = state.initMethod;
+  initData.method = state.initMethod === "manual" ? "random" : state.initMethod;
   await API.updateConfigSection("backbone", backboneData);
   await API.updateConfigSection("init", initData);
   setInitStatus("Parameters saved.");
 });
 
 document.getElementById("run-init-btn").addEventListener("click", async () => {
+  if (state.initMethod === "manual") {
+    setInitStatus("Use 'Create Manual Group' for the manual method.");
+    return;
+  }
   const btn = document.getElementById("run-init-btn");
   btn.disabled = true;
   showInitProgress(true);
@@ -424,6 +496,75 @@ async function loadCandidatesTable() {
     },
   );
 }
+
+// -------------------- manual group entry --------------------
+async function loadLiquidSymbols() {
+  try {
+    const data = await API.listLiquidSymbols();
+    state.liquidSymbols = data.symbols || data || [];
+    renderSymbolChecklist();
+  } catch (e) {
+    setInitStatus("Could not load symbols: " + e.message);
+  }
+}
+
+function renderSymbolChecklist() {
+  const filter = (document.getElementById("symbol-search").value || "").trim().toLowerCase();
+  const box = document.getElementById("symbol-checklist");
+  if (!box) return;
+  box.innerHTML = "";
+  const list = state.liquidSymbols.filter((s) => !filter || s.toLowerCase().includes(filter));
+  list.forEach((sym) => {
+    const id = "sym-" + sym;
+    const label = document.createElement("label");
+    label.className = "symbol-check-item";
+    const checked = state.selectedSymbols.has(sym);
+    label.innerHTML = `<input type="checkbox" value="${sym}" ${checked ? "checked" : ""} /> <span>${sym}</span>`;
+    label.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) state.selectedSymbols.add(sym);
+      else state.selectedSymbols.delete(sym);
+      _refreshSelectedSymbolsUI();
+    });
+    box.appendChild(label);
+  });
+  _refreshSelectedSymbolsUI();
+}
+
+function _refreshSelectedSymbolsUI() {
+  const arr = [...state.selectedSymbols];
+  const label = document.getElementById("selected-symbols-label");
+  if (label) label.textContent = arr.length ? arr.join(", ") : "none";
+
+  const dep = document.getElementById("manual-dependent");
+  if (!dep) return;
+  const prev = dep.value;
+  dep.innerHTML = arr.map((s) => `<option value="${s}">${s}</option>`).join("");
+  if (arr.includes(prev)) dep.value = prev;
+  else if (arr.length) dep.value = arr[0];
+}
+
+document.getElementById("symbol-search").addEventListener("input", renderSymbolChecklist);
+
+document.getElementById("create-manual-group-btn").addEventListener("click", async () => {
+  const symbols = [...state.selectedSymbols];
+  if (symbols.length < 2) {
+    setInitStatus("Select at least 2 symbols.");
+    return;
+  }
+  const name = (document.getElementById("manual-group-name").value || "").trim()
+    || `manual-${symbols.join("-")}`.slice(0, 80);
+  const dependent = document.getElementById("manual-dependent").value || symbols[0];
+  try {
+    const g = await API.createManualGroup({ name, symbols, dependent_symbol: dependent, activate: true });
+    setInitStatus(`Created manual group #${g.id}: ${g.name} (${g.symbols.join(", ")})`);
+    state.selectedSymbols.clear();
+    document.getElementById("manual-group-name").value = "";
+    renderSymbolChecklist();
+    await loadCandidatesTable();
+  } catch (e) {
+    setInitStatus("Error creating group: " + e.message);
+  }
+});
 
 // ---------------------------------------------------------------- settings tab
 async function refreshSettingsTab() {
