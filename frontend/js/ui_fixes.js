@@ -9,7 +9,7 @@
     panel.innerHTML = `
       <div class="panel-head">
         <h2 id="equity-title">Equity Curve</h2>
-        <span class="hint">Cumulative PnL (Tehran time)</span>
+        <span class="hint">Starts at trade notional + cumulative PnL (Tehran)</span>
       </div>
       <div class="equity-wrap" style="padding:8px 12px 12px;height:200px">
         <canvas id="equity-canvas"></canvas>
@@ -47,13 +47,24 @@
       const trades = await orig(id);
       try {
         ensureEquityPanel();
+        // Refresh notional from config if available
+        try {
+          if (typeof state !== "undefined" && state.config && state.config.backbone) {
+            const n = Number(state.config.backbone.trade_notional);
+            if (isFinite(n)) window.__tradeNotional = n;
+          }
+        } catch (e) {}
         if (typeof renderEquityChart === "function") {
-          renderEquityChart("equity-canvas", trades);
+          renderEquityChart("equity-canvas", trades, window.__tradeNotional);
         }
         const g = (typeof state !== "undefined" && state.groups)
           ? state.groups.find((x) => x.id === id) : null;
         const title = document.getElementById("equity-title");
         if (title && g) title.textContent = "Equity Curve — " + g.name;
+        const hint = document.querySelector(".equity-panel .hint");
+        if (hint && window.__tradeNotional != null) {
+          hint.textContent = "Starts at trade notional (" + window.__tradeNotional + ") + cumulative PnL";
+        }
       } catch (e) {
         console.warn("equity patch", e);
       }
@@ -66,6 +77,13 @@
     ensureEquityPanel();
     wireManualButtons();
     patchSelectGroup();
+    // Prefetch trade_notional
+    if (window.API && API.getConfigSection) {
+      API.getConfigSection("backbone").then((data) => {
+        const n = Number(data && data.trade_notional);
+        if (isFinite(n)) window.__tradeNotional = n;
+      }).catch(() => {});
+    }
   }
 
   if (document.readyState === "loading") {

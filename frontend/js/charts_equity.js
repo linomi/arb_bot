@@ -1,4 +1,6 @@
-/* Equity curve + Jalali labels in Asia/Tehran (extends charts.js) */
+/* Equity curve + Jalali labels in Asia/Tehran (extends charts.js)
+ * Equity = trade_notional + cumulative closed-trade PnL (notional is the
+ * starting capital used for each leg; PnL is already scaled by notional). */
 (function () {
   function toJalali(gy, gm, gd) {
     const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -59,12 +61,34 @@
 
   let equityChart = null;
 
-  window.renderEquityChart = function (canvasId, trades) {
+  /** Resolve starting capital = backbone.trade_notional (default 100). */
+  function resolveNotional(explicit) {
+    if (explicit != null && isFinite(Number(explicit))) return Number(explicit);
+    if (window.__tradeNotional != null && isFinite(Number(window.__tradeNotional))) {
+      return Number(window.__tradeNotional);
+    }
+    try {
+      if (typeof state !== "undefined" && state.config && state.config.backbone) {
+        const n = Number(state.config.backbone.trade_notional);
+        if (isFinite(n)) return n;
+      }
+    } catch (e) {}
+    return 100;
+  }
+
+  /**
+   * @param {string} canvasId
+   * @param {Array} trades
+   * @param {number} [startNotional] optional override; else backbone.trade_notional
+   */
+  window.renderEquityChart = function (canvasId, trades, startNotional) {
     const canvas = document.getElementById(canvasId);
     if (!canvas || typeof Chart === "undefined") {
       console.warn("renderEquityChart: missing canvas or Chart.js");
       return;
     }
+
+    const notional = resolveNotional(startNotional);
 
     const closed = (trades || [])
       .filter((t) => t.status === "closed" && t.close_time != null && t.pnl != null)
@@ -88,9 +112,10 @@
     }
     if (emptyEl) emptyEl.hidden = true;
 
-    let cum = 0;
-    const labels = [];
-    const values = [];
+    // Start at trade notional (capital), then add each closed trade's PnL
+    const labels = ["Start"];
+    const values = [notional];
+    let cum = notional;
     closed.forEach((t) => {
       cum += Number(t.pnl) || 0;
       labels.push(window._shortLabel(t.close_time));
@@ -98,7 +123,7 @@
     });
 
     const last = values[values.length - 1];
-    const lineColor = last >= 0 ? "#6b9a6b" : "#b85c4a";
+    const lineColor = last >= notional ? "#6b9a6b" : "#b85c4a";
 
     equityChart = new Chart(canvas.getContext("2d"), {
       type: "line",
@@ -108,7 +133,7 @@
           label: "Equity",
           data: values,
           borderColor: lineColor,
-          backgroundColor: last >= 0 ? "rgba(107,154,107,0.12)" : "rgba(184,92,74,0.12)",
+          backgroundColor: last >= notional ? "rgba(107,154,107,0.12)" : "rgba(184,92,74,0.12)",
           borderWidth: 2,
           pointRadius: values.length <= 40 ? 3 : 0,
           pointBackgroundColor: lineColor,
@@ -122,7 +147,15 @@
         animation: false,
         plugins: {
           legend: { display: false },
-          tooltip: { callbacks: { label: (item) => `Equity: ${Number(item.raw).toFixed(4)}` } },
+          tooltip: {
+            callbacks: {
+              label: (item) => {
+                const eq = Number(item.raw);
+                const pnl = eq - notional;
+                return `Equity: ${eq.toFixed(4)}  (PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)})`;
+              },
+            },
+          },
         },
         scales: {
           x: {
@@ -132,9 +165,28 @@
           y: {
             ticks: { color: "#c4b5a0", font: { size: 9 } },
             grid: { color: "#4a3c30" },
+            // Keep notional visible as a reference band
+            suggestedMin: Math.min(notional * 0.9, Math.min(...values)),
           },
         },
       },
     });
   };
+
+  // Prefetch backbone.trade_notional so the chart has it ready
+  function loadNotional() {
+    if (!window.API || typeof API.getConfigSection !== "function") return;
+    API.getConfigSection("backbone")
+      .then((data) => {
+        const n = Number(data && data.trade_notional);
+        if (isFinite(n)) window.__tradeNotional = n;
+      })
+      .catch(() => {});
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", loadNotional);
+  } else {
+    loadNotional();
+  }
+  setTimeout(loadNotional, 800);
 })();
