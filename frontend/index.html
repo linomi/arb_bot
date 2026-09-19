@@ -22,7 +22,7 @@
   <nav class="tabs" id="tabs">
     <button class="tab-btn active" data-tab="dashboard">Backbone</button>
     <button class="tab-btn" data-tab="init">Initialization</button>
-    <button class="tab-btn" data-tab="settings">Settings &amp; Credentials</button>
+    <button class="tab-btn" data-tab="settings">Settings & Credentials</button>
   </nav>
 
   <div class="bot-control">
@@ -67,6 +67,17 @@
           </div>
         </div>
 
+        <div class="panel equity-panel" id="equity-panel-static">
+          <div class="panel-head">
+            <h2 id="equity-title">Equity Curve</h2>
+            <span class="hint">Cumulative PnL of closed trades (Tehran time)</span>
+          </div>
+          <div class="equity-wrap" style="padding:8px 12px 12px;height:200px">
+            <canvas id="equity-canvas"></canvas>
+          </div>
+          <div class="equity-empty" id="equity-empty" style="padding:0 14px 12px" hidden>No closed trades yet for this group.</div>
+        </div>
+
         <div class="panel trades-panel">
           <div class="panel-head">
             <h2>Trade Log</h2>
@@ -104,29 +115,29 @@
           </label>
           <label>PnL
             <select id="filter-pnl-op">
-              <option value=">">&gt;</option>
-              <option value=">=">&gt;=</option>
-              <option value="<">&lt;</option>
-              <option value="<=">&lt;=</option>
+              <option value=">">></option>
+              <option value=">=">>=</option>
+              <option value="<"><</option>
+              <option value="<="><=</option>
               <option value="=">=</option>
             </select>
             <input id="filter-pnl-val" type="number" step="any" placeholder="e.g. 0.1" />
           </label>
           <label>Sharpe
             <select id="filter-sharpe-op">
-              <option value=">">&gt;</option>
-              <option value=">=">&gt;=</option>
-              <option value="<">&lt;</option>
-              <option value="<=">&lt;=</option>
+              <option value=">">></option>
+              <option value=">=">>=</option>
+              <option value="<"><</option>
+              <option value="<="><=</option>
             </select>
             <input id="filter-sharpe-val" type="number" step="any" placeholder="e.g. 1" />
           </label>
           <label>Trades
             <select id="filter-trades-op">
-              <option value=">">&gt;</option>
-              <option value=">=">&gt;=</option>
-              <option value="<">&lt;</option>
-              <option value="<=">&lt;=</option>
+              <option value=">">></option>
+              <option value=">=">>=</option>
+              <option value="<"><</option>
+              <option value="<="><=</option>
             </select>
             <input id="filter-trades-val" type="number" step="1" placeholder="e.g. 5" />
           </label>
@@ -144,8 +155,8 @@
                 <th data-key="status">Status</th>
                 <th data-key="trade_count">Trades</th>
                 <th data-key="win_rate">Win Rate</th>
-                <th data-key="total_pnl">PnL</th>
                 <th data-key="avg_pnl">Avg PnL</th>
+                <th data-key="total_pnl">PnL</th>
                 <th data-key="max_drawdown">Max DD</th>
                 <th data-key="sharpe_ratio">Sharpe</th>
                 <th data-key="sortino_ratio">Sortino</th>
@@ -183,8 +194,7 @@
         </div>
         <form id="init-form" class="param-form"></form>
 
-        <!-- Manual group builder (visible only when method=manual) -->
-        <div id="manual-group-panel" class="manual-group-panel" hidden>
+        <div id="manual-group-panel" class="manual-group-panel" style="display:none">
           <div class="manual-group-inner">
             <label class="full-row">Group name
               <input type="text" id="manual-group-name" placeholder="e.g. my-btc-eth" />
@@ -304,5 +314,6 @@
 <script src="/static/js/charts_equity.js"></script>
 <script src="/static/js/tables.js"></script>
 <script src="/static/js/main.js"></script>
+<script src="/static/js/ui_fixes.js"></script>
 </body>
 </html>
