@@ -3,10 +3,10 @@ const PerfTableState = {
   filtered: [],
   sortKey: "total_pnl",
   sortDir: "desc",
-  filters: {}, // key -> {op, value}  e.g. {total_pnl: {op:">", value:0.1}, status:{op:"=", value:"active"}}
+  filters: {},
 };
 
-/* ---------------- Persian (Jalali / Shamsi) date helpers ---------------- */
+/* ---------------- Persian (Jalali) + Asia/Tehran helpers ---------------- */
 function _toJalali(gy, gm, gd) {
   const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
   let gy2 = gm > 2 ? gy + 1 : gy;
@@ -31,14 +31,39 @@ function _toJalali(gy, gm, gd) {
   return [jy, jm, jd];
 }
 
+/** Calendar + clock parts in Asia/Tehran (not browser local / UTC). */
+function _tehranParts(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tehran",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = {};
+  for (const p of fmt.formatToParts(d)) {
+    if (p.type !== "literal") parts[p.type] = p.value;
+  }
+  let hour = parts.hour === "24" ? "00" : parts.hour;
+  return {
+    gy: parseInt(parts.year, 10),
+    gm: parseInt(parts.month, 10),
+    gd: parseInt(parts.day, 10),
+    hh: hour,
+    mi: parts.minute,
+  };
+}
+
 function fmtTime(iso) {
   if (!iso) return "--";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return String(iso).slice(0, 16);
-  const [jy, jm, jd] = _toJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mi = String(d.getMinutes()).padStart(2, "0");
-  return `${jy}/${String(jm).padStart(2, "0")}/${String(jd).padStart(2, "0")} ${hh}:${mi}`;
+  const tp = _tehranParts(iso);
+  if (!tp) return String(iso).slice(0, 16);
+  const [jy, jm, jd] = _toJalali(tp.gy, tp.gm, tp.gd);
+  return `${jy}/${String(jm).padStart(2, "0")}/${String(jd).padStart(2, "0")} ${tp.hh}:${tp.mi}`;
 }
 
 function fmtNum(v, digits = 4) {
@@ -135,7 +160,6 @@ function _updateSortIcons() {
 function wirePerfTableSorting(onRowClick) {
   document.querySelectorAll("#perf-table thead th[data-key]").forEach((th) => {
     th.classList.add("sortable");
-    // avoid double-binding
     if (th.dataset.wired) return;
     th.dataset.wired = "1";
     th.addEventListener("click", () => {
@@ -173,7 +197,7 @@ function renderTradesTable(trades) {
   const tbody = document.querySelector("#trades-table tbody");
   if (!tbody) return;
   tbody.innerHTML = "";
-  trades.forEach((t) => {
+  (trades || []).forEach((t) => {
     const tr = document.createElement("tr");
     const dirCls = t.direction === "long_residual" ? "dir-long" : "dir-short";
     const reasonCls = t.close_reason ? `reason-${t.close_reason}` : "";
