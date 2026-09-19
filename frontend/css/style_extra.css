@@ -19,7 +19,10 @@
 .equity-section{margin:10px 0 12px}.equity-title{font-size:11px;font-weight:600;color:var(--text-mid);letter-spacing:.03em;text-transform:uppercase;margin-bottom:6px}
 .equity-wrap{width:100%;height:180px;position:relative}.equity-wrap canvas{width:100%!important;height:100%!important}
 .equity-empty{font-size:11px;color:var(--text-lo);font-family:var(--font-mono)}
-.manual-group-panel{padding:0 14px 8px}.manual-group-inner{background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.equity-panel .equity-wrap{height:200px}
+.manual-group-panel{padding:0 14px 8px;margin-top:8px}
+.manual-group-panel.is-open,.manual-group-panel[style*="display: block"]{display:block!important}
+.manual-group-inner{background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
 .manual-group-inner label{display:flex;flex-direction:column;gap:5px;font-size:11px;color:var(--text-mid)}
 .manual-group-inner input,.manual-group-inner select{background:var(--bg-1);border:1px solid var(--line);border-radius:4px;color:var(--text-hi);padding:7px 9px;font-family:var(--font-mono);font-size:12px}
 .symbol-picker-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;font-size:11px;color:var(--text-mid)}

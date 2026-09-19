@@ -1,4 +1,4 @@
-/* Equity curve + Jalali labels (extends charts.js) */
+/* Equity curve + Jalali labels in Asia/Tehran (extends charts.js) */
 (function () {
   function toJalali(gy, gm, gd) {
     const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -19,15 +19,39 @@
     return [jy, jm, jd];
   }
 
+  function tehranParts(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Tehran",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const parts = {};
+    for (const p of fmt.formatToParts(d)) {
+      if (p.type !== "literal") parts[p.type] = p.value;
+    }
+    let hour = parts.hour === "24" ? "00" : parts.hour;
+    return {
+      gy: parseInt(parts.year, 10),
+      gm: parseInt(parts.month, 10),
+      gd: parseInt(parts.day, 10),
+      hh: hour,
+      mi: parts.minute,
+    };
+  }
+
   window._shortLabel = function (iso) {
     if (!iso) return "";
     try {
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) return String(iso).slice(5, 16);
-      const [jy, jm, jd] = toJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mi = String(d.getMinutes()).padStart(2, "0");
-      return `${String(jm).padStart(2, "0")}/${String(jd).padStart(2, "0")} ${hh}:${mi}`;
+      const tp = tehranParts(iso);
+      if (!tp) return String(iso).slice(5, 16);
+      const [jy, jm, jd] = toJalali(tp.gy, tp.gm, tp.gd);
+      return `${String(jm).padStart(2, "0")}/${String(jd).padStart(2, "0")} ${tp.hh}:${tp.mi}`;
     } catch (e) {
       return String(iso).slice(0, 16);
     }
@@ -37,7 +61,10 @@
 
   window.renderEquityChart = function (canvasId, trades) {
     const canvas = document.getElementById(canvasId);
-    if (!canvas || typeof Chart === "undefined") return;
+    if (!canvas || typeof Chart === "undefined") {
+      console.warn("renderEquityChart: missing canvas or Chart.js");
+      return;
+    }
 
     const closed = (trades || [])
       .filter((t) => t.status === "closed" && t.close_time != null && t.pnl != null)
@@ -51,7 +78,15 @@
 
     canvas.style.width = "100%";
     canvas.style.height = "180px";
-    if (!closed.length) return;
+
+    const emptyEl = document.getElementById("equity-empty");
+    if (!closed.length) {
+      if (emptyEl) emptyEl.hidden = false;
+      const ctx = canvas.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
 
     let cum = 0;
     const labels = [];
