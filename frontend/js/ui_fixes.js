@@ -47,13 +47,15 @@
       const trades = await orig(id);
       try {
         ensureEquityPanel();
-        // Refresh notional from config if available
-        try {
-          if (typeof state !== "undefined" && state.config && state.config.backbone) {
-            const n = Number(state.config.backbone.trade_notional);
-            if (isFinite(n)) window.__tradeNotional = n;
-          }
-        } catch (e) {}
+        // Notional comes on each trade from API (trade_notional field)
+        let n = null;
+        if (trades && trades.length && trades[0].trade_notional != null) {
+          n = Number(trades[0].trade_notional);
+        }
+        if ((!n || !isFinite(n)) && typeof state !== "undefined" && state.backboneCfg) {
+          n = Number(state.backboneCfg.trade_notional);
+        }
+        if (n && isFinite(n)) window.__tradeNotional = n;
         if (typeof renderEquityChart === "function") {
           renderEquityChart("equity-canvas", trades, window.__tradeNotional);
         }
@@ -61,10 +63,6 @@
           ? state.groups.find((x) => x.id === id) : null;
         const title = document.getElementById("equity-title");
         if (title && g) title.textContent = "Equity Curve — " + g.name;
-        const hint = document.querySelector(".equity-panel .hint");
-        if (hint && window.__tradeNotional != null) {
-          hint.textContent = "Starts at trade notional (" + window.__tradeNotional + ") + cumulative PnL";
-        }
       } catch (e) {
         console.warn("equity patch", e);
       }
@@ -73,15 +71,46 @@
     API._equityPatched = true;
   }
 
+  function patchSaveConfig() {
+    const btn = document.getElementById("save-config-btn");
+    if (!btn || btn.dataset.notionalWired) return;
+    btn.dataset.notionalWired = "1";
+    btn.addEventListener("click", async () => {
+      // After main.js handler runs, refresh notional from saved form / API
+      setTimeout(async () => {
+        try {
+          const data = await API.getConfigSection("backbone");
+          const n = Number(data && data.trade_notional);
+          if (isFinite(n) && n > 0) {
+            window.__tradeNotional = n;
+            if (typeof state !== "undefined") state.backboneCfg = data;
+          }
+          // Refresh equity + perf if a group is selected
+          if (typeof state !== "undefined" && state.selectedGroupId) {
+            const trades = await API.listTrades(state.selectedGroupId);
+            if (typeof renderTradesTable === "function") renderTradesTable(trades);
+            if (typeof renderEquityChart === "function") {
+              renderEquityChart("equity-canvas", trades, window.__tradeNotional);
+            }
+          }
+          if (typeof loadPerfTable === "function") loadPerfTable();
+        } catch (e) {
+          console.warn("notional refresh after save", e);
+        }
+      }, 300);
+    });
+  }
+
   function boot() {
     ensureEquityPanel();
     wireManualButtons();
     patchSelectGroup();
-    // Prefetch trade_notional
+    patchSaveConfig();
     if (window.API && API.getConfigSection) {
       API.getConfigSection("backbone").then((data) => {
         const n = Number(data && data.trade_notional);
-        if (isFinite(n)) window.__tradeNotional = n;
+        if (isFinite(n) && n > 0) window.__tradeNotional = n;
+        if (typeof state !== "undefined") state.backboneCfg = data;
       }).catch(() => {});
     }
   }
@@ -93,4 +122,5 @@
   }
   setTimeout(patchSelectGroup, 500);
   setTimeout(patchSelectGroup, 2000);
+  setTimeout(patchSaveConfig, 500);
 })();

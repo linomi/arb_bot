@@ -1,6 +1,6 @@
-/* Equity curve + Jalali labels in Asia/Tehran (extends charts.js)
- * Equity = trade_notional + cumulative closed-trade PnL (notional is the
- * starting capital used for each leg; PnL is already scaled by notional). */
+/* Equity curve + Jalali labels in Asia/Tehran
+ * Equity = current trade_notional + sum(scaled PnL).
+ * API already returns pnl scaled by current notional. */
 (function () {
   function toJalali(gy, gm, gd) {
     const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -61,26 +61,28 @@
 
   let equityChart = null;
 
-  /** Resolve starting capital = backbone.trade_notional (default 100). */
-  function resolveNotional(explicit) {
+  function resolveNotional(trades, explicit) {
     if (explicit != null && isFinite(Number(explicit))) return Number(explicit);
+    // Prefer notional attached to trade payload from API
+    if (trades && trades.length) {
+      for (const t of trades) {
+        if (t.trade_notional != null && isFinite(Number(t.trade_notional))) {
+          return Number(t.trade_notional);
+        }
+      }
+    }
     if (window.__tradeNotional != null && isFinite(Number(window.__tradeNotional))) {
       return Number(window.__tradeNotional);
     }
     try {
-      if (typeof state !== "undefined" && state.config && state.config.backbone) {
-        const n = Number(state.config.backbone.trade_notional);
-        if (isFinite(n)) return n;
+      if (typeof state !== "undefined" && state.backboneCfg) {
+        const n = Number(state.backboneCfg.trade_notional);
+        if (isFinite(n) && n > 0) return n;
       }
     } catch (e) {}
     return 100;
   }
 
-  /**
-   * @param {string} canvasId
-   * @param {Array} trades
-   * @param {number} [startNotional] optional override; else backbone.trade_notional
-   */
   window.renderEquityChart = function (canvasId, trades, startNotional) {
     const canvas = document.getElementById(canvasId);
     if (!canvas || typeof Chart === "undefined") {
@@ -88,7 +90,8 @@
       return;
     }
 
-    const notional = resolveNotional(startNotional);
+    const notional = resolveNotional(trades, startNotional);
+    window.__tradeNotional = notional;
 
     const closed = (trades || [])
       .filter((t) => t.status === "closed" && t.close_time != null && t.pnl != null)
@@ -112,7 +115,7 @@
     }
     if (emptyEl) emptyEl.hidden = true;
 
-    // Start at trade notional (capital), then add each closed trade's PnL
+    // API pnl is already scaled by current trade_notional
     const labels = ["Start"];
     const values = [notional];
     let cum = notional;
@@ -152,7 +155,7 @@
               label: (item) => {
                 const eq = Number(item.raw);
                 const pnl = eq - notional;
-                return `Equity: ${eq.toFixed(4)}  (PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)})`;
+                return `Equity: ${eq.toFixed(4)}  (PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)}) · notional ${notional}`;
               },
             },
           },
@@ -165,23 +168,30 @@
           y: {
             ticks: { color: "#c4b5a0", font: { size: 9 } },
             grid: { color: "#4a3c30" },
-            // Keep notional visible as a reference band
             suggestedMin: Math.min(notional * 0.9, Math.min(...values)),
           },
         },
       },
     });
+
+    const hint = document.querySelector(".equity-panel .hint");
+    if (hint) {
+      hint.textContent = `Starts at trade notional (${notional}) + cumulative PnL`;
+    }
   };
 
-  // Prefetch backbone.trade_notional so the chart has it ready
-  function loadNotional() {
+  async function loadNotional() {
     if (!window.API || typeof API.getConfigSection !== "function") return;
-    API.getConfigSection("backbone")
-      .then((data) => {
-        const n = Number(data && data.trade_notional);
-        if (isFinite(n)) window.__tradeNotional = n;
-      })
-      .catch(() => {});
+    try {
+      const data = await API.getConfigSection("backbone");
+      const n = Number(data && data.trade_notional);
+      if (isFinite(n) && n > 0) {
+        window.__tradeNotional = n;
+        if (typeof state !== "undefined") {
+          state.backboneCfg = data;
+        }
+      }
+    } catch (e) {}
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", loadNotional);
