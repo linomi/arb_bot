@@ -18,16 +18,53 @@ log = logging.getLogger("groups_router")
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
+# Legacy absolute PnL was stored as fraction * 100 (default trade_notional).
+# After migration, Trade.pnl is a pure fraction of notional.
+_LEGACY_NOTIONAL = 100.0
+
+
+def _current_notional(db: Session) -> float:
+    try:
+        n = float(config_service.get_section(db, "backbone").get("trade_notional", 100) or 100)
+        return n if n > 0 else 100.0
+    except Exception:
+        return 100.0
+
+
+def _ensure_fractional_pnl(db: Session) -> None:
+    """One-time: convert absolute PnL (scaled by legacy 100) to unit-notional fractions."""
+    try:
+        system = config_service.get_section(db, "system")
+    except Exception:
+        return
+    if system.get("pnl_as_fraction"):
+        return
+    trades = db.query(Trade).filter(Trade.pnl.isnot(None)).all()
+    for t in trades:
+        t.pnl = float(t.pnl) / _LEGACY_NOTIONAL
+        if t.fee_paid is not None:
+            t.fee_paid = float(t.fee_paid) / _LEGACY_NOTIONAL
+    try:
+        config_service.update_section(db, "system", {"pnl_as_fraction": True})
+    except Exception:
+        pass
+    db.commit()
+    log.info("Migrated %d trades to fractional PnL (divided by %s)", len(trades), _LEGACY_NOTIONAL)
+
+
+def _scale_pnl(frac, notional: float):
+    if frac is None:
+        return None
+    return float(frac) * notional
+
 
 def _sanitize_metrics(m):
-    """Replace non-JSON-compliant floats (inf/NaN) that may already be stored
-    in the DB from older runs."""
     if not isinstance(m, dict):
         return m
     out = {}
     for k, v in m.items():
         if isinstance(v, float):
-            if v != v:  # NaN
+            if v != v:
                 out[k] = 0.0
             elif v == float("inf"):
                 out[k] = 999.0 if k == "profit_factor" else 0.0
@@ -63,7 +100,7 @@ def _fit_to_dict(f: OLSFit) -> dict:
     }
 
 
-def _trade_to_dict(t: Trade) -> dict:
+def _trade_to_dict(t: Trade, notional: float) -> dict:
     return {
         "id": t.id, "group_id": t.group_id, "ols_fit_id": t.ols_fit_id,
         "direction": t.direction, "mode": t.mode,
@@ -73,7 +110,10 @@ def _trade_to_dict(t: Trade) -> dict:
         "close_time": t.close_time.isoformat() if t.close_time else None,
         "close_reason": t.close_reason, "close_z": t.close_z,
         "close_residual": t.close_residual, "close_prices": t.close_prices,
-        "pnl": t.pnl, "fee_paid": t.fee_paid,
+        "pnl": _scale_pnl(t.pnl, notional),
+        "pnl_fraction": t.pnl,
+        "fee_paid": _scale_pnl(t.fee_paid, notional),
+        "trade_notional": notional,
     }
 
 
@@ -115,20 +155,8 @@ def delete_group(group_id: int, db: Session = Depends(get_db)):
     return {"deleted": group_id}
 
 
-
 @router.get("/{group_id}/live-fit")
 async def live_fit(group_id: int, persist: bool = True, db: Session = Depends(get_db)):
-    """
-    On-demand LIVE window OLS for the Backbone residual chart (not backtest).
-
-    Fetches the most recent `window_size` bars at the configured sampling
-    resolution for every symbol in the group, fits OLS, runs ADF/KPSS, and
-    returns residual_series for plotting. Selecting a group calls this
-    immediately — no need to wait for bot cycles.
-
-    Example: window_size=60, sampling_time=300s → resolution ~5m, last 60 bars
-    (~5 hours). Init-time backtest residuals are never used here.
-    """
     g = db.get(Group, group_id)
     if not g:
         raise HTTPException(404, "group not found")
@@ -174,7 +202,6 @@ async def live_fit(group_id: int, persist: bool = True, db: Session = Depends(ge
     fitted_at = dt.datetime.utcnow()
 
     def _py(x):
-        """Coerce numpy scalars to plain Python for JSON."""
         if x is None:
             return None
         if hasattr(x, "item"):
@@ -266,8 +293,10 @@ def latest_fit(group_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{group_id}/trades")
 def list_trades(group_id: int, db: Session = Depends(get_db)):
+    _ensure_fractional_pnl(db)
+    notional = _current_notional(db)
     trades = db.query(Trade).filter_by(group_id=group_id).order_by(Trade.entry_time.desc()).all()
-    return [_trade_to_dict(t) for t in trades]
+    return [_trade_to_dict(t, notional) for t in trades]
 
 
 @router.get("/{group_id}/performance")
@@ -275,8 +304,17 @@ def group_performance(group_id: int, db: Session = Depends(get_db)):
     g = db.get(Group, group_id)
     if not g:
         raise HTTPException(404, "group not found")
+    _ensure_fractional_pnl(db)
+    notional = _current_notional(db)
     closed = db.query(Trade).filter_by(group_id=group_id, status="closed").all()
-    closed_dicts = [{"pnl": t.pnl, "entry_time": t.entry_time, "close_time": t.close_time} for t in closed]
+    closed_dicts = [
+        {
+            "pnl": _scale_pnl(t.pnl, notional),
+            "entry_time": t.entry_time,
+            "close_time": t.close_time,
+        }
+        for t in closed
+    ]
     return compute_group_performance(closed_dicts).as_dict()
 
 
@@ -284,14 +322,20 @@ def group_performance(group_id: int, db: Session = Depends(get_db)):
 def all_groups_performance(db: Session = Depends(get_db)):
     """Feeds the sortable performance-comparison table on the Backbone tab.
 
-    Metrics are computed only from closed live/paper trades — never from
-    init-time backtest results. Backtest numbers stay on the Initialization tab.
+    Metrics use current trade_notional so changing it rescales total/avg PnL,
+    drawdown, best/worst, etc. Ratios (Sharpe, win rate) are scale-invariant.
     """
+    _ensure_fractional_pnl(db)
+    notional = _current_notional(db)
     out = []
     for g in db.query(Group).filter(Group.status.in_(["active", "inactive"])).all():
         closed = db.query(Trade).filter_by(group_id=g.id, status="closed").all()
         closed_dicts = [
-            {"pnl": t.pnl, "entry_time": t.entry_time, "close_time": t.close_time}
+            {
+                "pnl": _scale_pnl(t.pnl, notional),
+                "entry_time": t.entry_time,
+                "close_time": t.close_time,
+            }
             for t in closed
         ]
         perf = compute_group_performance(closed_dicts).as_dict()
