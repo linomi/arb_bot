@@ -14,6 +14,13 @@ class InitRunRequest(BaseModel):
     activate: bool = True         # if true, surviving groups get status="active" immediately
 
 
+class ManualGroupCreate(BaseModel):
+    name: Optional[str] = None
+    symbols: list[str]
+    dependent_symbol: Optional[str] = None
+    activate: bool = True
+
+
 class GroupOut(BaseModel):
     id: int
     name: str

@@ -36,10 +36,15 @@ const API = {
   listTrades(id) { return this.get(`/api/groups/${id}/trades`); },
   groupPerformance(id) { return this.get(`/api/groups/${id}/performance`); },
   allPerformance() { return this.get(`/api/groups/performance/all`); },
+  createManualGroup(payload) { return this.post("/api/groups/manual", payload); },
 
   // init
   runInit(method, activate) { return this.post("/api/init/run", { method, activate }); },
   initProgress() { return this.get("/api/init/progress"); },
+  listLiquidSymbols(topN) {
+    const q = topN ? `?top_n=${topN}` : "";
+    return this.get(`/api/init/symbols${q}`);
+  },
 
   // bot
   botState() { return this.get("/api/bot/state"); },
