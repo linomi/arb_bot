@@ -45,6 +45,10 @@ function _destroyChart(chart) {
   return null;
 }
 
+function _emptyMarkArray(n) {
+  return new Array(n).fill(null);
+}
+
 function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) {
   const canvas = document.getElementById(canvasId);
   if (!canvas || typeof Chart === "undefined") return;
@@ -62,40 +66,176 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
   const zEntry = Number(cfg.z_entry) || 2;
   const zClose = Number(cfg.z_close) || 0.5;
   const zStop = Number(cfg.z_stop_loss) || 3.5;
-  const markerData = [], markerMeta = [], markerColors = [], markerStyles = [];
+
+  const entryMarks = _emptyMarkArray(n);
+  const closeMarks = _emptyMarkArray(n);
+  const stopMarks = _emptyMarkArray(n);
+  const entryMeta = new Array(n);
+  const closeMeta = new Array(n);
+  const stopMeta = new Array(n);
+
   const tsList = series.map((p) => new Date(p[0]).getTime());
+  const nearestIdx = (iso) => {
+    const tms = new Date(iso).getTime();
+    if (!isFinite(tms)) return -1;
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < tsList.length; i++) {
+      const d = Math.abs(tsList[i] - tms);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  };
+
   (trades || []).forEach((t) => {
-    const pushMark = (iso, y, kind) => {
-      if (iso == null || y == null) return;
-      const tms = new Date(iso).getTime();
-      if (!isFinite(tms)) return;
-      let best = 0, bestD = Infinity;
-      for (let i = 0; i < tsList.length; i++) {
-        const d = Math.abs(tsList[i] - tms);
-        if (d < bestD) { bestD = d; best = i; }
+    if (t.entry_time != null && t.entry_residual != null) {
+      const i = nearestIdx(t.entry_time);
+      if (i >= 0) {
+        entryMarks[i] = Number(t.entry_residual);
+        entryMeta[i] = { kind: "entry", trade: t };
       }
-      while (markerData.length < n) markerData.push(null);
-      markerData[best] = Number(y);
-      markerMeta[best] = { kind, trade: t };
-      markerColors[best] = kind === "entry" ? CHART_COLORS.entryMark : kind === "stop" ? CHART_COLORS.stopMark : CHART_COLORS.closeMark;
-      markerStyles[best] = kind === "entry" ? "circle" : kind === "stop" ? "triangle" : "rectRot";
-    };
-    pushMark(t.entry_time, t.entry_residual, "entry");
-    if (t.close_time) pushMark(t.close_time, t.close_residual, t.close_reason === "stop_loss" ? "stop" : "close");
+    }
+    if (t.close_time != null && t.close_residual != null) {
+      const i = nearestIdx(t.close_time);
+      if (i >= 0) {
+        const isStop = t.close_reason === "stop_loss";
+        if (isStop) {
+          stopMarks[i] = Number(t.close_residual);
+          stopMeta[i] = { kind: "stop", trade: t };
+        } else {
+          closeMarks[i] = Number(t.close_residual);
+          closeMeta[i] = { kind: "close", trade: t };
+        }
+      }
+    }
   });
-  while (markerData.length < n) markerData.push(null);
+
+  const hasEntry = entryMarks.some((v) => v != null);
+  const hasClose = closeMarks.some((v) => v != null);
+  const hasStop = stopMarks.some((v) => v != null);
+
   const datasets = [
-    { label: "Residual", data: values, borderColor: CHART_COLORS.residual, backgroundColor: "rgba(217,148,90,0.08)", borderWidth: 2, pointRadius: 0, tension: 0.15, fill: false },
-    { label: "+z entry", data: _constantSeries(n, mean + zEntry * std), borderColor: CHART_COLORS.entryLine, borderDash: [4, 3], borderWidth: 1, pointRadius: 0, fill: false },
-    { label: "-z entry", data: _constantSeries(n, mean - zEntry * std), borderColor: CHART_COLORS.entryLine, borderDash: [4, 3], borderWidth: 1, pointRadius: 0, fill: false },
-    { label: "+z close", data: _constantSeries(n, mean + zClose * std), borderColor: CHART_COLORS.closeLine, borderDash: [2, 2], borderWidth: 1, pointRadius: 0, fill: false },
-    { label: "-z close", data: _constantSeries(n, mean - zClose * std), borderColor: CHART_COLORS.closeLine, borderDash: [2, 2], borderWidth: 1, pointRadius: 0, fill: false },
-    { label: "+z stop", data: _constantSeries(n, mean + zStop * std), borderColor: CHART_COLORS.stopLine, borderDash: [1, 3], borderWidth: 1, pointRadius: 0, fill: false },
-    { label: "-z stop", data: _constantSeries(n, mean - zStop * std), borderColor: CHART_COLORS.stopLine, borderDash: [1, 3], borderWidth: 1, pointRadius: 0, fill: false },
+    {
+      label: "Residual",
+      data: values,
+      borderColor: CHART_COLORS.residual,
+      backgroundColor: "rgba(217,148,90,0.08)",
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.15,
+      fill: false,
+      order: 10,
+    },
+    {
+      label: `Entry ±${zEntry}σ`,
+      data: _constantSeries(n, mean + zEntry * std),
+      borderColor: CHART_COLORS.entryLine,
+      borderDash: [5, 4],
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: false,
+      order: 5,
+    },
+    {
+      label: `_entry_neg`,
+      data: _constantSeries(n, mean - zEntry * std),
+      borderColor: CHART_COLORS.entryLine,
+      borderDash: [5, 4],
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: false,
+      order: 5,
+    },
+    {
+      label: `Close ±${zClose}σ`,
+      data: _constantSeries(n, mean + zClose * std),
+      borderColor: CHART_COLORS.closeLine,
+      borderDash: [3, 3],
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: false,
+      order: 5,
+    },
+    {
+      label: `_close_neg`,
+      data: _constantSeries(n, mean - zClose * std),
+      borderColor: CHART_COLORS.closeLine,
+      borderDash: [3, 3],
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: false,
+      order: 5,
+    },
+    {
+      label: `Stop ±${zStop}σ`,
+      data: _constantSeries(n, mean + zStop * std),
+      borderColor: CHART_COLORS.stopLine,
+      borderDash: [2, 4],
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: false,
+      order: 5,
+    },
+    {
+      label: `_stop_neg`,
+      data: _constantSeries(n, mean - zStop * std),
+      borderColor: CHART_COLORS.stopLine,
+      borderDash: [2, 4],
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: false,
+      order: 5,
+    },
   ];
-  if (markerMeta.some(Boolean)) {
-    datasets.push({ label: "Trades", data: markerData, showLine: false, pointRadius: markerData.map((v) => (v == null ? 0 : 6)), pointHoverRadius: markerData.map((v) => (v == null ? 0 : 8)), pointStyle: markerStyles.map((s) => s || "circle"), pointBackgroundColor: markerColors.map((c) => c || CHART_COLORS.entryMark), pointBorderColor: "#1a1410", borderWidth: 0, _markerMeta: markerMeta });
+
+  if (hasEntry) {
+    datasets.push({
+      label: "Entry",
+      data: entryMarks,
+      showLine: false,
+      pointRadius: entryMarks.map((v) => (v == null ? 0 : 7)),
+      pointHoverRadius: entryMarks.map((v) => (v == null ? 0 : 9)),
+      pointStyle: "circle",
+      pointBackgroundColor: CHART_COLORS.entryMark,
+      pointBorderColor: "#1a1410",
+      pointBorderWidth: 1,
+      borderWidth: 0,
+      order: 1,
+      _markerMeta: entryMeta,
+    });
   }
+  if (hasClose) {
+    datasets.push({
+      label: "Close",
+      data: closeMarks,
+      showLine: false,
+      pointRadius: closeMarks.map((v) => (v == null ? 0 : 7)),
+      pointHoverRadius: closeMarks.map((v) => (v == null ? 0 : 9)),
+      pointStyle: "rectRot",
+      pointBackgroundColor: CHART_COLORS.closeMark,
+      pointBorderColor: "#1a1410",
+      pointBorderWidth: 1,
+      borderWidth: 0,
+      order: 1,
+      _markerMeta: closeMeta,
+    });
+  }
+  if (hasStop) {
+    datasets.push({
+      label: "Stop",
+      data: stopMarks,
+      showLine: false,
+      pointRadius: stopMarks.map((v) => (v == null ? 0 : 7)),
+      pointHoverRadius: stopMarks.map((v) => (v == null ? 0 : 9)),
+      pointStyle: "triangle",
+      pointBackgroundColor: CHART_COLORS.stopMark,
+      pointBorderColor: "#1a1410",
+      pointBorderWidth: 1,
+      borderWidth: 0,
+      order: 1,
+      _markerMeta: stopMeta,
+    });
+  }
+
   residualChart = _destroyChart(residualChart);
   canvas.style.width = "100%";
   canvas.style.height = "300px";
@@ -103,21 +243,63 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
     type: "line",
     data: { labels, datasets },
     options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
-      interaction: { mode: "index", intersect: false },
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "nearest", intersect: true },
       plugins: {
-        legend: { labels: { color: CHART_COLORS.text, boxWidth: 12, font: { size: 10 }, filter: (item) => item.text === "Residual" || item.text === "Trades" } },
-        tooltip: { callbacks: { label: (item) => { if (item.dataset.label === "Trades") { const meta = item.dataset._markerMeta[item.dataIndex]; if (!meta) return ""; const pnl = meta.trade.pnl; return `${meta.kind.toUpperCase()} · #${meta.trade.id} · pnl ${pnl != null ? Number(pnl).toFixed(4) : "open"}`; } return `${item.dataset.label}: ${Number(item.raw).toFixed(5)}`; } } },
+        legend: {
+          position: "top",
+          align: "start",
+          labels: {
+            color: CHART_COLORS.text,
+            boxWidth: 14,
+            boxHeight: 10,
+            padding: 10,
+            font: { size: 11 },
+            usePointStyle: true,
+            filter: (item) => item.text && !item.text.startsWith("_"),
+          },
+        },
+        tooltip: {
+          callbacks: {
+            label: (item) => {
+              const lbl = item.dataset.label || "";
+              if (item.dataset._markerMeta) {
+                const meta = item.dataset._markerMeta[item.dataIndex];
+                if (!meta) return "";
+                const pnl = meta.trade.pnl;
+                return `${meta.kind.toUpperCase()} · #${meta.trade.id} · pnl ${
+                  pnl != null ? Number(pnl).toFixed(4) : "open"
+                }`;
+              }
+              if (item.raw == null) return "";
+              return `${lbl}: ${Number(item.raw).toFixed(5)}`;
+            },
+          },
+        },
       },
       scales: {
-        x: { ticks: { color: CHART_COLORS.text, maxRotation: 0, autoSkip: true, maxTicksLimit: 8, font: { size: 10 } }, grid: { color: CHART_COLORS.grid } },
-        y: { ticks: { color: CHART_COLORS.text, font: { size: 10 } }, grid: { color: CHART_COLORS.grid } },
+        x: {
+          ticks: {
+            color: CHART_COLORS.text,
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 8,
+            font: { size: 10 },
+          },
+          grid: { color: CHART_COLORS.grid },
+        },
+        y: {
+          ticks: { color: CHART_COLORS.text, font: { size: 10 } },
+          grid: { color: CHART_COLORS.grid },
+        },
       },
       onClick: (evt, elements) => {
         if (!onMarkerClick || !residualChart) return;
         for (const el of elements) {
           const ds = residualChart.data.datasets[el.datasetIndex];
-          if (ds.label === "Trades" && ds._markerMeta) {
+          if (ds && ds._markerMeta) {
             const meta = ds._markerMeta[el.index];
             if (meta && meta.trade) onMarkerClick(meta.trade);
             return;
@@ -139,21 +321,62 @@ function renderRadarChart(canvasId, metrics) {
     Sharpe: _squash(m.sharpe_ratio),
     Sortino: _squash(m.sortino_ratio),
     "Profit Factor": _squash((Number(m.profit_factor) || 0) / 3),
-    "Low Drawdown": Number(m.max_drawdown) > 0 ? _squash(1 / Number(m.max_drawdown)) : Number(m.trade_count) > 0 ? 1 : 0.15,
+    "Low Drawdown": Number(m.max_drawdown) > 0
+      ? _squash(1 / Number(m.max_drawdown))
+      : Number(m.trade_count) > 0
+      ? 1
+      : 0.15,
     "Trade Freq": _squash((Number(m.trade_count) || 0) / 20),
   };
-  if (Object.values(norm).every((v) => !v)) Object.keys(norm).forEach((k) => { norm[k] = 0.12; });
+  if (Object.values(norm).every((v) => !v)) {
+    Object.keys(norm).forEach((k) => {
+      norm[k] = 0.12;
+    });
+  }
   radarChart = _destroyChart(radarChart);
   radarChart = new Chart(canvas.getContext("2d"), {
     type: "radar",
-    data: { labels: Object.keys(norm), datasets: [{ label: "Performance", data: Object.values(norm), backgroundColor: "rgba(196,120,58,0.25)", borderColor: CHART_COLORS.residual, borderWidth: 2, pointBackgroundColor: CHART_COLORS.residual, pointRadius: 3 }] },
+    data: {
+      labels: Object.keys(norm),
+      datasets: [
+        {
+          label: "Performance",
+          data: Object.values(norm),
+          backgroundColor: "rgba(196,120,58,0.25)",
+          borderColor: CHART_COLORS.residual,
+          borderWidth: 2,
+          pointBackgroundColor: CHART_COLORS.residual,
+          pointRadius: 3,
+        },
+      ],
+    },
     options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
       plugins: { legend: { display: false } },
-      scales: { r: { angleLines: { color: CHART_COLORS.grid }, grid: { color: CHART_COLORS.grid }, pointLabels: { color: CHART_COLORS.text, font: { size: 10 } }, ticks: { display: false, maxTicksLimit: 3 }, min: 0, max: 1 } },
+      scales: {
+        r: {
+          angleLines: { color: CHART_COLORS.grid },
+          grid: { color: CHART_COLORS.grid },
+          pointLabels: { color: CHART_COLORS.text, font: { size: 10 } },
+          ticks: { display: false, maxTicksLimit: 3 },
+          min: 0,
+          max: 1,
+        },
+      },
     },
   });
 }
 
-function _finite01(x) { const v = Number(x); if (!isFinite(v) || v < 0) return 0; if (v > 1) return 1; return v; }
-function _squash(x) { if (!isFinite(x)) return 0.5; if (x <= 0) return 0; return x / (1 + x); }
+function _finite01(x) {
+  const v = Number(x);
+  if (!isFinite(v) || v < 0) return 0;
+  if (v > 1) return 1;
+  return v;
+}
+function _squash(x) {
+  if (!isFinite(x)) return 0.5;
+  if (x <= 0) return 0;
+  return x / (1 + x);
+}
