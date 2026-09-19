@@ -1,0 +1,34 @@
+/* Sort icons, filters, equity chart, manual group picker */
+#perf-table thead th.sortable{cursor:pointer;user-select:none;position:relative;padding-right:18px}
+#perf-table thead th.sortable:hover{color:var(--accent-hi)}
+#perf-table thead th.sortable::after{content:"\21C5";position:absolute;right:4px;top:50%;transform:translateY(-50%);font-size:10px;opacity:.35;color:var(--text-lo)}
+#perf-table thead th.sort-asc::after{content:"\25B2";opacity:1;color:var(--accent-hi)}
+#perf-table thead th.sort-desc::after{content:"\25BC";opacity:1;color:var(--accent-hi)}
+.perf-filters{padding:10px 14px;border-bottom:1px solid var(--line-soft);background:var(--bg-2)}
+.perf-filters .filter-row{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center}
+.perf-filters label{display:flex;flex-direction:row;align-items:center;gap:6px;font-size:11px;color:var(--text-mid)}
+.perf-filters select,.perf-filters input[type=number]{background:var(--bg-1);border:1px solid var(--line);border-radius:4px;color:var(--text-hi);padding:5px 8px;font-family:var(--font-mono);font-size:12px;min-width:72px}
+.perf-filters .btn-secondary{padding:6px 12px;font-size:11px}
+.num-pos{color:var(--long)}.num-neg{color:var(--short)}
+.group-item .g-name{font-weight:600;font-size:12.5px;color:var(--text-hi);display:block}
+.group-item .g-symbols{font-family:var(--font-mono);font-size:11px;color:var(--text-mid);display:block;margin-top:2px}
+.group-item .g-status{display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;font-family:var(--font-mono);margin-top:3px}
+.g-status.active{background:rgba(107,154,107,.2);color:var(--long)}
+.g-status.inactive{background:rgba(138,122,104,.15);color:var(--text-lo)}
+.g-status.candidate{background:rgba(196,120,58,.15);color:var(--accent)}
+.equity-section{margin:10px 0 12px}.equity-title{font-size:11px;font-weight:600;color:var(--text-mid);letter-spacing:.03em;text-transform:uppercase;margin-bottom:6px}
+.equity-wrap{width:100%;height:180px;position:relative}.equity-wrap canvas{width:100%!important;height:100%!important}
+.equity-empty{font-size:11px;color:var(--text-lo);font-family:var(--font-mono)}
+.manual-group-panel{padding:0 14px 8px}.manual-group-inner{background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.manual-group-inner label{display:flex;flex-direction:column;gap:5px;font-size:11px;color:var(--text-mid)}
+.manual-group-inner input,.manual-group-inner select{background:var(--bg-1);border:1px solid var(--line);border-radius:4px;color:var(--text-hi);padding:7px 9px;font-family:var(--font-mono);font-size:12px}
+.symbol-picker-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;font-size:11px;color:var(--text-mid)}
+.symbol-picker-head input{flex:1;max-width:220px;background:var(--bg-1);border:1px solid var(--line);border-radius:4px;color:var(--text-hi);padding:5px 8px;font-family:var(--font-mono);font-size:12px}
+.symbol-checklist{max-height:200px;overflow-y:auto;border:1px solid var(--line-soft);border-radius:4px;background:var(--bg-0);padding:6px;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:4px}
+.symbol-check-item{display:flex!important;flex-direction:row!important;align-items:center;gap:6px!important;font-family:var(--font-mono);font-size:11.5px;color:var(--text-hi);padding:3px 6px;border-radius:3px;cursor:pointer}
+.symbol-check-item:hover{background:var(--bg-2)}.symbol-check-item input{accent-color:var(--accent)}
+.selected-symbols-bar{font-family:var(--font-mono);font-size:11px;color:var(--text-mid);padding-top:4px}.selected-symbols-bar span{color:var(--accent-hi)}
+.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}
+table th{text-align:left;padding:8px 10px;background:var(--bg-2);color:var(--text-mid);font-weight:500;font-size:11px;letter-spacing:.03em;border-bottom:1px solid var(--line);white-space:nowrap}
+table td{padding:7px 10px;border-bottom:1px solid var(--line-soft);font-family:var(--font-mono);font-size:11.5px;color:var(--text-hi)}
+table tr:hover td{background:var(--bg-2)}.dir-long{color:var(--long);font-weight:600}.dir-short{color:var(--short);font-weight:600}
