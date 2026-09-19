@@ -13,7 +13,15 @@ logging.basicConfig(level=logging.INFO)
 from backend.db import init_db, SessionLocal
 from backend import config_service
 from backend.engine.bot_engine import bot_engine
-from backend.routers import config_router, groups_router, init_router, bot_router, credentials_router
+from backend.routers import (
+    config_router,
+    groups_router,
+    init_router,
+    bot_router,
+    credentials_router,
+    manual_router,
+    symbols_router,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -22,7 +30,9 @@ app = FastAPI(title="Stat-Arb Bot")
 
 app.include_router(config_router.router)
 app.include_router(groups_router.router)
+app.include_router(manual_router.router)
 app.include_router(init_router.router)
+app.include_router(symbols_router.router)
 app.include_router(bot_router.router)
 app.include_router(credentials_router.router)
 
