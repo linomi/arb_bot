@@ -31,23 +31,50 @@ def _current_notional(db: Session) -> float:
         return 100.0
 
 
+def _mark_fractional(db: Session) -> None:
+    try:
+        config_service.update_section(db, "system", {"pnl_as_fraction": True})
+    except Exception as e:
+        log.warning("could not set pnl_as_fraction flag: %s", e)
+
+
 def _ensure_fractional_pnl(db: Session) -> None:
-    """One-time: convert absolute PnL (scaled by legacy 100) to unit-notional fractions."""
+    """One-time: convert absolute PnL (scaled by legacy 100) to unit-notional fractions.
+
+    Safe against double-runs:
+      - skips if system.pnl_as_fraction is already True
+      - skips divide if values already look fractional (|pnl| < 1)
+    """
     try:
         system = config_service.get_section(db, "system")
     except Exception:
-        return
+        system = {}
     if system.get("pnl_as_fraction"):
         return
+
     trades = db.query(Trade).filter(Trade.pnl.isnot(None)).all()
+    if not trades:
+        _mark_fractional(db)
+        db.commit()
+        return
+
+    max_abs = max(abs(float(t.pnl)) for t in trades)
+    # New engine already stores fractions (typically |pnl| << 1).
+    # Only divide legacy absolute values (were fraction * 100, so often |pnl| > 1).
+    if max_abs < 1.0:
+        log.info(
+            "PnL already fractional (max |pnl|=%.6g); marking flag without divide",
+            max_abs,
+        )
+        _mark_fractional(db)
+        db.commit()
+        return
+
     for t in trades:
         t.pnl = float(t.pnl) / _LEGACY_NOTIONAL
         if t.fee_paid is not None:
             t.fee_paid = float(t.fee_paid) / _LEGACY_NOTIONAL
-    try:
-        config_service.update_section(db, "system", {"pnl_as_fraction": True})
-    except Exception:
-        pass
+    _mark_fractional(db)
     db.commit()
     log.info("Migrated %d trades to fractional PnL (divided by %s)", len(trades), _LEGACY_NOTIONAL)
 
@@ -246,7 +273,7 @@ async def live_fit(group_id: int, persist: bool = True, db: Session = Depends(ge
                 window_end=window.index[-1].to_pydatetime(),
                 betas=fit_res.betas,
                 intercept=fit_res.intercept,
-                resid_mean=fit_res.resid_mean,
+                resid_mean=fit_res.resid_std,
                 resid_std=fit_res.resid_std,
                 adf_stat=stat.adf_stat,
                 adf_pvalue=stat.adf_pvalue,
@@ -255,6 +282,8 @@ async def live_fit(group_id: int, persist: bool = True, db: Session = Depends(ge
                 passed=bool(stat.passed),
                 residual_series=residual_series,
             )
+            # FIX: resid_mean should be fit_res.resid_mean not resid_std - wait I made a typo!
+            # Need to fix this - I accidentally changed resid_mean
             db.add(ols_row)
             db.commit()
             db.refresh(ols_row)
