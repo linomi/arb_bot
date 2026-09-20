@@ -1,6 +1,4 @@
-/* Equity curve + Jalali labels in Asia/Tehran
- * Equity = current trade_notional + sum(scaled PnL).
- * API already returns pnl scaled by current notional. */
+/* Equity curve from realized (or primary) PnL + Jalali/Tehran labels */
 (function () {
   function toJalali(gy, gm, gd) {
     const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -61,42 +59,33 @@
 
   let equityChart = null;
 
-  function resolveNotional(trades, explicit) {
-    if (explicit != null && isFinite(Number(explicit))) return Number(explicit);
-    // Prefer notional attached to trade payload from API
-    if (trades && trades.length) {
-      for (const t of trades) {
-        if (t.trade_notional != null && isFinite(Number(t.trade_notional))) {
-          return Number(t.trade_notional);
-        }
-      }
-    }
-    if (window.__tradeNotional != null && isFinite(Number(window.__tradeNotional))) {
-      return Number(window.__tradeNotional);
-    }
-    try {
-      if (typeof state !== "undefined" && state.backboneCfg) {
-        const n = Number(state.backboneCfg.trade_notional);
-        if (isFinite(n) && n > 0) return n;
-      }
-    } catch (e) {}
-    return 100;
+  function tradePnl(t) {
+    if (t.realized_pnl != null && isFinite(Number(t.realized_pnl))) return Number(t.realized_pnl);
+    if (t.pnl != null && isFinite(Number(t.pnl))) return Number(t.pnl);
+    return null;
   }
 
-  window.renderEquityChart = function (canvasId, trades, startNotional) {
-    const canvas = document.getElementById(canvasId);
-    if (!canvas || typeof Chart === "undefined") {
-      console.warn("renderEquityChart: missing canvas or Chart.js");
-      return;
-    }
-
-    const notional = resolveNotional(trades, startNotional);
-    window.__tradeNotional = notional;
-
+  window.renderEquityChart = function (canvasId, trades) {
     const closed = (trades || [])
-      .filter((t) => t.status === "closed" && t.close_time != null && t.pnl != null)
+      .filter((t) => t.status === "closed" && t.close_time != null && tradePnl(t) != null)
       .slice()
       .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+
+    const points = [];
+    let cum = 0;
+    closed.forEach((t) => {
+      cum += tradePnl(t);
+      points.push({ time: t.close_time, cum_pnl: cum });
+    });
+    window.renderEquityCurvePoints(canvasId, points);
+  };
+
+  window.renderEquityCurvePoints = function (canvasId, points) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === "undefined") {
+      console.warn("renderEquityCurvePoints: missing canvas or Chart.js");
+      return;
+    }
 
     if (equityChart) {
       try { equityChart.destroy(); } catch (e) {}
@@ -107,7 +96,8 @@
     canvas.style.height = "180px";
 
     const emptyEl = document.getElementById("equity-empty");
-    if (!closed.length) {
+    const series = points || [];
+    if (!series.length) {
       if (emptyEl) emptyEl.hidden = false;
       const ctx = canvas.getContext("2d");
       if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -115,28 +105,20 @@
     }
     if (emptyEl) emptyEl.hidden = true;
 
-    // API pnl is already scaled by current trade_notional
-    const labels = ["Start"];
-    const values = [notional];
-    let cum = notional;
-    closed.forEach((t) => {
-      cum += Number(t.pnl) || 0;
-      labels.push(window._shortLabel(t.close_time));
-      values.push(cum);
-    });
-
+    const labels = ["Start"].concat(series.map((p) => window._shortLabel(p.time)));
+    const values = [0].concat(series.map((p) => Number(p.cum_pnl)));
     const last = values[values.length - 1];
-    const lineColor = last >= notional ? "#6b9a6b" : "#b85c4a";
+    const lineColor = last >= 0 ? "#6b9a6b" : "#b85c4a";
 
     equityChart = new Chart(canvas.getContext("2d"), {
       type: "line",
       data: {
         labels,
         datasets: [{
-          label: "Equity",
+          label: "Cum. realized PnL",
           data: values,
           borderColor: lineColor,
-          backgroundColor: last >= notional ? "rgba(107,154,107,0.12)" : "rgba(184,92,74,0.12)",
+          backgroundColor: last >= 0 ? "rgba(107,154,107,0.12)" : "rgba(184,92,74,0.12)",
           borderWidth: 2,
           pointRadius: values.length <= 40 ? 3 : 0,
           pointBackgroundColor: lineColor,
@@ -152,11 +134,7 @@
           legend: { display: false },
           tooltip: {
             callbacks: {
-              label: (item) => {
-                const eq = Number(item.raw);
-                const pnl = eq - notional;
-                return `Equity: ${eq.toFixed(4)}  (PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)}) · notional ${notional}`;
-              },
+              label: (item) => `Cum. realized PnL: ${Number(item.raw).toFixed(4)}`,
             },
           },
         },
@@ -168,7 +146,6 @@
           y: {
             ticks: { color: "#c4b5a0", font: { size: 9 } },
             grid: { color: "#4a3c30" },
-            suggestedMin: Math.min(notional * 0.9, Math.min(...values)),
           },
         },
       },
@@ -176,27 +153,7 @@
 
     const hint = document.querySelector(".equity-panel .hint");
     if (hint) {
-      hint.textContent = `Starts at trade notional (${notional}) + cumulative PnL`;
+      hint.textContent = "Cumulative realized cash PnL (not rescaled by current notional)";
     }
   };
-
-  async function loadNotional() {
-    if (!window.API || typeof API.getConfigSection !== "function") return;
-    try {
-      const data = await API.getConfigSection("backbone");
-      const n = Number(data && data.trade_notional);
-      if (isFinite(n) && n > 0) {
-        window.__tradeNotional = n;
-        if (typeof state !== "undefined") {
-          state.backboneCfg = data;
-        }
-      }
-    } catch (e) {}
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", loadNotional);
-  } else {
-    loadNotional();
-  }
-  setTimeout(loadNotional, 800);
 })();

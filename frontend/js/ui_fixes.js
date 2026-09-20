@@ -9,7 +9,7 @@
     panel.innerHTML = `
       <div class="panel-head">
         <h2 id="equity-title">Equity Curve</h2>
-        <span class="hint">Starts at trade notional + cumulative PnL (Tehran)</span>
+        <span class="hint">Cumulative realized cash PnL</span>
       </div>
       <div class="equity-wrap" style="padding:8px 12px 12px;height:200px">
         <canvas id="equity-canvas"></canvas>
@@ -40,25 +40,31 @@
     });
   }
 
+  async function refreshEquity(groupId, trades) {
+    ensureEquityPanel();
+    try {
+      if (API.equityCurve) {
+        const points = await API.equityCurve(groupId);
+        if (typeof renderEquityCurvePoints === "function") {
+          renderEquityCurvePoints("equity-canvas", points);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn("equity_curve endpoint", e);
+    }
+    if (typeof renderEquityChart === "function") {
+      renderEquityChart("equity-canvas", trades);
+    }
+  }
+
   function patchSelectGroup() {
     if (!window.API || API._equityPatched) return;
     const orig = API.listTrades.bind(API);
     API.listTrades = async function (id) {
       const trades = await orig(id);
       try {
-        ensureEquityPanel();
-        // Notional comes on each trade from API (trade_notional field)
-        let n = null;
-        if (trades && trades.length && trades[0].trade_notional != null) {
-          n = Number(trades[0].trade_notional);
-        }
-        if ((!n || !isFinite(n)) && typeof state !== "undefined" && state.backboneCfg) {
-          n = Number(state.backboneCfg.trade_notional);
-        }
-        if (n && isFinite(n)) window.__tradeNotional = n;
-        if (typeof renderEquityChart === "function") {
-          renderEquityChart("equity-canvas", trades, window.__tradeNotional);
-        }
+        await refreshEquity(id, trades);
         const g = (typeof state !== "undefined" && state.groups)
           ? state.groups.find((x) => x.id === id) : null;
         const title = document.getElementById("equity-title");
@@ -71,48 +77,10 @@
     API._equityPatched = true;
   }
 
-  function patchSaveConfig() {
-    const btn = document.getElementById("save-config-btn");
-    if (!btn || btn.dataset.notionalWired) return;
-    btn.dataset.notionalWired = "1";
-    btn.addEventListener("click", async () => {
-      // After main.js handler runs, refresh notional from saved form / API
-      setTimeout(async () => {
-        try {
-          const data = await API.getConfigSection("backbone");
-          const n = Number(data && data.trade_notional);
-          if (isFinite(n) && n > 0) {
-            window.__tradeNotional = n;
-            if (typeof state !== "undefined") state.backboneCfg = data;
-          }
-          // Refresh equity + perf if a group is selected
-          if (typeof state !== "undefined" && state.selectedGroupId) {
-            const trades = await API.listTrades(state.selectedGroupId);
-            if (typeof renderTradesTable === "function") renderTradesTable(trades);
-            if (typeof renderEquityChart === "function") {
-              renderEquityChart("equity-canvas", trades, window.__tradeNotional);
-            }
-          }
-          if (typeof loadPerfTable === "function") loadPerfTable();
-        } catch (e) {
-          console.warn("notional refresh after save", e);
-        }
-      }, 300);
-    });
-  }
-
   function boot() {
     ensureEquityPanel();
     wireManualButtons();
     patchSelectGroup();
-    patchSaveConfig();
-    if (window.API && API.getConfigSection) {
-      API.getConfigSection("backbone").then((data) => {
-        const n = Number(data && data.trade_notional);
-        if (isFinite(n) && n > 0) window.__tradeNotional = n;
-        if (typeof state !== "undefined") state.backboneCfg = data;
-      }).catch(() => {});
-    }
   }
 
   if (document.readyState === "loading") {
@@ -122,5 +90,4 @@
   }
   setTimeout(patchSelectGroup, 500);
   setTimeout(patchSelectGroup, 2000);
-  setTimeout(patchSaveConfig, 500);
 })();
