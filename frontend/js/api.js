@@ -20,12 +20,10 @@ const API = {
   patch(path, body) { return this._req("PATCH", path, body ?? {}); },
   del(path) { return this._req("DELETE", path); },
 
-  // config
   getAllConfig() { return this.get("/api/config"); },
   getConfigSection(section) { return this.get(`/api/config/${section}`); },
   updateConfigSection(section, data) { return this.put(`/api/config/${section}`, { data }); },
 
-  // groups
   listGroups(status) { return this.get(`/api/groups${status ? `?status=${status}` : ""}`); },
   getGroup(id) { return this.get(`/api/groups/${id}`); },
   setGroupStatus(id, status) { return this.patch(`/api/groups/${id}/status`, { status }); },
@@ -36,9 +34,9 @@ const API = {
   listTrades(id) { return this.get(`/api/groups/${id}/trades`); },
   groupPerformance(id) { return this.get(`/api/groups/${id}/performance`); },
   allPerformance() { return this.get(`/api/groups/performance/all`); },
+  equityCurve(id) { return this.get(`/api/groups/${id}/equity_curve`); },
   createManualGroup(payload) { return this.post("/api/groups/manual", payload); },
 
-  // init
   runInit(method, activate) { return this.post("/api/init/run", { method, activate }); },
   initProgress() { return this.get("/api/init/progress"); },
   listLiquidSymbols(topN) {
@@ -46,13 +44,11 @@ const API = {
     return this.get(`/api/init/symbols${q}`);
   },
 
-  // bot
   botState() { return this.get("/api/bot/state"); },
   botStart() { return this.post("/api/bot/start"); },
   botStop() { return this.post("/api/bot/stop"); },
   botMode(mode) { return this.post("/api/bot/mode", { trading_mode: mode }); },
 
-  // credentials
   credStatus() { return this.get("/api/credentials/status"); },
   saveCred(payload) { return this.post("/api/credentials", payload); },
   deleteCred() { return this.del("/api/credentials"); },
