@@ -2,19 +2,15 @@
 The actual running bot: an asyncio background task, started once when the
 web server starts, that ticks forever at `backbone.sampling_time` seconds.
 
-Whether it *does* anything on a given tick is controlled by BotState.is_running
-(toggled by the UI's start/stop button). The loop itself never stops just
-because a browser tab closes -- per spec, the UI is a viewer/controller, not
-the process the bot runs inside.
-
 Per tick, for every group with status == "active":
   1. if it has an open trade -> check close/stop-loss (frozen OLS params)
   2. else -> refit OLS on the window, run ADF/KPSS, and on a pass, check
      for an entry signal
 
-PnL is stored as a *fraction of trade_notional* (unit-notional return).
-Absolute currency PnL is always: stored_fraction * current trade_notional,
-so changing trade_notional in the UI rescales all historical metrics.
+Legs are beta-aware (see backend/strategy/sizing.py). Each closed trade stores:
+  - model_pnl: residual-based theoretical fraction (simulate_pnl)
+  - realized_pnl / realized_fee: cash PnL from actual leg fills
+  - legs_entry / legs_close: executed basket
 """
 import asyncio
 import datetime as dt
@@ -31,6 +27,8 @@ from backend.utils import seconds_to_resolution, fetch_price_df
 from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
 from backend.strategy.zscore import decide_entry, decide_exit
+from backend.strategy.sizing import leg_orders, close_legs_from_entry
+from backend.strategy.pnl import realized_cash_pnl
 from backend.engine.backtester import simulate_pnl
 
 log = logging.getLogger("bot_engine")
@@ -50,9 +48,6 @@ class BotEngine:
             db = SessionLocal()
             try:
                 state = get_or_create_bot_state(db)
-                # Always run the cycle for active groups so OLS fits (and thus
-                # the residual chart) stay fresh even when the bot is paused.
-                # Order placement is gated inside _process_group by is_running.
                 await self._run_cycle(db, state)
                 sampling_time = config_service.get_section(db, "backbone").get("sampling_time", 60)
             except Exception:
@@ -76,7 +71,10 @@ class BotEngine:
         try:
             for group in groups:
                 try:
-                    await self._process_group(db, group, backbone, md_client, trading_client, resolution, state.trading_mode, state.is_running)
+                    await self._process_group(
+                        db, group, backbone, md_client, trading_client,
+                        resolution, state.trading_mode, state.is_running,
+                    )
                 except Exception:
                     self._last_error = traceback.format_exc()
                     log.exception("group %s failed this cycle", group.id)
@@ -85,7 +83,10 @@ class BotEngine:
             if not isinstance(trading_client, PaperExchangeClient):
                 await trading_client.aclose()
 
-    async def _process_group(self, db, group: Group, backbone, md_client, trading_client, resolution, trading_mode, is_running: bool):
+    async def _process_group(
+        self, db, group: Group, backbone, md_client, trading_client,
+        resolution, trading_mode, is_running: bool,
+    ):
         configured_window = int(backbone["window_size"])
         bars_needed = configured_window + 5
         price_df = await fetch_price_df(md_client, group.symbols, resolution, bars_needed)
@@ -111,13 +112,25 @@ class BotEngine:
 
         if open_trade is not None:
             if is_running:
-                await self._check_exit(db, group, open_trade, latest_prices, backbone_local, trading_client, trading_mode)
+                await self._check_exit(
+                    db, group, open_trade, latest_prices, backbone_local, trading_client, trading_mode,
+                )
         else:
-            await self._check_entry(db, group, price_df, latest_prices, backbone_local, trading_client, trading_mode, is_running)
+            await self._check_entry(
+                db, group, price_df, latest_prices, backbone_local, trading_client, trading_mode, is_running,
+            )
+
+    async def _place_legs(self, trading_client, legs: list[dict]):
+        for leg in legs:
+            await trading_client.place_order(
+                leg["symbol"], leg["side"], leg["qty"], price=None,
+            )
 
     async def _check_exit(self, db, group, open_trade: Trade, latest_prices, backbone, trading_client, trading_mode):
         fit = open_trade.ols_fit
-        resid_now = residual_from_frozen_fit(group.dependent_symbol, latest_prices, fit.betas, fit.intercept)
+        resid_now = residual_from_frozen_fit(
+            group.dependent_symbol, latest_prices, fit.betas, fit.intercept,
+        )
         exit_dec = decide_exit(
             resid_now, open_trade.direction, fit.resid_mean, fit.resid_std,
             backbone["z_close"], backbone["z_stop_loss"],
@@ -126,18 +139,32 @@ class BotEngine:
             return
 
         num_legs = len(group.symbols)
-        cost_rate = backbone["fee_rate"] + backbone["slippage_rate"]
-        notional = float(backbone.get("trade_notional", 100) or 100)
-        # Unit-notional (fractional) PnL — scale by current trade_notional on read
-        pnl_fraction = simulate_pnl(
-            open_trade.entry_residual, resid_now, open_trade.direction, num_legs, cost_rate
+        cost_rate = float(backbone["fee_rate"]) + float(backbone["slippage_rate"])
+        fee_rate = float(backbone["fee_rate"])
+        notional = float(
+            open_trade.trade_notional
+            if open_trade.trade_notional is not None
+            else (backbone.get("trade_notional", 100) or 100)
         )
 
-        # Execute closing legs (paper: simulated fill; live: real market orders).
-        for sym in group.symbols:
-            side = self._closing_side(group, sym, open_trade.direction)
-            amount = notional / max(latest_prices[sym], 1e-12)
-            await trading_client.place_order(sym, side, amount, price=None)
+        model_frac = simulate_pnl(
+            open_trade.entry_residual, resid_now, open_trade.direction, num_legs, cost_rate,
+        )
+
+        legs_entry = open_trade.legs_entry
+        if not legs_entry:
+            legs_entry = leg_orders(
+                group.dependent_symbol,
+                open_trade.direction,
+                fit.betas or {},
+                open_trade.entry_prices or latest_prices,
+                notional,
+            )
+        legs_close = close_legs_from_entry(legs_entry, latest_prices)
+
+        await self._place_legs(trading_client, legs_close)
+
+        real_pnl, real_fee = realized_cash_pnl(legs_entry, legs_close, fee_rate)
 
         open_trade.status = "closed"
         open_trade.close_time = dt.datetime.utcnow()
@@ -145,11 +172,25 @@ class BotEngine:
         open_trade.close_z = exit_dec.z
         open_trade.close_residual = resid_now
         open_trade.close_prices = latest_prices
-        open_trade.pnl = float(pnl_fraction)  # fraction of notional
-        open_trade.fee_paid = float(cost_rate * num_legs)  # fraction of notional
+        open_trade.legs_entry = legs_entry
+        open_trade.legs_close = legs_close
+        open_trade.pnl = float(model_frac)
+        open_trade.model_pnl = float(model_frac)
+        open_trade.fee_paid = float(cost_rate * num_legs)
+        open_trade.realized_pnl = float(real_pnl)
+        open_trade.realized_fee = float(real_fee)
+        if open_trade.trade_notional is None:
+            open_trade.trade_notional = notional
         db.commit()
 
-    async def _check_entry(self, db, group, price_df, latest_prices, backbone, trading_client, trading_mode, is_running: bool = True):
+        log.info(
+            "group %s trade #%s closed reason=%s model_pnl=%.6g realized_pnl=%.6g",
+            group.id, open_trade.id, exit_dec.reason, model_frac, real_pnl,
+        )
+
+    async def _check_entry(
+        self, db, group, price_df, latest_prices, backbone, trading_client, trading_mode, is_running: bool = True,
+    ):
         window = price_df.iloc[-int(backbone["window_size"]):]
         price_matrix = {s: window[s].to_numpy() for s in group.symbols}
         try:
@@ -187,10 +228,14 @@ class BotEngine:
             return
 
         notional = float(backbone.get("trade_notional", 100) or 100)
-        for sym in group.symbols:
-            side = self._opening_side(group, sym, entry_dec.direction)
-            amount = notional / max(latest_prices[sym], 1e-12)
-            await trading_client.place_order(sym, side, amount, price=None)
+        legs = leg_orders(
+            group.dependent_symbol,
+            entry_dec.direction,
+            fit_res.betas,
+            latest_prices,
+            notional,
+        )
+        await self._place_legs(trading_client, legs)
 
         trade = Trade(
             group_id=group.id,
@@ -202,21 +247,16 @@ class BotEngine:
             entry_residual=resid_now,
             entry_prices=latest_prices,
             status="open",
+            legs_entry=legs,
+            trade_notional=notional,
         )
         db.add(trade)
         db.commit()
-
-    @staticmethod
-    def _opening_side(group: Group, symbol: str, direction: str) -> str:
-        is_dependent = symbol == group.dependent_symbol
-        if direction == "short_residual":
-            return "sell" if is_dependent else "buy"
-        return "buy" if is_dependent else "sell"
-
-    @staticmethod
-    def _closing_side(group: Group, symbol: str, open_direction: str) -> str:
-        opening = BotEngine._opening_side(group, symbol, open_direction)
-        return "sell" if opening == "buy" else "buy"
+        log.info(
+            "group %s opened %s trade notional=%.4g legs=%s",
+            group.id, entry_dec.direction, notional,
+            [(l["symbol"], l["side"], round(l["qty"], 8)) for l in legs],
+        )
 
 
 bot_engine = BotEngine()
