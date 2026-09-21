@@ -1,52 +1,46 @@
 """
 Initialization approaches: random_init / sector_init.
 
-Candidate-group backtests run in a thread pool (CPU-bound OLS + ADF/KPSS)
-so many groups are evaluated in parallel.
+Candidate-group backtests run in a *process* pool so OLS + ADF/KPSS
+actually use multiple CPU cores (threads would be mostly serial under the GIL).
 """
 from __future__ import annotations
 
 import itertools
 import os
 import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Any
 
 import pandas as pd
 
 from backend.sectors import group_symbols_by_sector
 from backend.engine.backtester import backtest_group
 
-
-def _align_price_df(ohlc_by_symbol: dict[str, dict]) -> pd.DataFrame:
-    series = {}
-    for sym, ohlc in ohlc_by_symbol.items():
-        if not ohlc.get("t"):
-            continue
-        idx = pd.to_datetime(ohlc["t"], unit="s")
-        series[sym] = pd.Series(ohlc["c"], index=idx)
-    df = pd.DataFrame(series).dropna(how="any").sort_index()
-    return df
+# ---------------------------------------------------------------------------
+# Process-pool worker state (set once per worker via initializer)
+# ---------------------------------------------------------------------------
+_WORKER_PRICE_DF: pd.DataFrame | None = None
+_WORKER_PARAMS: dict | None = None
 
 
-def _score_group(perf) -> float:
-    if perf.trade_count == 0:
-        return -1e9
-    return float(perf.total_pnl) * 1000.0 + float(perf.sharpe_ratio)
+def _worker_init(price_df: pd.DataFrame, backbone_params: dict) -> None:
+    global _WORKER_PRICE_DF, _WORKER_PARAMS
+    _WORKER_PRICE_DF = price_df
+    _WORKER_PARAMS = backbone_params
 
 
-def _default_workers() -> int:
-    # Leave one core for the event loop / OS; cap to avoid thrashing on small VPS.
-    n = os.cpu_count() or 4
-    return max(2, min(n, 12))
+def _worker_eval(job: tuple) -> dict | None:
+    """
+    job = (symbols_tuple, source, sector_or_None)
+    Runs in a child process; uses module-level price frame from _worker_init.
+    """
+    symbols, source, sector = job
+    price_df_full = _WORKER_PRICE_DF
+    backbone_params = _WORKER_PARAMS
+    if price_df_full is None or backbone_params is None:
+        return None
 
-
-def _eval_one_group(
-    symbols: tuple[str, ...],
-    price_df_full: pd.DataFrame,
-    backbone_params: dict,
-    source: str,
-    sector_lookup: dict[str, str] | None,
-) -> dict | None:
     cols = [s for s in symbols if s in price_df_full.columns]
     if len(cols) != len(symbols):
         return None
@@ -74,10 +68,35 @@ def _eval_one_group(
         "symbols": list(symbols),
         "dependent_symbol": dependent,
         "source": source,
-        "sector": sector_lookup.get(symbols[0]) if sector_lookup else None,
+        "sector": sector,
         "backtest_metrics": bt.performance.as_dict(),
         "score": _score_group(bt.performance),
     }
+
+
+def _align_price_df(ohlc_by_symbol: dict[str, dict]) -> pd.DataFrame:
+    series = {}
+    for sym, ohlc in ohlc_by_symbol.items():
+        if not ohlc.get("t"):
+            continue
+        idx = pd.to_datetime(ohlc["t"], unit="s")
+        series[sym] = pd.Series(ohlc["c"], index=idx)
+    df = pd.DataFrame(series).dropna(how="any").sort_index()
+    return df
+
+
+def _score_group(perf) -> float:
+    if perf.trade_count == 0:
+        return -1e9
+    return float(perf.total_pnl) * 1000.0 + float(perf.sharpe_ratio)
+
+
+def _default_workers() -> int:
+    n = os.cpu_count() or 4
+    # Use almost all cores; leave 1 for the API process if many cores.
+    if n <= 2:
+        return n
+    return max(2, min(n - 1, 12))
 
 
 def _backtest_candidates(
@@ -96,21 +115,23 @@ def _backtest_candidates(
 
     workers = max_workers or _default_workers()
     workers = max(1, min(workers, total))
+
+    jobs: list[tuple[Any, ...]] = []
+    for symbols in candidate_symbol_sets:
+        sector = sector_lookup.get(symbols[0]) if sector_lookup else None
+        jobs.append((symbols, source, sector))
+
     results: list[dict] = []
     done = 0
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {
-            pool.submit(
-                _eval_one_group,
-                symbols,
-                price_df_full,
-                backbone_params,
-                source,
-                sector_lookup,
-            ): symbols
-            for symbols in candidate_symbol_sets
-        }
+    # Process pool = true multi-core. Initializer ships the price frame once
+    # per worker (fork/COW on Linux) instead of pickling it per job.
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_worker_init,
+        initargs=(price_df_full, backbone_params),
+    ) as pool:
+        futs = {pool.submit(_worker_eval, job): job[0] for job in jobs}
         for fut in as_completed(futs):
             done += 1
             symbols = futs[fut]
