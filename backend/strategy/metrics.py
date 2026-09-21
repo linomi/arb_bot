@@ -1,8 +1,12 @@
 """
-Performance metrics computed from a group's closed trades, used by:
-  - the sortable performance-comparison table
-  - the per-group radar chart
-  - init-time backtest pruning (top-N selection)
+Performance metrics from a group's closed trades.
+
+PnL inputs are absolute cash numbers (raw-price residual cash for live/backtest).
+
+Notes on definitions (ranking-oriented, not institutional risk):
+  - sharpe / sortino: mean(trade PnL) / std — *per trade*, not annualized
+  - max_drawdown: peak-to-trough on the trade-by-trade equity curve starting at 0
+  - profit_factor: gross_wins / |gross_losses|; capped at 999 when no losses
 """
 from dataclasses import dataclass, asdict
 import numpy as np
@@ -14,7 +18,7 @@ class GroupPerformance:
     win_rate: float          # fraction, 0..1
     total_pnl: float
     avg_pnl: float
-    max_drawdown: float      # positive number = drawdown magnitude
+    max_drawdown: float      # positive magnitude from peak equity (start=0)
     sharpe_ratio: float
     sortino_ratio: float
     profit_factor: float
@@ -24,7 +28,6 @@ class GroupPerformance:
 
     def as_dict(self):
         d = asdict(self)
-        # Final JSON-safety net (covers any path that still produces inf/NaN).
         for k, v in list(d.items()):
             if isinstance(v, float) and (v != v or abs(v) == float("inf")):
                 d[k] = 999.0 if (k == "profit_factor" and v == float("inf")) else 0.0
@@ -48,7 +51,8 @@ def compute_group_performance(closed_trades: list[dict]) -> GroupPerformance:
     total_pnl = float(np.sum(pnls))
     avg_pnl = float(np.mean(pnls))
 
-    equity_curve = np.cumsum(pnls)
+    # Equity starts at 0 so early losses correctly contribute to drawdown.
+    equity_curve = np.concatenate([[0.0], np.cumsum(pnls)])
     running_max = np.maximum.accumulate(equity_curve)
     drawdowns = running_max - equity_curve
     max_drawdown = float(np.max(drawdowns)) if len(drawdowns) else 0.0
@@ -61,8 +65,6 @@ def compute_group_performance(closed_trades: list[dict]) -> GroupPerformance:
 
     gross_profit = float(np.sum(wins)) if len(wins) else 0.0
     gross_loss = float(-np.sum(losses)) if len(losses) else 0.0
-    # JSON cannot encode ±inf / NaN. Cap profit factor at a large finite
-    # value when there are wins and zero losses (classic "all winners").
     if gross_loss > 0:
         profit_factor = float(gross_profit / gross_loss)
     elif gross_profit > 0:
@@ -78,10 +80,9 @@ def compute_group_performance(closed_trades: list[dict]) -> GroupPerformance:
     avg_holding_hours = float(np.mean(holding_hours)) if holding_hours else 0.0
 
     def _finite(x: float, default: float = 0.0) -> float:
-        """Guarantee a JSON-safe float (no NaN / ±inf)."""
         try:
             v = float(x)
-            if v != v or v in (float("inf"), float("-inf")):  # NaN or inf
+            if v != v or v in (float("inf"), float("-inf")):
                 return default
             return v
         except (TypeError, ValueError):
