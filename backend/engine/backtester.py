@@ -1,23 +1,17 @@
 """
-Bar-by-bar replay of the backbone logic (steps 1-5) over historical OHLC
-closes. Used by:
-  - init-time backtesting/pruning for both initialization methods
-  - (optionally) manual "backtest this group" calls from the UI
+Bar-by-bar replay of the backbone logic over historical OHLC closes.
 
-PnL model: unit-notional log-spread return per trade, minus transaction
-costs (fee + slippage) applied per leg, per side (entry+exit). This is an
-approximation appropriate for ranking/pruning candidate groups -- it is NOT
-a substitute for realistic position sizing, which the live/paper engine
-handles separately per-order.
+PnL model (raw-price OLS): cash ≈ qty_y * Δresidual − costs, with
+qty_y = 1 share of the dependent for ranking (unit share).
 """
 from dataclasses import dataclass
-import numpy as np
 import pandas as pd
 
-from backend.strategy.ols import fit_ols
+from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
-from backend.strategy.zscore import zscore, decide_entry, decide_exit
+from backend.strategy.zscore import decide_entry, decide_exit
 from backend.strategy.metrics import compute_group_performance, GroupPerformance
+from backend.strategy.pnl import residual_cash_pnl
 
 
 @dataclass
@@ -39,11 +33,21 @@ class BacktestResult:
     performance: GroupPerformance
 
 
-def simulate_pnl(entry_residual: float, exit_residual: float, direction: str,
-                  num_legs: int, transaction_cost_rate: float) -> float:
-    raw = (entry_residual - exit_residual) if direction == "short_residual" else (exit_residual - entry_residual)
-    cost = transaction_cost_rate * num_legs * 2  # entry + exit, one cost hit per leg each side
-    return raw - cost
+def simulate_pnl(
+    entry_residual: float,
+    exit_residual: float,
+    direction: str,
+    num_legs: int,
+    transaction_cost_rate: float,
+    qty_dependent: float = 1.0,
+    gross_notional: float | None = None,
+) -> float:
+    if gross_notional is None:
+        gross_notional = float(num_legs)
+    return residual_cash_pnl(
+        entry_residual, exit_residual, direction,
+        qty_dependent, transaction_cost_rate, gross_notional,
+    )
 
 
 def backtest_group(
@@ -57,33 +61,37 @@ def backtest_group(
     z_stop_loss: float,
     transaction_cost_rate: float,
 ) -> BacktestResult:
-    """
-    price_df: DataFrame indexed by timestamp, one column per symbol in the
-    group (including dependent_symbol), already aligned/resampled to the
-    sampling interval.
-    """
     symbols = list(price_df.columns)
-    num_legs = len(symbols)
     n = len(price_df)
     trades: list[BacktestTrade] = []
-
-    position = None  # dict with direction, betas, intercept, mean, std, entry_idx, entry_time, entry_residual
+    position = None
 
     i = window_size
     while i < n:
         prices_now = price_df.iloc[i].to_dict()
 
         if position is not None:
-            from backend.strategy.ols import residual_from_frozen_fit
-            resid_now = residual_from_frozen_fit(dependent_symbol, prices_now, position["betas"], position["intercept"])
-            exit_dec = decide_exit(resid_now, position["direction"], position["mean"], position["std"], z_close, z_stop_loss)
+            resid_now = residual_from_frozen_fit(
+                dependent_symbol, prices_now, position["betas"], position["intercept"],
+            )
+            exit_dec = decide_exit(
+                resid_now, position["direction"], position["mean"], position["std"],
+                z_close, z_stop_loss,
+            )
             if exit_dec.should_exit:
-                pnl = simulate_pnl(position["entry_residual"], resid_now, position["direction"], num_legs, transaction_cost_rate)
+                py = float(position["entry_prices"].get(dependent_symbol) or prices_now[dependent_symbol])
+                gross = abs(py) * (1.0 + sum(abs(float(b)) for b in position["betas"].values()))
+                pnl = residual_cash_pnl(
+                    position["entry_residual"], resid_now, position["direction"],
+                    qty_dependent=1.0,
+                    cost_rate=transaction_cost_rate,
+                    gross_notional=gross,
+                )
                 trades.append(BacktestTrade(
                     entry_idx=position["entry_idx"], exit_idx=i,
                     entry_time=position["entry_time"], close_time=price_df.index[i],
-                    direction=position["direction"], entry_z=position["entry_z"], close_z=exit_dec.z,
-                    close_reason=exit_dec.reason, pnl=pnl,
+                    direction=position["direction"], entry_z=position["entry_z"],
+                    close_z=exit_dec.z, close_reason=exit_dec.reason, pnl=pnl,
                 ))
                 position = None
             i += 1
@@ -102,7 +110,7 @@ def backtest_group(
             i += 1
             continue
 
-        resid_now = fit.residual[-1]
+        resid_now = float(fit.residual[-1])
         entry_dec = decide_entry(resid_now, fit.resid_mean, fit.resid_std, z_entry)
         if entry_dec.should_enter:
             position = {
@@ -115,6 +123,7 @@ def backtest_group(
                 "entry_time": price_df.index[i],
                 "entry_residual": resid_now,
                 "entry_z": entry_dec.z,
+                "entry_prices": prices_now,
             }
         i += 1
 
