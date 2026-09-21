@@ -1,35 +1,28 @@
-"""Realized cash PnL from actual entry/close leg fills."""
+"""
+Cash PnL from raw-price residual moves.
+
+With raw OLS  y = a + Σ β_j x_j + R  and share hedge qty_xj = β_j * qty_y,
+portfolio cash PnL before fees ≈ qty_y * ΔR.
+"""
 from __future__ import annotations
 
 
-def realized_cash_pnl(
-    legs_entry: list[dict],
-    legs_close: list[dict],
-    fee_rate: float,
-) -> tuple[float, float]:
-    """
-    Returns (realized_pnl, realized_fee) in quote currency.
+def residual_cash_pnl(
+    entry_residual: float,
+    exit_residual: float,
+    direction: str,
+    qty_dependent: float,
+    cost_rate: float,
+    gross_notional: float,
+) -> float:
+    if direction == "short_residual":
+        delta = float(entry_residual) - float(exit_residual)
+    else:
+        delta = float(exit_residual) - float(entry_residual)
+    gross = float(qty_dependent) * delta
+    cost = float(cost_rate) * 2.0 * float(gross_notional)
+    return float(gross - cost)
 
-    For each symbol:
-      signed_qty = +qty if entry buy, -qty if entry sell
-      leg_pnl = signed_qty * (close_price - entry_price)
-      fee = fee_rate * qty * (entry_price + close_price)  # both sides
-    """
-    if not legs_entry:
-        return 0.0, 0.0
-    close_by = {l["symbol"]: l for l in (legs_close or [])}
-    pnl = 0.0
-    fee = 0.0
-    fr = float(fee_rate or 0.0)
-    for entry_leg in legs_entry:
-        sym = entry_leg["symbol"]
-        if sym not in close_by:
-            raise KeyError(f"missing close leg for {sym}")
-        close_leg = close_by[sym]
-        qty = float(entry_leg["qty"])
-        pe = float(entry_leg["price"])
-        pc = float(close_leg["price"])
-        sign = 1.0 if entry_leg["side"] == "buy" else -1.0
-        pnl += sign * qty * (pc - pe)
-        fee += fr * qty * (pe + pc)
-    return float(pnl - fee), float(fee)
+
+def legs_gross_notional(legs: list[dict]) -> float:
+    return float(sum(abs(float(l["qty"])) * float(l["price"]) for l in (legs or [])))

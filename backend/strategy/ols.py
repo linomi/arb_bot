@@ -3,7 +3,13 @@ OLS step of the backbone: dependent symbol (y) regressed on the other
 symbols in the group (x_1..x_n) over the past window. Residual = the
 mean-reverting spread the strategy trades.
 
+Uses *raw prices* (not log):
+
     y_t = intercept + beta_1 * x1_t + ... + beta_n * xn_t + resid_t
+
+Betas are therefore in "units of y-price per unit of x-price". A long-
+residual hedge of qty_y shares of y holds -beta_j * qty_y shares of each
+x_j (sign handled in sizing). Cash PnL of that basket ≈ qty_y * Δresid.
 """
 from dataclasses import dataclass
 import numpy as np
@@ -15,7 +21,7 @@ class OLSResult:
     independents: list[str]
     betas: dict[str, float]
     intercept: float
-    residual: np.ndarray       # residual series over the fit window
+    residual: np.ndarray       # residual series over the fit window (price units of y)
     resid_mean: float
     resid_std: float
     fitted_values: np.ndarray
@@ -23,16 +29,14 @@ class OLSResult:
 
 def fit_ols(dependent_symbol: str, price_matrix: dict[str, np.ndarray]) -> OLSResult:
     """
-    price_matrix: {symbol: np.ndarray of prices, all same length, aligned in time}
-    Uses log-prices for the regression (standard for stat-arb spreads --
-    keeps betas scale-free across assets with very different price levels).
+    price_matrix: {symbol: np.ndarray of raw prices, all same length, time-aligned}.
     """
     independents = [s for s in price_matrix.keys() if s != dependent_symbol]
     if not independents:
         raise ValueError("Group needs at least 2 symbols (1 dependent + >=1 independent).")
 
-    y = np.log(price_matrix[dependent_symbol])
-    X_cols = [np.log(price_matrix[s]) for s in independents]
+    y = np.asarray(price_matrix[dependent_symbol], dtype=float)
+    X_cols = [np.asarray(price_matrix[s], dtype=float) for s in independents]
     X = np.column_stack(X_cols)
     X_design = np.column_stack([np.ones(len(y)), X])  # intercept + betas
 
@@ -62,12 +66,9 @@ def residual_from_frozen_fit(
     intercept: float,
 ) -> float:
     """
-    Compute the current residual using a FROZEN (already-fitted) OLS -- this
-    is what's used while a position is open, so the spread definition
-    doesn't drift out from under an open trade (per spec: freeze beta/mean/
-    std at entry for exit checks).
+    Current residual under a FROZEN OLS (entry-time betas/intercept).
+    Raw-price residual in the same units as the dependent price.
     """
-    y = np.log(latest_prices[dependent_symbol])
-    x_term = sum(betas[sym] * np.log(latest_prices[sym]) for sym in betas)
-    fitted = intercept + x_term
-    return float(y - fitted)
+    y = float(latest_prices[dependent_symbol])
+    x_term = sum(float(betas[sym]) * float(latest_prices[sym]) for sym in betas)
+    return float(y - (intercept + x_term))
