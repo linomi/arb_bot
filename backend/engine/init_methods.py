@@ -1,17 +1,16 @@
 """
-The two initialization approaches from the spec:
+Initialization approaches: random_init / sector_init.
 
-  1) random_init   -- top-N liquid symbols -> random groups (min/max size) ->
-                       backtest each -> keep top-N performers.
-  2) sector_init    -- symbols bucketed by sector (backend/sectors.py) ->
-                       combinations WITHIN each sector (min/max size) ->
-                       same backtest+prune step -> keep survivors.
-
-Both return a list of dicts describing groups ready to be persisted as
-`Group` rows with status="candidate" (or "active" if auto-activated).
+Candidate-group backtests run in a thread pool (CPU-bound OLS + ADF/KPSS)
+so many groups are evaluated in parallel.
 """
+from __future__ import annotations
+
 import itertools
+import os
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 
 from backend.sectors import group_symbols_by_sector
@@ -30,12 +29,55 @@ def _align_price_df(ohlc_by_symbol: dict[str, dict]) -> pd.DataFrame:
 
 
 def _score_group(perf) -> float:
-    """Ranking score for pruning: total PnL primary, Sharpe as tiebreak.
-    Groups with zero trades are ranked last.
-    """
     if perf.trade_count == 0:
         return -1e9
     return float(perf.total_pnl) * 1000.0 + float(perf.sharpe_ratio)
+
+
+def _default_workers() -> int:
+    # Leave one core for the event loop / OS; cap to avoid thrashing on small VPS.
+    n = os.cpu_count() or 4
+    return max(2, min(n, 12))
+
+
+def _eval_one_group(
+    symbols: tuple[str, ...],
+    price_df_full: pd.DataFrame,
+    backbone_params: dict,
+    source: str,
+    sector_lookup: dict[str, str] | None,
+) -> dict | None:
+    cols = [s for s in symbols if s in price_df_full.columns]
+    if len(cols) != len(symbols):
+        return None
+    sub_df = price_df_full[list(symbols)].dropna()
+    if len(sub_df) < int(backbone_params["window_size"]) + 5:
+        return None
+
+    dependent = symbols[0]
+    try:
+        bt = backtest_group(
+            price_df=sub_df,
+            dependent_symbol=dependent,
+            window_size=int(backbone_params["window_size"]),
+            adf_alpha=float(backbone_params["adf_alpha"]),
+            kpss_alpha=float(backbone_params["kpss_alpha"]),
+            z_entry=float(backbone_params["z_entry"]),
+            z_close=float(backbone_params["z_close"]),
+            z_stop_loss=float(backbone_params["z_stop_loss"]),
+            transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
+        )
+    except Exception:
+        return None
+
+    return {
+        "symbols": list(symbols),
+        "dependent_symbol": dependent,
+        "source": source,
+        "sector": sector_lookup.get(symbols[0]) if sector_lookup else None,
+        "backtest_metrics": bt.performance.as_dict(),
+        "score": _score_group(bt.performance),
+    }
 
 
 def _backtest_candidates(
@@ -45,40 +87,45 @@ def _backtest_candidates(
     source: str,
     sector_lookup: dict[str, str] | None = None,
     progress_cb=None,
+    max_workers: int | None = None,
 ) -> list[dict]:
     price_df_full = _align_price_df(ohlc_by_symbol)
-    results = []
     total = len(candidate_symbol_sets)
-    for idx, symbols in enumerate(candidate_symbol_sets):
-        if progress_cb is not None:
-            progress_cb(idx + 1, total, symbols)
-        cols = [s for s in symbols if s in price_df_full.columns]
-        if len(cols) != len(symbols):
-            continue
-        sub_df = price_df_full[list(symbols)].dropna()
-        if len(sub_df) < backbone_params["window_size"] + 5:
-            continue
+    if total == 0:
+        return []
 
-        dependent = symbols[0]  # first symbol arbitrarily chosen as dependent
-        bt = backtest_group(
-            price_df=sub_df,
-            dependent_symbol=dependent,
-            window_size=backbone_params["window_size"],
-            adf_alpha=backbone_params["adf_alpha"],
-            kpss_alpha=backbone_params["kpss_alpha"],
-            z_entry=backbone_params["z_entry"],
-            z_close=backbone_params["z_close"],
-            z_stop_loss=backbone_params["z_stop_loss"],
-            transaction_cost_rate=backbone_params["transaction_fee_rate"],
-        )
-        results.append({
-            "symbols": list(symbols),
-            "dependent_symbol": dependent,
-            "source": source,
-            "sector": sector_lookup.get(symbols[0]) if sector_lookup else None,
-            "backtest_metrics": bt.performance.as_dict(),
-            "score": _score_group(bt.performance),
-        })
+    workers = max_workers or _default_workers()
+    workers = max(1, min(workers, total))
+    results: list[dict] = []
+    done = 0
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {
+            pool.submit(
+                _eval_one_group,
+                symbols,
+                price_df_full,
+                backbone_params,
+                source,
+                sector_lookup,
+            ): symbols
+            for symbols in candidate_symbol_sets
+        }
+        for fut in as_completed(futs):
+            done += 1
+            symbols = futs[fut]
+            if progress_cb is not None:
+                try:
+                    progress_cb(done, total, symbols)
+                except Exception:
+                    pass
+            try:
+                row = fut.result()
+            except Exception:
+                row = None
+            if row is not None:
+                results.append(row)
+
     results.sort(key=lambda r: r["score"], reverse=True)
     return results
 
@@ -92,6 +139,7 @@ def random_init(
     backbone_params: dict,
     rng_seed: int | None = None,
     progress_cb=None,
+    max_workers: int | None = None,
 ) -> list[dict]:
     symbols = list(ohlc_by_symbol.keys())
     rng = random.Random(rng_seed)
@@ -111,7 +159,8 @@ def random_init(
         candidates.append(group)
 
     ranked = _backtest_candidates(
-        candidates, ohlc_by_symbol, backbone_params, source="random", progress_cb=progress_cb,
+        candidates, ohlc_by_symbol, backbone_params, source="random",
+        progress_cb=progress_cb, max_workers=max_workers,
     )
     return ranked[:keep_top_n]
 
@@ -125,6 +174,7 @@ def sector_init(
     max_combos_per_sector: int = 200,
     rng_seed: int | None = None,
     progress_cb=None,
+    max_workers: int | None = None,
 ) -> list[dict]:
     symbols = list(ohlc_by_symbol.keys())
     buckets = group_symbols_by_sector(symbols)
@@ -144,6 +194,6 @@ def sector_init(
 
     ranked = _backtest_candidates(
         candidates, ohlc_by_symbol, backbone_params, source="sector",
-        sector_lookup=sector_lookup, progress_cb=progress_cb,
+        sector_lookup=sector_lookup, progress_cb=progress_cb, max_workers=max_workers,
     )
     return ranked[:keep_top_n]

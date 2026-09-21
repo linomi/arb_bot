@@ -19,24 +19,20 @@ log = logging.getLogger("init_router")
 
 router = APIRouter(prefix="/api/init", tags=["init"])
 
+# Concurrent OHLC downloads (Nobitex rate limits apply; keep modest).
+_OHLC_CONCURRENCY = 8
+
 
 @router.get("/progress")
 def get_init_progress():
-    """Polled by the UI while initialization is running."""
     return init_progress.get_progress()
 
 
 @router.post("/run")
 async def run_init(body: InitRunRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """
-    Kick off initialization in a background task and return immediately.
-    Poll GET /api/init/progress for phase / percent / messages.
-    """
     if not init_progress.start("Queued…"):
         raise HTTPException(409, "Initialization is already running. Wait for it to finish.")
 
-    # Snapshot config in this request's session so the background task has
-    # stable values even if the UI changes settings mid-run.
     init_cfg = dict(config_service.get_section(db, "init"))
     backbone_cfg = dict(config_service.get_section(db, "backbone"))
     method = body.method or init_cfg.get("method", "random")
@@ -77,21 +73,41 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
             percent=5,
         )
 
+        # Parallel OHLC fetch with a concurrency cap
+        sem = asyncio.Semaphore(_OHLC_CONCURRENCY)
+        done_count = 0
+        lock = asyncio.Lock()
+
+        async def _fetch_one(sym: str):
+            nonlocal done_count
+            async with sem:
+                data = await md_client.get_ohlc(sym, resolution, bars)
+            async with lock:
+                done_count += 1
+                i = done_count
+                pct = 5 + 35 * i / n_sym
+                init_progress.update(
+                    phase="fetch_ohlc",
+                    message=f"Downloading OHLC {i}/{n_sym}: {sym}",
+                    current=i,
+                    total=n_sym,
+                    percent=pct,
+                )
+            return sym, data
+
+        pairs = await asyncio.gather(*[_fetch_one(s) for s in symbols], return_exceptions=True)
         ohlc_by_symbol = {}
-        for i, sym in enumerate(symbols):
-            ohlc_by_symbol[sym] = await md_client.get_ohlc(sym, resolution, bars)
-            # Fetch phase occupies ~5% → 40% of the bar
-            pct = 5 + 35 * (i + 1) / n_sym
-            init_progress.update(
-                phase="fetch_ohlc",
-                message=f"Downloading OHLC {i + 1}/{n_sym}: {sym}",
-                current=i + 1,
-                total=n_sym,
-                percent=pct,
-            )
+        for item in pairs:
+            if isinstance(item, Exception):
+                log.warning("OHLC fetch failed: %s", item)
+                continue
+            sym, data = item
+            ohlc_by_symbol[sym] = data
+
+        if len(ohlc_by_symbol) < 2:
+            raise RuntimeError("OHLC download failed for almost all symbols.")
 
         def backtest_progress(current: int, total: int, symbols_tuple):
-            # Backtest phase occupies ~40% → 90%
             pct = 40 + 50 * current / max(1, total)
             label = "-".join(symbols_tuple[:4])
             if len(symbols_tuple) > 4:
@@ -106,14 +122,11 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
 
         init_progress.update(
             phase="backtest",
-            message="Building candidate groups and running backtests…",
+            message="Building candidate groups and running backtests (parallel)…",
             percent=40,
         )
 
         backbone_params = _backbone_params(backbone_cfg)
-
-        # CPU-bound backtests run in a worker thread so the event loop can
-        # keep serving GET /api/init/progress while groups are evaluated.
         loop = asyncio.get_event_loop()
 
         def _do_backtest():
@@ -137,6 +150,8 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
                 progress_cb=backtest_progress,
             )
 
+        # Outer executor keeps the asyncio loop free for progress polling;
+        # inner ThreadPool in init_methods parallelizes the groups.
         with ThreadPoolExecutor(max_workers=1) as pool:
             ranked = await loop.run_in_executor(pool, _do_backtest)
 
