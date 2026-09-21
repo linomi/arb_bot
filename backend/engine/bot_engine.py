@@ -1,16 +1,6 @@
 """
-The actual running bot: an asyncio background task, started once when the
-web server starts, that ticks forever at `backbone.sampling_time` seconds.
-
-Per tick, for every group with status == "active":
-  1. if it has an open trade -> check close/stop-loss (frozen OLS params)
-  2. else -> refit OLS on the window, run ADF/KPSS, and on a pass, check
-     for an entry signal
-
-Legs are beta-aware (see backend/strategy/sizing.py). Each closed trade stores:
-  - model_pnl: residual-based theoretical fraction (simulate_pnl)
-  - realized_pnl / realized_fee: cash PnL from actual leg fills
-  - legs_entry / legs_close: executed basket
+Background trading loop. Raw-price OLS residual; beta share ratios; cash PnL
+from qty_y * Δresidual − fees (no separate realized_pnl path).
 """
 import asyncio
 import datetime as dt
@@ -28,8 +18,7 @@ from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
 from backend.strategy.zscore import decide_entry, decide_exit
 from backend.strategy.sizing import leg_orders, close_legs_from_entry
-from backend.strategy.pnl import realized_cash_pnl
-from backend.engine.backtester import simulate_pnl
+from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional
 
 log = logging.getLogger("bot_engine")
 
@@ -138,17 +127,11 @@ class BotEngine:
         if not exit_dec.should_exit:
             return
 
-        num_legs = len(group.symbols)
         cost_rate = float(backbone["fee_rate"]) + float(backbone["slippage_rate"])
-        fee_rate = float(backbone["fee_rate"])
         notional = float(
             open_trade.trade_notional
             if open_trade.trade_notional is not None
             else (backbone.get("trade_notional", 100) or 100)
-        )
-
-        model_frac = simulate_pnl(
-            open_trade.entry_residual, resid_now, open_trade.direction, num_legs, cost_rate,
         )
 
         legs_entry = open_trade.legs_entry
@@ -161,10 +144,17 @@ class BotEngine:
                 notional,
             )
         legs_close = close_legs_from_entry(legs_entry, latest_prices)
-
         await self._place_legs(trading_client, legs_close)
 
-        real_pnl, real_fee = realized_cash_pnl(legs_entry, legs_close, fee_rate)
+        qty_y = float(legs_entry[0]["qty"]) if legs_entry else notional / max(
+            float((open_trade.entry_prices or latest_prices).get(group.dependent_symbol, 1)), 1e-12
+        )
+        gross = legs_gross_notional(legs_entry)
+        cash_pnl = residual_cash_pnl(
+            open_trade.entry_residual, resid_now, open_trade.direction,
+            qty_y, cost_rate, gross,
+        )
+        fee_paid = cost_rate * 2.0 * gross
 
         open_trade.status = "closed"
         open_trade.close_time = dt.datetime.utcnow()
@@ -174,18 +164,18 @@ class BotEngine:
         open_trade.close_prices = latest_prices
         open_trade.legs_entry = legs_entry
         open_trade.legs_close = legs_close
-        open_trade.pnl = float(model_frac)
-        open_trade.model_pnl = float(model_frac)
-        open_trade.fee_paid = float(cost_rate * num_legs)
-        open_trade.realized_pnl = float(real_pnl)
-        open_trade.realized_fee = float(real_fee)
+        open_trade.pnl = float(cash_pnl)
+        open_trade.model_pnl = float(cash_pnl)
+        open_trade.fee_paid = float(fee_paid)
+        open_trade.realized_pnl = None
+        open_trade.realized_fee = None
         if open_trade.trade_notional is None:
             open_trade.trade_notional = notional
         db.commit()
 
         log.info(
-            "group %s trade #%s closed reason=%s model_pnl=%.6g realized_pnl=%.6g",
-            group.id, open_trade.id, exit_dec.reason, model_frac, real_pnl,
+            "group %s trade #%s closed reason=%s pnl=%.6g qty_y=%.6g",
+            group.id, open_trade.id, exit_dec.reason, cash_pnl, qty_y,
         )
 
     async def _check_entry(
@@ -253,8 +243,8 @@ class BotEngine:
         db.add(trade)
         db.commit()
         log.info(
-            "group %s opened %s trade notional=%.4g legs=%s",
-            group.id, entry_dec.direction, notional,
+            "group %s opened %s notional=%.4g betas=%s legs=%s",
+            group.id, entry_dec.direction, notional, fit_res.betas,
             [(l["symbol"], l["side"], round(l["qty"], 8)) for l in legs],
         )
 
