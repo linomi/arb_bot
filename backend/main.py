@@ -6,9 +6,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 
-load_dotenv()
+# Always load .env from project root (not CWD — systemd may start elsewhere).
+_BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(_BASE_DIR / ".env")
+load_dotenv()  # also allow CWD override
 
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("main")
 
 from backend.db import init_db, SessionLocal
 from backend import config_service
@@ -22,8 +26,9 @@ from backend.routers import (
     manual_router,
     symbols_router,
 )
+from backend import security
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = _BASE_DIR
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI(title="Stat-Arb Bot")
@@ -45,8 +50,17 @@ async def on_startup():
         config_service.seed_defaults_if_missing(db)
     finally:
         db.close()
-    # Background trading loop starts here and runs for the life of the
-    # process, independent of any browser tab (see engine/bot_engine.py).
+
+    # Surface encryption readiness early (credentials save needs this).
+    try:
+        security._require_fernet()
+        log.info("ENCRYPTION_KEY OK — credentials can be saved.")
+    except security.EncryptionNotConfigured as e:
+        log.warning(
+            "ENCRYPTION_KEY not configured — saving API credentials will fail. %s",
+            e,
+        )
+
     bot_engine.start_background_loop()
 
 
