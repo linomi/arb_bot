@@ -13,6 +13,7 @@ from backend.strategy.ols import fit_ols
 from backend.strategy.stats_tests import test_stationarity
 from backend.exchange import factory
 from backend.utils import seconds_to_resolution, fetch_price_df
+from backend.group_names import generate_group_name, is_legacy_name
 
 log = logging.getLogger("groups_router")
 router = APIRouter(prefix="/api/groups", tags=["groups"])
@@ -90,12 +91,43 @@ def _trade_to_dict(t: Trade) -> dict:
     }
 
 
+def assign_codenames(db: Session, force_all: bool = False) -> list[dict]:
+    """Rename legacy (or all) groups to unique crypto-style codenames."""
+    groups = db.query(Group).order_by(Group.id).all()
+    used = {g.name for g in groups if g.name}
+    changes = []
+    for g in groups:
+        if not force_all and not is_legacy_name(g.name):
+            continue
+        # free current name from the used set so we can re-claim uniqueness
+        if g.name in used:
+            used.discard(g.name)
+        new_name = generate_group_name(used=used)
+        used.add(new_name)
+        old = g.name
+        g.name = new_name
+        changes.append({"id": g.id, "old": old, "new": new_name})
+    if changes:
+        db.commit()
+    return changes
+
+
 @router.get("")
 def list_groups(status: str | None = None, db: Session = Depends(get_db)):
     q = db.query(Group)
     if status:
         q = q.filter_by(status=status)
     return [_group_to_dict(g) for g in q.order_by(Group.created_at.desc()).all()]
+
+
+@router.post("/assign-codenames")
+def api_assign_codenames(force_all: bool = False, db: Session = Depends(get_db)):
+    """
+    Rename groups that still use legacy names (random-BTC…, manual-…)
+    to adjective_noun codenames. force_all=1 renames every group.
+    """
+    changes = assign_codenames(db, force_all=force_all)
+    return {"renamed": len(changes), "changes": changes}
 
 
 @router.get("/performance/all")
@@ -109,8 +141,14 @@ def all_groups_performance(db: Session = Depends(get_db)):
         ]
         perf = compute_group_performance(closed_dicts).as_dict()
         out.append({
-            "group_id": g.id, "name": g.name, "symbols": g.symbols,
-            "status": g.status, "source": g.source, "sector": g.sector, **perf,
+            "group_id": g.id,
+            "name": g.name or f"group-{g.id}",
+            "symbols": g.symbols,
+            "dependent_symbol": g.dependent_symbol,
+            "status": g.status,
+            "source": g.source,
+            "sector": g.sector,
+            **perf,
         })
     return out
 
@@ -205,6 +243,8 @@ async def live_fit(group_id: int, persist: bool = True, db: Session = Depends(ge
     payload = {
         "id": None,
         "group_id": int(g.id),
+        "group_name": g.name,
+        "dependent_symbol": dependent,
         "fitted_at": fitted_at.isoformat(),
         "window_start": window.index[0].to_pydatetime().isoformat(),
         "window_end": window.index[-1].to_pydatetime().isoformat(),
