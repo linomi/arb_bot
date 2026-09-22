@@ -3,15 +3,16 @@ Beta-aware leg sizing for raw-price OLS residuals.
 
     y = a + sum(beta_j * x_j) + residual
 
-Long residual (expect residual to rise): buy qty_y of y, and for each j
-hold -beta_j * qty_y of x_j  (i.e. sell if beta>0, buy if beta<0).
+qty_y  = trade_notional / P_y
+qty_xj = |beta_j| * qty_y
 
-    qty_y  = trade_notional / P_y
-    qty_xj = |beta_j| * qty_y
-
-No log-price linearization — betas are used directly as share ratios.
+Nobitex margin has a hard ~50_000 IRT minimum order value. We scale all legs
+up so every IRT-quoted leg notional is at least that floor.
 """
 from __future__ import annotations
+
+# Nobitex practical minimum order value for IRT markets (Rial).
+MIN_ORDER_VALUE_IRT = 50_000.0
 
 
 def leg_orders(
@@ -20,6 +21,7 @@ def leg_orders(
     betas: dict,
     prices: dict,
     trade_notional: float,
+    min_order_value_irt: float = MIN_ORDER_VALUE_IRT,
 ) -> list[dict]:
     if direction not in ("long_residual", "short_residual"):
         raise ValueError(f"unknown direction: {direction}")
@@ -58,7 +60,26 @@ def leg_orders(
                 "price": px,
             }
         )
+
+    # Scale up so every IRT leg meets the exchange minimum order value.
+    scale = 1.0
+    for leg in legs:
+        if _is_irt(leg["symbol"]):
+            leg_notional = float(leg["qty"]) * float(leg["price"])
+            if leg_notional > 0 and leg_notional < min_order_value_irt:
+                scale = max(scale, min_order_value_irt / leg_notional)
+    if scale > 1.0:
+        for leg in legs:
+            leg["qty"] = float(leg["qty"]) * scale
+            leg["scaled_for_min"] = True
+            leg["scale"] = scale
+
     return legs
+
+
+def _is_irt(symbol: str) -> bool:
+    s = (symbol or "").upper()
+    return s.endswith("IRT") or s.endswith("RLS")
 
 
 def close_legs_from_entry(legs_entry: list[dict], close_prices: dict) -> list[dict]:
@@ -70,7 +91,17 @@ def close_legs_from_entry(legs_entry: list[dict], close_prices: dict) -> list[di
                 "symbol": sym,
                 "side": "sell" if leg["side"] == "buy" else "buy",
                 "qty": float(leg["qty"]),
-                "price": float(close_prices[sym]),
+                "price": float(close_prices.get(sym, leg.get("price") or 0)),
+                "position_id": leg.get("position_id"),
+                "order_id": leg.get("order_id"),
             }
         )
     return out
+
+
+def min_leg_notional_irt(legs: list[dict]) -> float:
+    vals = []
+    for leg in legs or []:
+        if _is_irt(leg.get("symbol", "")):
+            vals.append(float(leg["qty"]) * float(leg.get("price") or 0))
+    return min(vals) if vals else 0.0
