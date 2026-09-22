@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="/static/css/style.css" />
 <link rel="stylesheet" href="/static/css/style_extra.css" />
 <link rel="stylesheet" href="/static/css/mobile.css" />
+<link rel="stylesheet" href="/static/css/beta_diagram.css" />
 <script src="/static/js/chart.umd.min.js"></script>
 </head>
 <body>
@@ -45,16 +46,13 @@
 
   <section class="tab-panel active" id="tab-dashboard">
 
-    <div class="dash-grid">
+    <!-- Hidden stubs so legacy main.js listeners do not crash -->
+    <div id="legacy-group-stubs" style="display:none" aria-hidden="true">
+      <input id="group-search" type="text" />
+      <div id="group-list"></div>
+    </div>
 
-      <aside class="group-picker panel">
-        <div class="panel-head">
-          <h2>Groups</h2>
-          <input id="group-search" type="text" placeholder="Filter symbols or name..." />
-        </div>
-        <div id="group-list" class="group-list"></div>
-      </aside>
-
+    <div class="dash-grid no-sidebar">
       <div class="dash-main">
 
         <div class="panel plot-panel">
@@ -64,6 +62,16 @@
           </div>
           <div class="chart-wrap">
             <canvas id="residual-chart"></canvas>
+          </div>
+        </div>
+
+        <div class="panel beta-panel">
+          <div class="panel-head">
+            <h2>OLS Beta Network</h2>
+            <span class="hint">Symbols → residual · wire glow ∝ |β|</span>
+          </div>
+          <div class="beta-wrap" id="beta-diagram">
+            <div class="detail-empty" style="padding:12px">Select a group in the performance table to view betas.</div>
           </div>
         </div>
 
@@ -101,7 +109,7 @@
     <div class="panel perf-panel">
       <div class="panel-head">
         <h2>Performance Comparison</h2>
-        <span class="hint">Click a header to sort. Use filters below. Click a row for details.</span>
+        <span class="hint">Click a row to select. Remove deletes the group permanently.</span>
       </div>
 
       <div class="perf-filters" id="perf-filters">
@@ -162,6 +170,7 @@
                 <th data-key="sortino_ratio">Sortino</th>
                 <th data-key="profit_factor">Profit Factor</th>
                 <th data-key="avg_holding_hours">Avg Hold (h)</th>
+                <th class="col-actions"> </th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -176,14 +185,11 @@
   </section>
 
   <section class="tab-panel" id="tab-init">
-
     <div class="init-grid">
-
       <div class="panel">
         <div class="panel-head"><h2>Backbone Parameters</h2></div>
         <form id="backbone-form" class="param-form"></form>
       </div>
-
       <div class="panel">
         <div class="panel-head"><h2>Initialization Parameters</h2></div>
         <div class="method-switch">
@@ -192,11 +198,10 @@
           <button type="button" class="method-btn" data-method="manual">Manual Entry</button>
         </div>
         <form id="init-form" class="param-form"></form>
-
         <div id="manual-group-panel" class="manual-group-panel" style="display:none">
           <div class="manual-group-inner">
             <label class="full-row">Group name
-              <input type="text" id="manual-group-name" placeholder="e.g. my-btc-eth" />
+              <input type="text" id="manual-group-name" placeholder="leave blank for a random codename" />
             </label>
             <label class="full-row">Dependent symbol (y in OLS)
               <select id="manual-dependent"></select>
@@ -216,12 +221,10 @@
             </div>
           </div>
         </div>
-
         <div class="init-actions" id="init-auto-actions">
           <button id="save-config-btn" class="btn-secondary">Save Parameters</button>
           <button id="run-init-btn" class="btn-primary">Run Initialization</button>
         </div>
-        
         <div class="init-progress-wrap" id="init-progress-wrap" hidden>
           <div class="init-progress-meta">
             <span id="init-progress-phase">Idle</span>
@@ -233,11 +236,8 @@
           <div class="init-progress-msg" id="init-progress-msg"></div>
         </div>
         <div id="init-status" class="init-status"></div>
-
       </div>
-
     </div>
-
     <div class="panel">
       <div class="panel-head">
         <h2>Candidate / Active Groups</h2>
@@ -255,7 +255,6 @@
         </table>
       </div>
     </div>
-
   </section>
 
   <section class="tab-panel" id="tab-settings">
@@ -264,8 +263,7 @@
         <div class="panel-head"><h2>Exchange Credentials (Live Trading)</h2></div>
         <p class="warn-note">
           Credentials are encrypted at rest and are only used when Mode is switched to
-          <strong>Live</strong> in the top bar. Paper mode never touches these. Live trading
-          places real orders on your Nobitex account -- test on the Nobitex testnet first.
+          <strong>Live</strong> in the top bar. Paper mode never touches these.
         </p>
         <div id="cred-status" class="cred-status"></div>
         <form id="cred-form" class="param-form">
@@ -294,7 +292,6 @@
           </div>
         </form>
       </div>
-
       <div class="panel">
         <div class="panel-head"><h2>System</h2></div>
         <form id="system-form" class="param-form"></form>
@@ -311,7 +308,9 @@
 <script src="/static/js/charts.js"></script>
 <script src="/static/js/charts_equity.js"></script>
 <script src="/static/js/tables.js"></script>
+<script src="/static/js/beta_diagram.js"></script>
 <script src="/static/js/main.js"></script>
 <script src="/static/js/ui_fixes.js"></script>
+<script src="/static/js/backbone_overrides.js"></script>
 </body>
 </html>
