@@ -63,6 +63,19 @@ def _fit_to_dict(f: OLSFit) -> dict:
 
 
 def _trade_pnl(t: Trade):
+    """
+    Display / metrics PnL:
+      live  → realized_pnl (exchange) if set, else pnl, else model
+      paper → pnl / model_pnl
+    """
+    if getattr(t, "mode", None) == "live":
+        if getattr(t, "realized_pnl", None) is not None:
+            return float(t.realized_pnl)
+        if t.pnl is not None:
+            return float(t.pnl)
+        if getattr(t, "model_pnl", None) is not None:
+            return float(t.model_pnl)
+        return None
     if t.pnl is not None:
         return float(t.pnl)
     if getattr(t, "model_pnl", None) is not None:
@@ -74,6 +87,8 @@ def _trade_pnl(t: Trade):
 
 def _trade_to_dict(t: Trade) -> dict:
     pnl = _trade_pnl(t)
+    realized = float(t.realized_pnl) if getattr(t, "realized_pnl", None) is not None else None
+    model = float(t.model_pnl) if getattr(t, "model_pnl", None) is not None else None
     return {
         "id": t.id, "group_id": t.group_id, "ols_fit_id": t.ols_fit_id,
         "direction": t.direction, "mode": t.mode,
@@ -84,7 +99,8 @@ def _trade_to_dict(t: Trade) -> dict:
         "close_reason": t.close_reason, "close_z": t.close_z,
         "close_residual": t.close_residual, "close_prices": t.close_prices,
         "pnl": pnl,
-        "model_pnl": float(t.model_pnl) if getattr(t, "model_pnl", None) is not None else pnl,
+        "realized_pnl": realized,
+        "model_pnl": model if model is not None else pnl,
         "fee_paid": float(t.fee_paid) if t.fee_paid is not None else None,
         "legs_entry": getattr(t, "legs_entry", None),
         "legs_close": getattr(t, "legs_close", None),
@@ -93,16 +109,12 @@ def _trade_to_dict(t: Trade) -> dict:
 
 
 def _resolve_mode(db: Session, mode: str | None) -> str | None:
-    """
-    mode query: paper | live | all | None.
-    None -> current bot trading_mode (so UI follows the Mode dropdown).
-    """
     if mode is None:
         state = get_or_create_bot_state(db)
         return state.trading_mode or "paper"
     m = str(mode).lower().strip()
     if m in ("all", "*"):
-        return None  # no filter
+        return None
     if m in ("paper", "live"):
         return m
     raise HTTPException(400, "mode must be paper, live, or all")
