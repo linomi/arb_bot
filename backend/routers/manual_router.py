@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from backend.db import get_db
 from backend.models import Group
 from backend.schemas import ManualGroupCreate
+from backend.group_names import generate_group_name
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
@@ -21,7 +22,6 @@ def _group_to_dict(g: Group) -> dict:
 
 @router.post("/manual")
 def create_manual_group(body: ManualGroupCreate, db: Session = Depends(get_db)):
-    """Create a group from a user-selected set of symbols (no backtest required)."""
     symbols = [s.strip().upper() for s in (body.symbols or []) if s and str(s).strip()]
     seen = set()
     uniq = []
@@ -34,7 +34,8 @@ def create_manual_group(body: ManualGroupCreate, db: Session = Depends(get_db)):
     dependent = (body.dependent_symbol or uniq[0]).strip().upper()
     if dependent not in uniq:
         raise HTTPException(400, f"dependent_symbol {dependent} must be one of the selected symbols")
-    name = (body.name or "").strip() or f"manual-{'-'.join(uniq)}"[:80]
+    used = {n for (n,) in db.query(Group.name).all()}
+    name = (body.name or "").strip() or generate_group_name(used=used)
     g = Group(
         name=name,
         symbols=uniq,

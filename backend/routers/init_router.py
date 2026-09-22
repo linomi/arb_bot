@@ -14,12 +14,12 @@ from backend.exchange import factory
 from backend.utils import seconds_to_resolution
 from backend.engine.init_methods import random_init, sector_init
 from backend import init_progress
+from backend.group_names import generate_group_name
 
 log = logging.getLogger("init_router")
 
 router = APIRouter(prefix="/api/init", tags=["init"])
 
-# Concurrent OHLC downloads (Nobitex rate limits apply; keep modest).
 _OHLC_CONCURRENCY = 8
 
 
@@ -73,7 +73,6 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
             percent=5,
         )
 
-        # Parallel OHLC fetch with a concurrency cap
         sem = asyncio.Semaphore(_OHLC_CONCURRENCY)
         done_count = 0
         lock = asyncio.Lock()
@@ -150,8 +149,6 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
                 progress_cb=backtest_progress,
             )
 
-        # Outer executor keeps the asyncio loop free for progress polling;
-        # inner ThreadPool in init_methods parallelizes the groups.
         with ThreadPoolExecutor(max_workers=1) as pool:
             ranked = await loop.run_in_executor(pool, _do_backtest)
 
@@ -161,9 +158,11 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
             percent=92,
         )
 
+        used_names = {n for (n,) in db.query(Group.name).all()}
         created_ids = []
         for cand in ranked:
-            name = f"{method}-{'-'.join(cand['symbols'])}"[:80]
+            name = generate_group_name(used=used_names)
+            used_names.add(name)
             g = Group(
                 name=name,
                 symbols=cand["symbols"],
