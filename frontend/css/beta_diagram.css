@@ -59,15 +59,44 @@
 .beta-legend .pos{ color:#8fbf8f; }
 .beta-legend .neg{ color:#d48a7a; }
 
+/* Performance table action column — always visible */
 #perf-table th.col-actions,
 #perf-table td.col-actions{
-  width:72px;
-  text-align:center;
+  position: sticky;
+  right: 0;
+  min-width: 168px;
+  width: 168px;
+  z-index: 2;
+  background: var(--bg-1);
+  box-shadow: -6px 0 8px rgba(0,0,0,.25);
+  text-align: center;
+  vertical-align: middle;
 }
-#perf-table .btn-danger.perf-del{
-  padding:3px 8px;
-  font-size:11px;
+#perf-table thead th.col-actions{
+  background: var(--bg-2);
+  z-index: 3;
+}
+#perf-table tr:hover td.col-actions{
+  background: var(--bg-2);
+}
+#perf-table tr.selected-row td.col-actions{
+  background: var(--bg-3);
+}
+.perf-actions{
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+  padding: 2px 0;
+}
+.perf-actions button{
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  white-space: nowrap;
+  width: 100%;
 }
 #perf-table tr.selected-row td{
-  background:var(--bg-3);
+  background: var(--bg-3);
 }
+.g-status.active{ color: var(--long); }
+.g-status.inactive{ color: var(--text-lo); }

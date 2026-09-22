@@ -126,13 +126,18 @@ function _redrawPerfTable(onRowClick) {
   if (!tbody) return;
   tbody.innerHTML = "";
   sorted.forEach((r) => {
+    const gid = r.group_id != null ? r.group_id : r.id;
+    const isActive = String(r.status).toLowerCase() === "active";
+    const toggleLabel = isActive ? "Deactivate" : "Activate";
+    const toggleCls = isActive ? "btn-secondary perf-toggle" : "btn-primary perf-toggle";
+
     const tr = document.createElement("tr");
-    if (typeof state !== "undefined" && state.selectedGroupId === r.group_id) {
+    if (typeof state !== "undefined" && state.selectedGroupId === gid) {
       tr.classList.add("selected-row");
     }
     tr.innerHTML = `
       <td>${r.name}</td>
-      <td>${r.status}</td>
+      <td><span class="g-status ${r.status}">${r.status}</span></td>
       <td>${r.trade_count}</td>
       <td>${fmtPct(r.win_rate)}</td>
       <td class="${pnlClass(r.total_pnl)}">${fmtNum(r.total_pnl)}</td>
@@ -143,22 +148,45 @@ function _redrawPerfTable(onRowClick) {
       <td>${fmtNum(r.profit_factor, 2)}</td>
       <td>${fmtNum(r.avg_holding_hours, 1)}</td>
       <td class="col-actions">
-        <button type="button" class="btn-danger perf-del" data-id="${r.group_id}" title="Delete group">Remove</button>
+        <div class="perf-actions">
+          <button type="button" class="${toggleCls}" data-id="${gid}" data-status="${r.status}">${toggleLabel}</button>
+          <button type="button" class="btn-danger perf-del" data-id="${gid}" title="Delete group permanently">Remove</button>
+        </div>
       </td>
     `;
+
     tr.addEventListener("click", (e) => {
-      if (e.target.closest(".perf-del")) return;
-      onRowClick(r);
+      if (e.target.closest(".perf-del, .perf-toggle")) return;
+      if (typeof onRowClick === "function") onRowClick(r);
     });
-    const delBtn = tr.querySelector(".perf-del");
-    if (delBtn) {
-      delBtn.addEventListener("click", (e) => {
+
+    const toggleBtn = tr.querySelector(".perf-toggle");
+    if (toggleBtn) {
+      toggleBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
         e.stopPropagation();
-        if (typeof deleteGroupFromTable === "function") {
-          deleteGroupFromTable(r.group_id, r.name);
+        const next = isActive ? "inactive" : "active";
+        if (typeof toggleGroupStatusFromTable === "function") {
+          await toggleGroupStatusFromTable(gid, next, r.name);
+        } else if (typeof API !== "undefined" && API.setGroupStatus) {
+          await API.setGroupStatus(gid, next);
+          if (typeof loadPerfTable === "function") await loadPerfTable();
+          if (typeof loadGroupList === "function") await loadGroupList();
         }
       });
     }
+
+    const delBtn = tr.querySelector(".perf-del");
+    if (delBtn) {
+      delBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof deleteGroupFromTable === "function") {
+          deleteGroupFromTable(gid, r.name);
+        }
+      });
+    }
+
     tbody.appendChild(tr);
   });
   _updateSortIcons();

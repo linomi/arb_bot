@@ -1,15 +1,10 @@
 /**
- * Overrides for Backbone tab after main.js loads:
- *  - no left groups panel
- *  - selection from performance table
- *  - beta network diagram
- *  - remove button handled in tables.js
+ * Overrides for Backbone tab after main.js loads.
  */
 (function () {
-  // Neutralize group-list helpers if DOM nodes are gone
   window.renderGroupList = function () {};
   const gs = document.getElementById("group-search");
-  if (gs) gs.replaceWith(gs.cloneNode(true)); // drop old listeners if any
+  if (gs) gs.replaceWith(gs.cloneNode(true));
 
   window.loadGroupList = async function loadGroupList() {
     const groups = await API.listGroups();
@@ -19,12 +14,9 @@
     }
   };
 
-  const _origSelect = window.selectGroup;
   window.selectGroup = async function selectGroup(groupId, force = true) {
     state.selectedGroupId = groupId;
-    const group = state.groups.find((g) => g.id === groupId);
-    if (!group) {
-      // try refresh groups once
+    if (!state.groups.find((g) => g.id === groupId)) {
       try {
         state.groups = await API.listGroups();
       } catch (e) {}
@@ -70,7 +62,6 @@
       _showFitForTrade(groupId, trade, trades);
     });
 
-    // Equity (static panel)
     try {
       const closed = (trades || []).filter((t) => t.status === "closed" && t.pnl != null);
       const emptyEl = document.getElementById("equity-empty");
@@ -82,7 +73,6 @@
       }
     } catch (e) {}
 
-    // Beta diagram
     if (typeof renderBetaDiagram === "function") {
       renderBetaDiagram("beta-diagram", g, fit);
     }
@@ -97,22 +87,34 @@
 
   window.deleteGroupFromTable = async function (groupId, name) {
     if (!confirm(`Permanently delete group "${name}"?`)) return;
-    await API.deleteGroup(groupId);
+    try {
+      await API.deleteGroup(groupId);
+    } catch (e) {
+      alert("Delete failed: " + (e.message || e));
+      return;
+    }
     if (state.selectedGroupId === groupId) {
       state.selectedGroupId = null;
       document.getElementById("plot-title").textContent = "Residual / Z-Score";
       document.getElementById("plot-meta").textContent = "";
       const bd = document.getElementById("beta-diagram");
-      if (bd) bd.innerHTML = `<div class="detail-empty" style="padding:12px">Select a group in the performance table to view betas.</div>`;
+      if (bd) {
+        bd.innerHTML =
+          `<div class="detail-empty" style="padding:12px">Select a group in the performance table to view betas.</div>`;
+      }
     }
     await loadGroupList();
     await loadPerfTable();
   };
 
-  // Soften main.js crash if group-search missing
-  try {
-    if (!document.getElementById("group-search")) {
-      /* already removed */
+  window.toggleGroupStatusFromTable = async function (groupId, nextStatus, name) {
+    try {
+      await API.setGroupStatus(groupId, nextStatus);
+    } catch (e) {
+      alert("Status change failed: " + (e.message || e));
+      return;
     }
-  } catch (e) {}
+    await loadGroupList();
+    await loadPerfTable();
+  };
 })();
