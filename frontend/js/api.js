@@ -31,10 +31,23 @@ const API = {
   listFits(id) { return this.get(`/api/groups/${id}/fits`); },
   latestFit(id) { return this.get(`/api/groups/${id}/fits/latest`); },
   liveFit(id) { return this.get(`/api/groups/${id}/live-fit`); },
-  listTrades(id) { return this.get(`/api/groups/${id}/trades`); },
-  groupPerformance(id) { return this.get(`/api/groups/${id}/performance`); },
-  allPerformance() { return this.get(`/api/groups/performance/all`); },
-  equityCurve(id) { return this.get(`/api/groups/${id}/equity_curve`); },
+  /** mode: paper | live | all | undefined (server uses current bot mode) */
+  listTrades(id, mode) {
+    const q = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+    return this.get(`/api/groups/${id}/trades${q}`);
+  },
+  groupPerformance(id, mode) {
+    const q = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+    return this.get(`/api/groups/${id}/performance${q}`);
+  },
+  allPerformance(mode) {
+    const q = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+    return this.get(`/api/groups/performance/all${q}`);
+  },
+  equityCurve(id, mode) {
+    const q = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+    return this.get(`/api/groups/${id}/equity_curve${q}`);
+  },
   createManualGroup(payload) { return this.post("/api/groups/manual", payload); },
 
   runInit(method, activate) { return this.post("/api/init/run", { method, activate }); },

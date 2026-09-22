@@ -1,7 +1,7 @@
 import datetime as dt
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.db import get_db
@@ -14,6 +14,7 @@ from backend.strategy.stats_tests import test_stationarity
 from backend.exchange import factory
 from backend.utils import seconds_to_resolution, fetch_price_df
 from backend.group_names import generate_group_name, is_legacy_name
+from backend.bot_state_service import get_or_create_bot_state
 
 log = logging.getLogger("groups_router")
 router = APIRouter(prefix="/api/groups", tags=["groups"])
@@ -91,15 +92,29 @@ def _trade_to_dict(t: Trade) -> dict:
     }
 
 
+def _resolve_mode(db: Session, mode: str | None) -> str | None:
+    """
+    mode query: paper | live | all | None.
+    None -> current bot trading_mode (so UI follows the Mode dropdown).
+    """
+    if mode is None:
+        state = get_or_create_bot_state(db)
+        return state.trading_mode or "paper"
+    m = str(mode).lower().strip()
+    if m in ("all", "*"):
+        return None  # no filter
+    if m in ("paper", "live"):
+        return m
+    raise HTTPException(400, "mode must be paper, live, or all")
+
+
 def assign_codenames(db: Session, force_all: bool = False) -> list[dict]:
-    """Rename legacy (or all) groups to unique crypto-style codenames."""
     groups = db.query(Group).order_by(Group.id).all()
     used = {g.name for g in groups if g.name}
     changes = []
     for g in groups:
         if not force_all and not is_legacy_name(g.name):
             continue
-        # free current name from the used set so we can re-claim uniqueness
         if g.name in used:
             used.discard(g.name)
         new_name = generate_group_name(used=used)
@@ -122,19 +137,22 @@ def list_groups(status: str | None = None, db: Session = Depends(get_db)):
 
 @router.post("/assign-codenames")
 def api_assign_codenames(force_all: bool = False, db: Session = Depends(get_db)):
-    """
-    Rename groups that still use legacy names (random-BTC…, manual-…)
-    to adjective_noun codenames. force_all=1 renames every group.
-    """
     changes = assign_codenames(db, force_all=force_all)
     return {"renamed": len(changes), "changes": changes}
 
 
 @router.get("/performance/all")
-def all_groups_performance(db: Session = Depends(get_db)):
+def all_groups_performance(
+    mode: str | None = Query(None, description="paper | live | all (default: current bot mode)"),
+    db: Session = Depends(get_db),
+):
+    resolved = _resolve_mode(db, mode)
     out = []
     for g in db.query(Group).filter(Group.status.in_(["active", "inactive"])).all():
-        closed = db.query(Trade).filter_by(group_id=g.id, status="closed").all()
+        q = db.query(Trade).filter_by(group_id=g.id, status="closed")
+        if resolved:
+            q = q.filter_by(mode=resolved)
+        closed = q.all()
         closed_dicts = [
             {"pnl": _trade_pnl(t), "entry_time": t.entry_time, "close_time": t.close_time}
             for t in closed if _trade_pnl(t) is not None
@@ -148,6 +166,7 @@ def all_groups_performance(db: Session = Depends(get_db)):
             "status": g.status,
             "source": g.source,
             "sector": g.sector,
+            "mode": resolved or "all",
             **perf,
         })
     return out
@@ -310,17 +329,33 @@ def latest_fit(group_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{group_id}/trades")
-def list_trades(group_id: int, db: Session = Depends(get_db)):
-    trades = db.query(Trade).filter_by(group_id=group_id).order_by(Trade.entry_time.desc()).all()
+def list_trades(
+    group_id: int,
+    mode: str | None = Query(None, description="paper | live | all (default: current bot mode)"),
+    db: Session = Depends(get_db),
+):
+    resolved = _resolve_mode(db, mode)
+    q = db.query(Trade).filter_by(group_id=group_id)
+    if resolved:
+        q = q.filter_by(mode=resolved)
+    trades = q.order_by(Trade.entry_time.desc()).all()
     return [_trade_to_dict(t) for t in trades]
 
 
 @router.get("/{group_id}/performance")
-def group_performance(group_id: int, db: Session = Depends(get_db)):
+def group_performance(
+    group_id: int,
+    mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
     g = db.get(Group, group_id)
     if not g:
         raise HTTPException(404, "group not found")
-    closed = db.query(Trade).filter_by(group_id=group_id, status="closed").all()
+    resolved = _resolve_mode(db, mode)
+    q = db.query(Trade).filter_by(group_id=group_id, status="closed")
+    if resolved:
+        q = q.filter_by(mode=resolved)
+    closed = q.all()
     closed_dicts = [
         {"pnl": _trade_pnl(t), "entry_time": t.entry_time, "close_time": t.close_time}
         for t in closed if _trade_pnl(t) is not None
@@ -329,14 +364,19 @@ def group_performance(group_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{group_id}/equity_curve")
-def equity_curve(group_id: int, db: Session = Depends(get_db)):
+def equity_curve(
+    group_id: int,
+    mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
     g = db.get(Group, group_id)
     if not g:
         raise HTTPException(404, "group not found")
-    closed = (
-        db.query(Trade).filter_by(group_id=group_id, status="closed")
-        .order_by(Trade.close_time.asc()).all()
-    )
+    resolved = _resolve_mode(db, mode)
+    q = db.query(Trade).filter_by(group_id=group_id, status="closed")
+    if resolved:
+        q = q.filter_by(mode=resolved)
+    closed = q.order_by(Trade.close_time.asc()).all()
     points = []
     cum = 0.0
     for t in closed:
