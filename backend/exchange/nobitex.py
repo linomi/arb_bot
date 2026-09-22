@@ -14,12 +14,7 @@ import base64
 import json
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import (
-    load_pem_private_key,
-    Encoding,
-    PrivateFormat,
-    NoEncryption,
-)
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from backend.exchange.rate_limit import throttle
 
@@ -48,13 +43,11 @@ def _load_ed25519_private(secret: str) -> Ed25519PrivateKey:
             raise NobitexError("PEM private key is not Ed25519")
         return key
 
-    # hex?
     hx = s.lower().replace("0x", "")
     if all(c in "0123456789abcdef" for c in hx) and len(hx) in (64, 128):
-        raw = bytes.fromhex(hx[:64])  # seed only
+        raw = bytes.fromhex(hx[:64])
         return Ed25519PrivateKey.from_private_bytes(raw)
 
-    # base64 (url-safe or standard), with optional padding
     pad = "=" * ((4 - len(s) % 4) % 4)
     for decoder in (base64.urlsafe_b64decode, base64.b64decode):
         try:
@@ -62,7 +55,6 @@ def _load_ed25519_private(secret: str) -> Ed25519PrivateKey:
             if len(raw) == 32:
                 return Ed25519PrivateKey.from_private_bytes(raw)
             if len(raw) == 64:
-                # some exporters concatenate seed||pubkey
                 return Ed25519PrivateKey.from_private_bytes(raw[:32])
         except Exception:
             continue
@@ -74,7 +66,7 @@ def _load_ed25519_private(secret: str) -> Ed25519PrivateKey:
 
 
 class NobitexClient:
-    def __init(
+    def __init__(
         self,
         base_url: str = BASE_URL_DEFAULT,
         token: str | None = None,
@@ -107,11 +99,6 @@ class NobitexClient:
         return bool(self.api_key and self._private_key)
 
     def _sign_headers(self, method: str, path_with_query: str, body: str | bytes | None) -> dict:
-        """
-        Nobitex API-Key auth:
-          payload = timestamp + METHOD + full_path + raw_body
-          signature = urlsafe_b64(Ed25519(payload))
-        """
         if not self._has_key_auth():
             raise NobitexError("API key auth not configured")
 
@@ -160,11 +147,9 @@ class NobitexClient:
         auth: bool = False,
         optional_auth: bool = False,
     ) -> httpx.Response:
-        # Build path+query for signature (Nobitex wants full path including query).
         path_only = path if path.startswith("/") else f"/{path}"
         query = ""
         if params:
-            # stable order for signing
             from urllib.parse import urlencode
             query = "?" + urlencode(params, doseq=True)
         full_path = path_only + query
@@ -189,8 +174,6 @@ class NobitexClient:
             content=content,
             headers=headers,
         )
-
-    # ---------------------------------------------------------------- public
 
     async def get_margin_markets(self, details: bool = True, force: bool = False) -> dict:
         now = time.time()
@@ -385,8 +368,6 @@ class NobitexClient:
         if s.endswith("IRT") or s.endswith("RLS"):
             return s[:-3].lower(), "rls"
         return s[:-3].lower(), s[-3:].lower()
-
-    # --------------------------------------------------------------- private / live
 
     async def place_order(
         self,
