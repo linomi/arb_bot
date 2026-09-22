@@ -1,20 +1,29 @@
 """
 Live Nobitex REST client — margin markets + margin orders + positions.
 
-Rate limits (from official OpenAPI) are enforced via backend.exchange.rate_limit.
+Auth modes:
+  1) Token:  Authorization: Token <token>
+  2) API Key (Ed25519): Nobitex-Key / Nobitex-Signature / Nobitex-Timestamp
+
+Rate limits enforced via backend.exchange.rate_limit.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 import base64
+import json
 import httpx
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    load_pem_private_key,
+    Encoding,
+    PrivateFormat,
+    NoEncryption,
+)
 
 from backend.exchange.rate_limit import throttle
 
 BASE_URL_DEFAULT = "https://apiv2.nobitex.ir"
-
-# Hard floor for IRT margin order value (user + exchange practice).
 MIN_ORDER_VALUE_IRT = 50_000.0
 
 
@@ -22,10 +31,64 @@ class NobitexError(RuntimeError):
     pass
 
 
+def _load_ed25519_private(secret: str) -> Ed25519PrivateKey:
+    """
+    Accept either:
+      - URL-safe / standard base64 of 32 raw private-key bytes (Nobitex privateKey field)
+      - PEM ('-----BEGIN PRIVATE KEY-----' …)
+      - hex of 32 bytes
+    """
+    s = (secret or "").strip()
+    if not s:
+        raise NobitexError("Empty private key")
+
+    if "BEGIN" in s and "PRIVATE KEY" in s:
+        key = load_pem_private_key(s.encode(), password=None)
+        if not isinstance(key, Ed25519PrivateKey):
+            raise NobitexError("PEM private key is not Ed25519")
+        return key
+
+    # hex?
+    hx = s.lower().replace("0x", "")
+    if all(c in "0123456789abcdef" for c in hx) and len(hx) in (64, 128):
+        raw = bytes.fromhex(hx[:64])  # seed only
+        return Ed25519PrivateKey.from_private_bytes(raw)
+
+    # base64 (url-safe or standard), with optional padding
+    pad = "=" * ((4 - len(s) % 4) % 4)
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            raw = decoder(s + pad)
+            if len(raw) == 32:
+                return Ed25519PrivateKey.from_private_bytes(raw)
+            if len(raw) == 64:
+                # some exporters concatenate seed||pubkey
+                return Ed25519PrivateKey.from_private_bytes(raw[:32])
+        except Exception:
+            continue
+
+    raise NobitexError(
+        "Could not parse private key. Paste the Nobitex secretKey (base64) "
+        "or a PEM Ed25519 private key."
+    )
+
+
 class NobitexClient:
-    def __init__(self, base_url: str = BASE_URL_DEFAULT, token: str | None = None, timeout: float = 20.0):
+    def __init(
+        self,
+        base_url: str = BASE_URL_DEFAULT,
+        token: str | None = None,
+        api_key: str | None = None,
+        private_key: str | None = None,
+        timeout: float = 20.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self.token = token
+        self.api_key = api_key
+        self._private_key: Ed25519PrivateKey | None = None
+        if private_key:
+            self._private_key = _load_ed25519_private(private_key)
+
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
@@ -37,15 +100,95 @@ class NobitexClient:
     async def aclose(self):
         await self._client.aclose()
 
-    def _auth_headers(self) -> dict:
-        if not self.token:
-            raise NobitexError("No API token configured for live trading. Add one in Settings -> Credentials.")
-        return {"Authorization": f"Token {self.token}"}
+    def _has_token_auth(self) -> bool:
+        return bool(self.token)
 
-    def _optional_auth_headers(self) -> dict:
-        if self.token:
+    def _has_key_auth(self) -> bool:
+        return bool(self.api_key and self._private_key)
+
+    def _sign_headers(self, method: str, path_with_query: str, body: str | bytes | None) -> dict:
+        """
+        Nobitex API-Key auth:
+          payload = timestamp + METHOD + full_path + raw_body
+          signature = urlsafe_b64(Ed25519(payload))
+        """
+        if not self._has_key_auth():
+            raise NobitexError("API key auth not configured")
+
+        ts = str(int(time.time()))
+        method_u = method.upper()
+        path = path_with_query if path_with_query.startswith("/") else "/" + path_with_query
+        if isinstance(body, bytes):
+            body_str = body.decode("utf-8")
+        elif body is None:
+            body_str = ""
+        else:
+            body_str = str(body)
+
+        payload = f"{ts}{method_u}{path}{body_str}".encode("utf-8")
+        sig = self._private_key.sign(payload)
+        sig_b64 = base64.urlsafe_b64encode(sig).decode("ascii")
+
+        return {
+            "Nobitex-Key": self.api_key,
+            "Nobitex-Signature": sig_b64,
+            "Nobitex-Timestamp": ts,
+        }
+
+    def _auth_headers(self, method: str = "GET", path: str = "/", body: str | bytes | None = None) -> dict:
+        if self._has_key_auth():
+            return self._sign_headers(method, path, body)
+        if self._has_token_auth():
             return {"Authorization": f"Token {self.token}"}
-        return {}
+        raise NobitexError(
+            "No live credentials configured. Save a Nobitex Token or API Key+Secret in Settings."
+        )
+
+    def _optional_auth_headers(self, method: str = "GET", path: str = "/", body: str | bytes | None = None) -> dict:
+        try:
+            return self._auth_headers(method, path, body)
+        except NobitexError:
+            return {}
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json_body: dict | None = None,
+        auth: bool = False,
+        optional_auth: bool = False,
+    ) -> httpx.Response:
+        # Build path+query for signature (Nobitex wants full path including query).
+        path_only = path if path.startswith("/") else f"/{path}"
+        query = ""
+        if params:
+            # stable order for signing
+            from urllib.parse import urlencode
+            query = "?" + urlencode(params, doseq=True)
+        full_path = path_only + query
+
+        raw_body = ""
+        content = None
+        headers: dict = {}
+        if json_body is not None:
+            raw_body = json.dumps(json_body, separators=(",", ":"), ensure_ascii=False)
+            content = raw_body.encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        if auth:
+            headers.update(self._auth_headers(method, full_path, raw_body))
+        elif optional_auth:
+            headers.update(self._optional_auth_headers(method, full_path, raw_body))
+
+        return await self._client.request(
+            method,
+            path_only,
+            params=params,
+            content=content,
+            headers=headers,
+        )
 
     # ---------------------------------------------------------------- public
 
@@ -59,11 +202,12 @@ class NobitexClient:
             return self._margin_markets_cache
 
         await throttle("margin_markets_list")
-        r = await self._client.request(
+        body = {"details": bool(details)}
+        r = await self._request(
             "GET",
             "/margin/markets/list",
-            json={"details": bool(details)},
-            headers=self._optional_auth_headers(),
+            json_body=body,
+            optional_auth=True,
         )
         r.raise_for_status()
         data = r.json()
@@ -98,7 +242,7 @@ class NobitexClient:
             params["srcCurrency"] = src_currency
         if dst_currency:
             params["dstCurrency"] = dst_currency
-        r = await self._client.get("/market/stats", params=params)
+        r = await self._request("GET", "/market/stats", params=params or None)
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
@@ -174,7 +318,7 @@ class NobitexClient:
             if page == 1 and bars <= 500:
                 params["countback"] = bars
 
-            r = await self._client.get("/market/udf/history", params=params)
+            r = await self._request("GET", "/market/udf/history", params=params)
             r.raise_for_status()
             data = r.json()
             if data.get("s") != "ok":
@@ -255,14 +399,9 @@ class NobitexClient:
         client_order_id: str | None = None,
         leverage: str = "1",
     ) -> dict:
-        """
-        POST /margin/orders/add — open a margin position leg (leverage default 1).
-        Enforces min IRT notional when a price is known.
-        """
         src, dst = self._split_symbol(symbol)
         exec_type = execution or ("market" if price is None else "limit")
 
-        # Min order value guard for IRT
         if dst == "rls" and price is not None:
             notional = float(amount) * float(price)
             if notional < MIN_ORDER_VALUE_IRT:
@@ -287,11 +426,15 @@ class NobitexClient:
             payload["clientOrderId"] = client_order_id
 
         await throttle("margin_orders_add")
-        r = await self._client.post(
-            "/margin/orders/add",
-            json=payload,
-            headers=self._auth_headers(),
-        )
+        r = await self._request("POST", "/margin/orders/add", json_body=payload, auth=True)
+        if r.status_code == 401:
+            raise NobitexError(
+                "401 Unauthorized from Nobitex. "
+                "If you have apiKey+secretKey, save them under Settings → "
+                "Auth Method = API Key + Ed25519 Secret (both fields). "
+                "If you have a classic Token, use Auth Method = API Token. "
+                f"Body: {r.text[:300]}"
+            )
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
@@ -306,18 +449,13 @@ class NobitexClient:
         page: int = 1,
         page_size: int = 50,
     ) -> list[dict]:
-        """GET /positions/list"""
         await throttle("positions_list")
         params = {"status": status, "page": page, "pageSize": page_size}
         if src_currency:
             params["srcCurrency"] = src_currency.lower()
         if dst_currency:
             params["dstCurrency"] = dst_currency.lower()
-        r = await self._client.get(
-            "/positions/list",
-            params=params,
-            headers=self._auth_headers(),
-        )
+        r = await self._request("GET", "/positions/list", params=params, auth=True)
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
@@ -326,10 +464,8 @@ class NobitexClient:
 
     async def get_position(self, position_id: int) -> dict:
         await throttle("positions_status")
-        r = await self._client.get(
-            f"/positions/{int(position_id)}/status",
-            headers=self._auth_headers(),
-        )
+        path = f"/positions/{int(position_id)}/status"
+        r = await self._request("GET", path, auth=True)
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
@@ -344,10 +480,6 @@ class NobitexClient:
         price: float | None = None,
         client_order_id: str | None = None,
     ) -> dict:
-        """
-        POST /positions/{id}/close — proper margin close (opposite order).
-        Prefer this over opening a new opposite margin order.
-        """
         payload: dict = {
             "execution": execution,
             "amount": str(amount),
@@ -358,11 +490,8 @@ class NobitexClient:
             payload["clientOrderId"] = client_order_id
 
         await throttle("positions_close")
-        r = await self._client.post(
-            f"/positions/{int(position_id)}/close",
-            json=payload,
-            headers=self._auth_headers(),
-        )
+        path = f"/positions/{int(position_id)}/close"
+        r = await self._request("POST", path, json_body=payload, auth=True)
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
@@ -375,10 +504,6 @@ class NobitexClient:
         side: str,
         opened_after_iso: str | None = None,
     ) -> int | None:
-        """
-        Best-effort match of an open position for (symbol, side).
-        side here is the *position* side (buy/sell), same as order type that opened it.
-        """
         src, dst = self._split_symbol(symbol)
         positions = await self.list_positions(status="active", src_currency=src, dst_currency=dst)
         candidates = [
@@ -388,7 +513,6 @@ class NobitexClient:
         ]
         if not candidates:
             return None
-        # Prefer newest
         candidates.sort(key=lambda p: p.get("openedAt") or p.get("createdAt") or "", reverse=True)
         return int(candidates[0]["id"])
 
@@ -400,11 +524,7 @@ class NobitexClient:
             "src": src,
             "dst": dst,
         }
-        r = await self._client.post(
-            "/wallets/transfer",
-            json=payload,
-            headers=self._auth_headers(),
-        )
+        r = await self._request("POST", "/wallets/transfer", json_body=payload, auth=True)
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
@@ -413,7 +533,6 @@ class NobitexClient:
 
 
 def sign_ed25519(private_key_pem: str, message: str) -> str:
-    from cryptography.hazmat.primitives.serialization import load_pem_private_key
-    key = load_pem_private_key(private_key_pem.encode(), password=None)
+    key = _load_ed25519_private(private_key_pem)
     signature = key.sign(message.encode())
     return base64.urlsafe_b64encode(signature).decode()
