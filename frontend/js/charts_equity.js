@@ -1,62 +1,5 @@
-/* Equity curve from realized (or primary) PnL + Jalali/Tehran labels */
+/* Equity curve — labels via shared TehranTime */
 (function () {
-  function toJalali(gy, gm, gd) {
-    const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let gy2 = gm > 2 ? gy + 1 : gy;
-    let days =
-      355666 + 365 * gy + Math.floor((gy2 + 3) / 4) - Math.floor((gy2 + 99) / 100) +
-      Math.floor((gy2 + 399) / 400) + gd + g_d_m[gm - 1];
-    let jy = -1595 + 33 * Math.floor(days / 12053);
-    days %= 12053;
-    jy += 4 * Math.floor(days / 1461);
-    days %= 1461;
-    if (days > 365) {
-      jy += Math.floor((days - 1) / 365);
-      days = (days - 1) % 365;
-    }
-    const jm = days < 186 ? 1 + Math.floor(days / 31) : 7 + Math.floor((days - 186) / 30);
-    const jd = 1 + (days < 186 ? days % 31 : (days - 186) % 30);
-    return [jy, jm, jd];
-  }
-
-  function tehranParts(iso) {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return null;
-    const fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Tehran",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-    const parts = {};
-    for (const p of fmt.formatToParts(d)) {
-      if (p.type !== "literal") parts[p.type] = p.value;
-    }
-    let hour = parts.hour === "24" ? "00" : parts.hour;
-    return {
-      gy: parseInt(parts.year, 10),
-      gm: parseInt(parts.month, 10),
-      gd: parseInt(parts.day, 10),
-      hh: hour,
-      mi: parts.minute,
-    };
-  }
-
-  window._shortLabel = function (iso) {
-    if (!iso) return "";
-    try {
-      const tp = tehranParts(iso);
-      if (!tp) return String(iso).slice(5, 16);
-      const [jy, jm, jd] = toJalali(tp.gy, tp.gm, tp.gd);
-      return `${String(jm).padStart(2, "0")}/${String(jd).padStart(2, "0")} ${tp.hh}:${tp.mi}`;
-    } catch (e) {
-      return String(iso).slice(0, 16);
-    }
-  };
-
   let equityChart = null;
 
   function tradePnl(t) {
@@ -65,11 +8,21 @@
     return null;
   }
 
+  function label(iso) {
+    if (window.TehranTime) return window.TehranTime.shortLabel(iso);
+    if (typeof window._shortLabel === "function") return window._shortLabel(iso);
+    return String(iso || "").slice(5, 16);
+  }
+
   window.renderEquityChart = function (canvasId, trades) {
     const closed = (trades || [])
       .filter((t) => t.status === "closed" && t.close_time != null && tradePnl(t) != null)
       .slice()
-      .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+      .sort((a, b) => {
+        const ta = window.TehranTime ? window.TehranTime.parseAsUtc(a.close_time) : new Date(a.close_time);
+        const tb = window.TehranTime ? window.TehranTime.parseAsUtc(b.close_time) : new Date(b.close_time);
+        return (ta || 0) - (tb || 0);
+      });
 
     const points = [];
     let cum = 0;
@@ -105,7 +58,7 @@
     }
     if (emptyEl) emptyEl.hidden = true;
 
-    const labels = ["Start"].concat(series.map((p) => window._shortLabel(p.time)));
+    const labels = ["Start"].concat(series.map((p) => label(p.time)));
     const values = [0].concat(series.map((p) => Number(p.cum_pnl)));
     const last = values[values.length - 1];
     const lineColor = last >= 0 ? "#6b9a6b" : "#b85c4a";
@@ -153,7 +106,7 @@
 
     const hint = document.querySelector(".equity-panel .hint");
     if (hint) {
-      hint.textContent = "Cumulative realized cash PnL (not rescaled by current notional)";
+      hint.textContent = "Cumulative realized cash PnL · times in Asia/Tehran (Jalali)";
     }
   };
 })();

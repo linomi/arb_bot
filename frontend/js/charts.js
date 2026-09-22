@@ -22,21 +22,22 @@ function _constantSeries(n, value) {
 }
 
 function _shortLabel(iso) {
+  if (typeof window !== "undefined" && window.TehranTime) {
+    return window.TehranTime.shortLabel(iso);
+  }
   if (typeof window !== "undefined" && typeof window._shortLabel === "function" && window._shortLabel !== _shortLabel) {
     try { return window._shortLabel(iso); } catch (e) {}
   }
   if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return String(iso).slice(5, 16);
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mi = String(d.getMinutes()).padStart(2, "0");
-    return `${mm}-${dd} ${hh}:${mi}`;
-  } catch (e) {
-    return String(iso).slice(0, 16);
+  return String(iso).slice(5, 16);
+}
+
+function _parseTs(iso) {
+  if (typeof window !== "undefined" && window.TehranTime) {
+    const d = window.TehranTime.parseAsUtc(iso);
+    return d ? d.getTime() : NaN;
   }
+  return new Date(iso).getTime();
 }
 
 function _destroyChart(chart) {
@@ -74,9 +75,9 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
   const closeMeta = new Array(n);
   const stopMeta = new Array(n);
 
-  const tsList = series.map((p) => new Date(p[0]).getTime());
+  const tsList = series.map((p) => _parseTs(p[0]));
   const nearestIdx = (iso) => {
-    const tms = new Date(iso).getTime();
+    const tms = _parseTs(iso);
     if (!isFinite(tms)) return -1;
     let best = 0, bestD = Infinity;
     for (let i = 0; i < tsList.length; i++) {
