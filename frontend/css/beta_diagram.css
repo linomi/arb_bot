@@ -50,17 +50,30 @@
 }
 .beta-wire.pos{ stroke:#6b9a6b; }
 .beta-wire.neg{ stroke:#b85c4a; }
+
+/* Labels sit next to symbols — avoid mid-wire pile-up */
 .beta-label{
   font-family:var(--font-mono);
   font-size:10px;
   font-weight:600;
-  text-anchor:middle;
   paint-order:stroke;
   stroke:var(--bg-1);
-  stroke-width:3px;
+  stroke-width:3.5px;
+  stroke-linejoin:round;
+  pointer-events:none;
+}
+.beta-label.near{
+  text-anchor:start;
+  font-size:10.5px;
+  letter-spacing:0.02em;
 }
 .beta-label.pos{ fill:#8fbf8f; }
 .beta-label.neg{ fill:#d48a7a; }
+
+.beta-particle{
+  pointer-events:none;
+}
+
 .beta-legend{
   display:flex;
   gap:16px;
