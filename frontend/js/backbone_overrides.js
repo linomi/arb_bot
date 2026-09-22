@@ -24,7 +24,10 @@
     const g = state.groups.find((x) => x.id === groupId);
     if (!g) return;
 
-    document.getElementById("plot-title").textContent = `Residual / Z-Score — ${g.name}`;
+    const gname = g.name || `group-${groupId}`;
+    document.getElementById("plot-title").textContent = `Residual / Z-Score — ${gname}`;
+    const eqTitle = document.getElementById("equity-title");
+    if (eqTitle) eqTitle.textContent = `Equity Curve — ${gname}`;
     document.getElementById("plot-meta").textContent = "Fitting OLS on the latest window…";
 
     const backboneCfg = state.backboneCfg || (await API.getConfigSection("backbone"));
@@ -50,10 +53,17 @@
         const tbody = document.querySelector("#trades-table tbody");
         if (tbody) tbody.innerHTML = "";
         const bd = document.getElementById("beta-diagram");
-        if (bd) bd.innerHTML = `<div class="detail-empty" style="padding:12px">Fit failed — betas unavailable.</div>`;
+        if (bd) {
+          bd.innerHTML =
+            `<div class="beta-group-title">${gname}</div>` +
+            `<div class="detail-empty" style="padding:12px">Fit failed — betas unavailable.</div>`;
+        }
         return;
       }
     }
+
+    // Ensure name is available on the fit payload for the diagram
+    if (fit && !fit.group_name) fit.group_name = gname;
 
     state.selectedFit = fit;
     const trades = await API.listTrades(groupId);
@@ -80,7 +90,7 @@
     const bars = fit.bars_used != null ? fit.bars_used : "?";
     const res = fit.resolution || "?";
     document.getElementById("plot-meta").innerHTML =
-      `Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
+      `<b>${gname}</b> · Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
       `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
       `${bars} bars @ ${res} · fitted ${fmtTime(fit.fitted_at)}`;
   };
@@ -97,6 +107,8 @@
       state.selectedGroupId = null;
       document.getElementById("plot-title").textContent = "Residual / Z-Score";
       document.getElementById("plot-meta").textContent = "";
+      const eqTitle = document.getElementById("equity-title");
+      if (eqTitle) eqTitle.textContent = "Equity Curve";
       const bd = document.getElementById("beta-diagram");
       if (bd) {
         bd.innerHTML =
