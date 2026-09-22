@@ -1,23 +1,21 @@
 """
-Live Nobitex REST client.
+Live Nobitex REST client — margin markets + margin orders + positions.
 
-Market *universe* comes from margin (leverage) markets, not the full spot list:
-  GET  /margin/markets/list          -> margin-enabled pairs
-  GET  /market/stats                 -> volume ranking (filtered to margin pairs)
-  GET  /market/udf/history           -> OHLC (same underlying symbols)
-
-Orders (live) go through margin API so shorts/longs are both possible:
-  POST /margin/orders/add            -> margin order, default leverage "1"
-  GET  /market/orders/status         -> order status (shared)
-  POST /market/orders/update-status  -> cancel
-
-Auth: Authorization: Token <token>
+Rate limits (from official OpenAPI) are enforced via backend.exchange.rate_limit.
 """
+from __future__ import annotations
+
+import asyncio
 import time
 import base64
 import httpx
 
+from backend.exchange.rate_limit import throttle
+
 BASE_URL_DEFAULT = "https://apiv2.nobitex.ir"
+
+# Hard floor for IRT margin order value (user + exchange practice).
+MIN_ORDER_VALUE_IRT = 50_000.0
 
 
 class NobitexError(RuntimeError):
@@ -25,7 +23,7 @@ class NobitexError(RuntimeError):
 
 
 class NobitexClient:
-    def __init__(self, base_url: str = BASE_URL_DEFAULT, token: str | None = None, timeout: float = 15.0):
+    def __init__(self, base_url: str = BASE_URL_DEFAULT, token: str | None = None, timeout: float = 20.0):
         self.base_url = base_url.rstrip("/")
         self.token = token
         self._client = httpx.AsyncClient(
@@ -52,12 +50,6 @@ class NobitexClient:
     # ---------------------------------------------------------------- public
 
     async def get_margin_markets(self, details: bool = True, force: bool = False) -> dict:
-        """
-        GET /margin/markets/list — markets that support margin/leverage trading.
-
-        Returns dict keyed by market symbol e.g. {"BTCIRT": {...}, "ETHUSDT": {...}}.
-        Cached ~60s to stay under the 30 req/min limit.
-        """
         now = time.time()
         if (
             not force
@@ -66,7 +58,7 @@ class NobitexClient:
         ):
             return self._margin_markets_cache
 
-        # Spec requires JSON body even on GET (details flag).
+        await throttle("margin_markets_list")
         r = await self._client.request(
             "GET",
             "/margin/markets/list",
@@ -78,7 +70,6 @@ class NobitexClient:
         if data.get("status") != "ok":
             raise NobitexError(f"margin/markets/list failed: {data}")
         markets = data.get("markets") or {}
-        # Normalize keys to our internal symbol form (BTCIRT not BTCUSDT quirks).
         normalized: dict = {}
         for key, meta in markets.items():
             sym = self._margin_key_to_symbol(key, meta)
@@ -89,7 +80,6 @@ class NobitexClient:
 
     @staticmethod
     def _margin_key_to_symbol(key: str, meta: dict | None) -> str:
-        """BTCUSDT / BTCIRT style keys from margin API -> BTCUSDT / BTCIRT."""
         k = (key or "").upper().replace("-", "").replace("_", "")
         if k.endswith("RLS"):
             k = k[:-3] + "IRT"
@@ -102,6 +92,7 @@ class NobitexClient:
         return k
 
     async def get_market_stats(self, src_currency: str | None = None, dst_currency: str | None = None) -> dict:
+        await throttle("market_stats")
         params = {}
         if src_currency:
             params["srcCurrency"] = src_currency
@@ -115,35 +106,21 @@ class NobitexClient:
         return data.get("stats", {})
 
     async def get_liquid_symbols(self, top_n: int, quote: str = "IRT") -> list[str]:
-        """
-        Top-N symbols by 24h volume, **restricted to margin-enabled markets**
-        that allow both buy and sell positions when possible.
-        """
         quote_u = quote.upper()
         margin = await self.get_margin_markets(details=True)
 
-        # Keep only markets matching quote and with trading enabled.
         candidates: list[str] = []
         for sym, meta in margin.items():
-            if not sym.endswith(quote_u) and not (
-                quote_u in ("IRT", "RLS") and (sym.endswith("IRT") or sym.endswith("RLS"))
-            ):
-                # loose match: if quote is IRT, accept *IRT
-                if quote_u in ("IRT", "RLS"):
-                    if not (sym.endswith("IRT") or sym.endswith("RLS")):
-                        continue
-                else:
-                    if not sym.endswith(quote_u):
-                        continue
-            buy_ok = meta.get("buyEnabled", True)
-            sell_ok = meta.get("sellEnabled", True)
-            # Need both sides for residual hedges (long and short legs).
-            if buy_ok is False or sell_ok is False:
+            if quote_u in ("IRT", "RLS"):
+                if not (sym.endswith("IRT") or sym.endswith("RLS")):
+                    continue
+            elif not sym.endswith(quote_u):
+                continue
+            if meta.get("buyEnabled", True) is False or meta.get("sellEnabled", True) is False:
                 continue
             candidates.append(sym)
 
         if not candidates:
-            # Fall back: any margin market for this quote even if one side disabled
             for sym, meta in margin.items():
                 if quote_u in ("IRT", "RLS"):
                     if sym.endswith("IRT") or sym.endswith("RLS"):
@@ -151,7 +128,6 @@ class NobitexClient:
                 elif sym.endswith(quote_u):
                     candidates.append(sym)
 
-        # Rank by spot 24h volume among margin candidates
         dst = "rls" if quote_u in ("IRT", "RLS") else quote.lower()
         try:
             stats = await self.get_market_stats(dst_currency=dst)
@@ -167,11 +143,7 @@ class NobitexClient:
             sym = self._stat_key_to_symbol(key, quote)
             vol_by_sym[sym] = vol
 
-        ranked = sorted(
-            candidates,
-            key=lambda s: vol_by_sym.get(s, 0.0),
-            reverse=True,
-        )
+        ranked = sorted(candidates, key=lambda s: vol_by_sym.get(s, 0.0), reverse=True)
         return ranked[: max(1, int(top_n))]
 
     @staticmethod
@@ -191,6 +163,7 @@ class NobitexClient:
         max_pages = max(2, (bars // 400) + 3)
 
         while page <= max_pages:
+            await throttle("udf_history")
             params = {
                 "symbol": symbol,
                 "resolution": resolution,
@@ -252,8 +225,8 @@ class NobitexClient:
         return int(resolution) * 60
 
     async def get_last_price(self, symbol: str) -> float:
-        base = symbol[:-3]
-        quote = symbol[-3:]
+        base = symbol[:-3] if not symbol.upper().endswith("USDT") else symbol[:-4]
+        quote = symbol[len(base):]
         dst = "rls" if quote.upper() in ("IRT", "RLS") else quote.lower()
         stats = await self.get_market_stats(src_currency=base.lower(), dst_currency=dst)
         if not stats:
@@ -262,21 +235,19 @@ class NobitexClient:
         return float(stat.get("latest") or stat.get("mark") or 0.0)
 
     def _split_symbol(self, symbol: str) -> tuple[str, str]:
-        """BTCIRT -> (btc, rls); BTCUSDT -> (btc, usdt)."""
         s = symbol.upper()
         if s.endswith("USDT"):
             return s[:-4].lower(), "usdt"
         if s.endswith("IRT") or s.endswith("RLS"):
             return s[:-3].lower(), "rls"
-        # fallback: last 3 chars as quote
         return s[:-3].lower(), s[-3:].lower()
 
-    # --------------------------------------------------------------- private
+    # --------------------------------------------------------------- private / live
 
     async def place_order(
         self,
         symbol: str,
-        side: str,               # "buy" | "sell"
+        side: str,
         amount: float,
         price: float | None = None,
         execution: str | None = None,
@@ -285,15 +256,24 @@ class NobitexClient:
         leverage: str = "1",
     ) -> dict:
         """
-        Place a **margin** order (POST /margin/orders/add).
-
-        Default leverage is 1 (no extra gearing) — margin is used so both
-        long and short residual legs are possible, not for amplification.
+        POST /margin/orders/add — open a margin position leg (leverage default 1).
+        Enforces min IRT notional when a price is known.
         """
         src, dst = self._split_symbol(symbol)
+        exec_type = execution or ("market" if price is None else "limit")
+
+        # Min order value guard for IRT
+        if dst == "rls" and price is not None:
+            notional = float(amount) * float(price)
+            if notional < MIN_ORDER_VALUE_IRT:
+                raise NobitexError(
+                    f"Order notional {notional:.0f} IRT for {symbol} is below "
+                    f"minimum {MIN_ORDER_VALUE_IRT:.0f} IRT"
+                )
+
         payload = {
             "type": side,
-            "execution": execution or ("market" if price is None else "limit"),
+            "execution": exec_type,
             "srcCurrency": src,
             "dstCurrency": dst,
             "amount": str(amount),
@@ -306,6 +286,7 @@ class NobitexClient:
         if client_order_id:
             payload["clientOrderId"] = client_order_id
 
+        await throttle("margin_orders_add")
         r = await self._client.post(
             "/margin/orders/add",
             json=payload,
@@ -317,26 +298,102 @@ class NobitexClient:
             raise NobitexError(f"margin order failed: {data}")
         return data
 
-    async def get_order_status(self, order_id: int) -> dict:
+    async def list_positions(
+        self,
+        status: str = "active",
+        src_currency: str | None = None,
+        dst_currency: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> list[dict]:
+        """GET /positions/list"""
+        await throttle("positions_list")
+        params = {"status": status, "page": page, "pageSize": page_size}
+        if src_currency:
+            params["srcCurrency"] = src_currency.lower()
+        if dst_currency:
+            params["dstCurrency"] = dst_currency.lower()
         r = await self._client.get(
-            "/market/orders/status",
-            params={"id": order_id},
+            "/positions/list",
+            params=params,
             headers=self._auth_headers(),
         )
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if data.get("status") != "ok":
+            raise NobitexError(f"positions/list failed: {data}")
+        return list(data.get("positions") or [])
 
-    async def cancel_order(self, order_id: int) -> dict:
-        r = await self._client.post(
-            "/market/orders/update-status",
-            json={"order": order_id, "status": "canceled"},
+    async def get_position(self, position_id: int) -> dict:
+        await throttle("positions_status")
+        r = await self._client.get(
+            f"/positions/{int(position_id)}/status",
             headers=self._auth_headers(),
         )
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if data.get("status") != "ok":
+            raise NobitexError(f"position status failed: {data}")
+        return data.get("position") or {}
+
+    async def close_position(
+        self,
+        position_id: int,
+        amount: float,
+        execution: str = "market",
+        price: float | None = None,
+        client_order_id: str | None = None,
+    ) -> dict:
+        """
+        POST /positions/{id}/close — proper margin close (opposite order).
+        Prefer this over opening a new opposite margin order.
+        """
+        payload: dict = {
+            "execution": execution,
+            "amount": str(amount),
+        }
+        if execution == "limit" and price is not None:
+            payload["price"] = str(price)
+        if client_order_id:
+            payload["clientOrderId"] = client_order_id
+
+        await throttle("positions_close")
+        r = await self._client.post(
+            f"/positions/{int(position_id)}/close",
+            json=payload,
+            headers=self._auth_headers(),
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("status") != "ok":
+            raise NobitexError(f"position close failed: {data}")
+        return data
+
+    async def resolve_position_id(
+        self,
+        symbol: str,
+        side: str,
+        opened_after_iso: str | None = None,
+    ) -> int | None:
+        """
+        Best-effort match of an open position for (symbol, side).
+        side here is the *position* side (buy/sell), same as order type that opened it.
+        """
+        src, dst = self._split_symbol(symbol)
+        positions = await self.list_positions(status="active", src_currency=src, dst_currency=dst)
+        candidates = [
+            p for p in positions
+            if str(p.get("side", "")).lower() == side.lower()
+            and str(p.get("status", "")).lower() in ("open", "active")
+        ]
+        if not candidates:
+            return None
+        # Prefer newest
+        candidates.sort(key=lambda p: p.get("openedAt") or p.get("createdAt") or "", reverse=True)
+        return int(candidates[0]["id"])
 
     async def transfer_wallet(self, currency: str, amount: float, src: str, dst: str) -> dict:
-        """POST /wallets/transfer — e.g. spot -> margin before trading."""
+        await throttle("wallets_transfer")
         payload = {
             "currency": currency.lower(),
             "amount": str(amount),
