@@ -7,10 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20260922c" />
-<link rel="stylesheet" href="/static/css/style_extra.css?v=20260922c" />
-<link rel="stylesheet" href="/static/css/mobile.css?v=20260922c" />
-<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20260922c" />
+<link rel="stylesheet" href="/static/css/style.css?v=20260922d" />
+<link rel="stylesheet" href="/static/css/style_extra.css?v=20260922d" />
+<link rel="stylesheet" href="/static/css/mobile.css?v=20260922d" />
+<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20260922d" />
 <script src="/static/js/chart.umd.min.js"></script>
 </head>
 <body>
@@ -194,6 +194,7 @@
         <div class="method-switch">
           <button type="button" class="method-btn active" data-method="random">Random Groups</button>
           <button type="button" class="method-btn" data-method="sector">Sector-Based</button>
+          <button type="button" class="method-btn" data-method="sector">Sector-Based</button>
           <button type="button" class="method-btn" data-method="manual">Manual Entry</button>
         </div>
         <form id="init-form" class="param-form"></form>
@@ -279,10 +280,10 @@
           </div>
           <div id="cred-fields-key" style="display:none">
             <label>API Key
-              <input type="text" name="api_key" placeholder="Public key" />
+              <input type="text" name="api_key" placeholder="Public key (apiKey)" />
             </label>
-            <label>Private Key (PEM, Ed25519)
-              <textarea name="api_secret_pem" rows="5" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+            <label>Private Key / secretKey (base64 or PEM)
+              <textarea name="api_secret_pem" rows="3" placeholder="paste secretKey base64 from Nobitex, or PEM"></textarea>
             </label>
           </div>
           <div class="init-actions">
@@ -303,13 +304,13 @@
 
 </main>
 
-<script src="/static/js/api.js?v=20260922c"></script>
-<script src="/static/js/charts.js?v=20260922c"></script>
-<script src="/static/js/charts_equity.js?v=20260922c"></script>
-<script src="/static/js/tables.js?v=20260922c"></script>
-<script src="/static/js/beta_diagram.js?v=20260922c"></script>
-<script src="/static/js/main.js?v=20260922c"></script>
-<script src="/static/js/ui_fixes.js?v=20260922c"></script>
-<script src="/static/js/backbone_overrides.js?v=20260922c"></script>
+<script src="/static/js/api.js?v=20260922d"></script>
+<script src="/static/js/charts.js?v=20260922d"></script>
+<script src="/static/js/charts_equity.js?v=20260922d"></script>
+<script src="/static/js/tables.js?v=20260922d"></script>
+<script src="/static/js/beta_diagram.js?v=20260922d"></script>
+<script src="/static/js/main.js?v=20260922d"></script>
+<script src="/static/js/ui_fixes.js?v=20260922d"></script>
+<script src="/static/js/backbone_overrides.js?v=20260922d"></script>
 </body>
 </html>
