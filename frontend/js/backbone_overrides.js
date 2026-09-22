@@ -1,5 +1,6 @@
 /**
  * Overrides for Backbone tab after main.js loads.
+ * Trades / performance / equity follow current bot mode (server default).
  */
 (function () {
   window.renderGroupList = function () {};
@@ -62,10 +63,10 @@
       }
     }
 
-    // Ensure name is available on the fit payload for the diagram
     if (fit && !fit.group_name) fit.group_name = gname;
 
     state.selectedFit = fit;
+    // mode omitted → server uses current bot trading_mode
     const trades = await API.listTrades(groupId);
     renderTradesTable(trades);
     renderResidualChart("residual-chart", fit, backboneCfg, trades, (trade) => {
@@ -87,10 +88,11 @@
       renderBetaDiagram("beta-diagram", g, fit);
     }
 
+    const modeLabel = (trades && trades[0] && trades[0].mode) || state.tradingMode || "";
     const bars = fit.bars_used != null ? fit.bars_used : "?";
     const res = fit.resolution || "?";
     document.getElementById("plot-meta").innerHTML =
-      `<b>${gname}</b> · Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
+      `<b>${gname}</b> · <span class="mode-tag">${modeLabel || "mode?"}</span> · Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
       `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
       `${bars} bars @ ${res} · fitted ${fmtTime(fit.fitted_at)}`;
   };
@@ -129,4 +131,21 @@
     await loadGroupList();
     await loadPerfTable();
   };
+
+  // After mode switch in top bar, refresh tables so paper/live data swaps.
+  const modeSelect = document.getElementById("trading-mode-select");
+  if (modeSelect && !modeSelect.dataset.modeRefreshWired) {
+    modeSelect.dataset.modeRefreshWired = "1";
+    modeSelect.addEventListener("change", async () => {
+      // main.js already posts botMode; wait a tick then reload mode-scoped data
+      setTimeout(async () => {
+        try {
+          const s = await API.botState();
+          state.tradingMode = s.trading_mode;
+        } catch (e) {}
+        if (typeof loadPerfTable === "function") await loadPerfTable();
+        if (state.selectedGroupId) await selectGroup(state.selectedGroupId, false);
+      }, 200);
+    });
+  }
 })();
