@@ -46,7 +46,6 @@
 
   <section class="tab-panel active" id="tab-dashboard">
 
-    <!-- Hidden stubs so legacy main.js listeners do not crash -->
     <div id="legacy-group-stubs" style="display:none" aria-hidden="true">
       <input id="group-search" type="text" />
       <div id="group-list"></div>
@@ -109,7 +108,7 @@
     <div class="panel perf-panel">
       <div class="panel-head">
         <h2>Performance Comparison</h2>
-        <span class="hint">Click a row to select. Remove deletes the group permanently.</span>
+        <span class="hint">Click a row to select. Use Actions to Activate / Deactivate or Remove.</span>
       </div>
 
       <div class="perf-filters" id="perf-filters">
@@ -170,7 +169,7 @@
                 <th data-key="sortino_ratio">Sortino</th>
                 <th data-key="profit_factor">Profit Factor</th>
                 <th data-key="avg_holding_hours">Avg Hold (h)</th>
-                <th class="col-actions"> </th>
+                <th class="col-actions">Actions</th>
               </tr>
             </thead>
             <tbody></tbody>
