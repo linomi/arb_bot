@@ -5,6 +5,14 @@
   min-height:140px;
   overflow:hidden;
 }
+.beta-group-title{
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-hi);
+  letter-spacing: 0.03em;
+  padding: 0 4px 8px;
+}
 .beta-svg{ display:block; width:100%; }
 .beta-node rect{
   fill:var(--bg-3);
@@ -30,6 +38,11 @@
   fill:var(--text-lo);
   font-size:9px;
   font-weight:400;
+}
+.beta-node text.residual-name{
+  fill: var(--accent-hi);
+  font-size: 10px;
+  font-weight: 600;
 }
 .beta-wire{
   fill:none;
@@ -59,7 +72,6 @@
 .beta-legend .pos{ color:#8fbf8f; }
 .beta-legend .neg{ color:#d48a7a; }
 
-/* Performance table action column — always visible */
 #perf-table th.col-actions,
 #perf-table td.col-actions{
   position: sticky;

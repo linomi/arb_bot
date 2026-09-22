@@ -6,10 +6,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 
-# Always load .env from project root (not CWD — systemd may start elsewhere).
 _BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(_BASE_DIR / ".env")
-load_dotenv()  # also allow CWD override
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("main")
@@ -27,6 +26,7 @@ from backend.routers import (
     symbols_router,
 )
 from backend import security
+from backend.routers.groups_router import assign_codenames
 
 BASE_DIR = _BASE_DIR
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -48,10 +48,18 @@ async def on_startup():
     db = SessionLocal()
     try:
         config_service.seed_defaults_if_missing(db)
+        # One-time style fix: old random-BTCIRT-… names → silent_spread style
+        try:
+            changes = assign_codenames(db, force_all=False)
+            if changes:
+                log.info("Renamed %d legacy group name(s) to codenames", len(changes))
+                for c in changes[:12]:
+                    log.info("  group %s: %s → %s", c["id"], c["old"], c["new"])
+        except Exception:
+            log.exception("assign_codenames failed (non-fatal)")
     finally:
         db.close()
 
-    # Surface encryption readiness early (credentials save needs this).
     try:
         security._require_fernet()
         log.info("ENCRYPTION_KEY OK — credentials can be saved.")
