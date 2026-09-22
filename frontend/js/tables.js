@@ -6,7 +6,6 @@ const PerfTableState = {
   filters: {},
 };
 
-/* ---------------- Persian (Jalali) + Asia/Tehran helpers ---------------- */
 function _toJalali(gy, gm, gd) {
   const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
   let gy2 = gm > 2 ? gy + 1 : gy;
@@ -31,7 +30,6 @@ function _toJalali(gy, gm, gd) {
   return [jy, jm, jd];
 }
 
-/** Calendar + clock parts in Asia/Tehran (not browser local / UTC). */
 function _tehranParts(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return null;
@@ -129,6 +127,9 @@ function _redrawPerfTable(onRowClick) {
   tbody.innerHTML = "";
   sorted.forEach((r) => {
     const tr = document.createElement("tr");
+    if (typeof state !== "undefined" && state.selectedGroupId === r.group_id) {
+      tr.classList.add("selected-row");
+    }
     tr.innerHTML = `
       <td>${r.name}</td>
       <td>${r.status}</td>
@@ -141,8 +142,23 @@ function _redrawPerfTable(onRowClick) {
       <td>${fmtNum(r.sortino_ratio, 2)}</td>
       <td>${fmtNum(r.profit_factor, 2)}</td>
       <td>${fmtNum(r.avg_holding_hours, 1)}</td>
+      <td class="col-actions">
+        <button type="button" class="btn-danger perf-del" data-id="${r.group_id}" title="Delete group">Remove</button>
+      </td>
     `;
-    tr.addEventListener("click", () => onRowClick(r));
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest(".perf-del")) return;
+      onRowClick(r);
+    });
+    const delBtn = tr.querySelector(".perf-del");
+    if (delBtn) {
+      delBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (typeof deleteGroupFromTable === "function") {
+          deleteGroupFromTable(r.group_id, r.name);
+        }
+      });
+    }
     tbody.appendChild(tr);
   });
   _updateSortIcons();
