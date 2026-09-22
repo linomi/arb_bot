@@ -1,15 +1,13 @@
 """
-Background trading loop. Raw-price OLS residual; beta share ratios; cash PnL.
+Background trading loop. Raw-price OLS residual; beta share ratios.
 
-Live path:
-  - margin orders with leverage 1
-  - respects rate limits (via NobitexClient)
-  - enforces min 50k IRT per leg (via sizing)
-  - closes via /positions/{id}/close when position_id is known
+Paper: cash PnL from residual model (qty_y * ΔR − fees).
+Live: PnL from Nobitex position.PNL after close (account data).
 """
 import asyncio
 import datetime as dt
 import logging
+import re
 import traceback
 
 from backend.db import SessionLocal
@@ -27,6 +25,23 @@ from backend.strategy.sizing import leg_orders, close_legs_from_entry, MIN_ORDER
 from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional
 
 log = logging.getLogger("bot_engine")
+
+
+def _parse_money(val) -> float | None:
+    """Parse Nobitex string numbers; handle unicode minus."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip().replace(",", "")
+    s = s.replace("\u2212", "-").replace("−", "-")  # unicode minus
+    s = re.sub(r"[^0-9.+\-eE]", "", s)
+    if not s or s in ("+", "-"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
 
 class BotEngine:
@@ -110,7 +125,6 @@ class BotEngine:
         backbone_local["window_size"] = effective_window
 
         latest_prices = price_df.iloc[-1].to_dict()
-        # Only consider open trades for THIS mode (paper/live separation).
         open_trade = (
             db.query(Trade)
             .filter_by(group_id=group.id, status="open", mode=trading_mode)
@@ -128,11 +142,6 @@ class BotEngine:
             )
 
     async def _place_legs(self, trading_client, legs: list[dict], *, is_close: bool = False) -> list[dict]:
-        """
-        Place or close legs. Mutates each leg with exchange response fields
-        (order_id, position_id when resolvable). Small delay between legs to
-        respect shared order rate limit.
-        """
         out = []
         for i, leg in enumerate(legs):
             if i > 0:
@@ -141,35 +150,42 @@ class BotEngine:
             symbol = leg["symbol"]
             side = leg["side"]
             qty = float(leg["qty"])
-            price = leg.get("price")
 
-            # Prefer official position-close endpoint when we have position_id.
             if is_close and isinstance(trading_client, NobitexClient) and leg.get("position_id"):
+                # Prefer full remaining liability when available (docs: final settle).
+                close_qty = qty
+                try:
+                    pos = await trading_client.get_position(int(leg["position_id"]))
+                    liab = _parse_money(pos.get("liability"))
+                    if liab is not None and liab > 0:
+                        close_qty = liab
+                    leg["pre_close_position"] = pos
+                except Exception as e:
+                    log.debug("pre-close position fetch failed: %s", e)
+
                 try:
                     resp = await trading_client.close_position(
                         int(leg["position_id"]),
-                        amount=qty,
+                        amount=close_qty,
                         execution="market",
                     )
-                    leg = {**leg, "close_response": resp, "closed_via": "position_close"}
+                    leg = {**leg, "close_response": resp, "closed_via": "position_close", "close_qty": close_qty}
                     out.append(leg)
                     continue
                 except NobitexError as e:
-                    log.warning("position close failed id=%s: %s — falling back to opposite order", leg.get("position_id"), e)
+                    log.warning(
+                        "position close failed id=%s: %s — falling back to opposite order",
+                        leg.get("position_id"), e,
+                    )
 
             resp = await trading_client.place_order(symbol, side, qty, price=None)
             order = (resp or {}).get("order") or {}
             order_id = order.get("id") or (resp or {}).get("id")
             leg = {**leg, "order_response": resp, "order_id": order_id}
 
-            # After open, try to bind position id (live only).
-            if (
-                not is_close
-                and isinstance(trading_client, NobitexClient)
-                and order_id
-            ):
+            if not is_close and isinstance(trading_client, NobitexClient) and order_id:
                 try:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.6)
                     pid = await trading_client.resolve_position_id(symbol, side)
                     if pid:
                         leg["position_id"] = pid
@@ -178,6 +194,94 @@ class BotEngine:
 
             out.append(leg)
         return out
+
+    async def _realized_pnl_from_exchange(
+        self,
+        trading_client: NobitexClient,
+        legs_entry: list[dict],
+        legs_close: list[dict],
+    ) -> tuple[float | None, list[dict]]:
+        """
+        Sum position.PNL from Nobitex after close (dst-currency units, usually IRT/RLS).
+        Returns (total_pnl, per_leg details). None total if no position data found.
+        """
+        details: list[dict] = []
+        total = 0.0
+        found = 0
+
+        # Build map position_id -> close leg for annotation
+        close_by_pid = {
+            int(l["position_id"]): l
+            for l in (legs_close or [])
+            if l.get("position_id") is not None
+        }
+
+        for leg in legs_entry or []:
+            pid = leg.get("position_id")
+            if pid is None:
+                details.append({"symbol": leg.get("symbol"), "error": "no position_id"})
+                continue
+            pid = int(pid)
+            pos = None
+            # Poll: settlement can lag a few seconds after close order.
+            for attempt in range(8):
+                await asyncio.sleep(0.7 if attempt else 0.3)
+                try:
+                    pos = await trading_client.get_position(pid)
+                except Exception as e:
+                    log.debug("get_position(%s) attempt %s: %s", pid, attempt, e)
+                    pos = None
+                if not pos:
+                    continue
+                st = str(pos.get("status") or "").lower()
+                # Closed positions expose PNL; still-open may only have unrealizedPNL.
+                if st in ("closed", "liquidated", "expired") or pos.get("PNL") is not None:
+                    break
+
+            if not pos:
+                # Fallback: scan past positions list for this id
+                try:
+                    past = await trading_client.list_positions(status="past", page_size=50)
+                    pos = next((p for p in past if int(p.get("id", -1)) == pid), None)
+                except Exception as e:
+                    log.debug("past positions lookup failed: %s", e)
+
+            if not pos:
+                details.append({"symbol": leg.get("symbol"), "position_id": pid, "error": "position not found"})
+                continue
+
+            pnl = _parse_money(pos.get("PNL"))
+            if pnl is None:
+                # Last resort: mark-to-market if still reporting unrealized after close attempt
+                pnl = _parse_money(pos.get("unrealizedPNL"))
+
+            entry = {
+                "symbol": leg.get("symbol"),
+                "position_id": pid,
+                "status": pos.get("status"),
+                "side": pos.get("side"),
+                "entryPrice": pos.get("entryPrice"),
+                "exitPrice": pos.get("exitPrice"),
+                "PNL": pos.get("PNL"),
+                "PNLPercent": pos.get("PNLPercent"),
+                "parsed_pnl": pnl,
+            }
+            if pnl is not None:
+                total += pnl
+                found += 1
+            details.append(entry)
+
+            # Annotate matching close leg
+            if pid in close_by_pid:
+                close_by_pid[pid]["exchange_pnl"] = pnl
+                close_by_pid[pid]["exchange_position"] = {
+                    k: pos.get(k)
+                    for k in ("status", "PNL", "PNLPercent", "entryPrice", "exitPrice", "closedAt")
+                }
+
+        if found == 0:
+            return None, details
+        return float(total), details
 
     async def _check_exit(self, db, group, open_trade: Trade, latest_prices, backbone, trading_client, trading_mode):
         fit = open_trade.ols_fit
@@ -214,11 +318,41 @@ class BotEngine:
             float((open_trade.entry_prices or latest_prices).get(group.dependent_symbol, 1)), 1e-12
         )
         gross = legs_gross_notional(legs_entry)
-        cash_pnl = residual_cash_pnl(
+        model_pnl = residual_cash_pnl(
             open_trade.entry_residual, resid_now, open_trade.direction,
             qty_y, cost_rate, gross,
         )
-        fee_paid = cost_rate * 2.0 * gross
+        fee_model = cost_rate * 2.0 * gross
+
+        # --- Account PnL for live; model for paper ---
+        realized = None
+        exchange_details = None
+        if trading_mode == "live" and isinstance(trading_client, NobitexClient):
+            try:
+                realized, exchange_details = await self._realized_pnl_from_exchange(
+                    trading_client, legs_entry, legs_close,
+                )
+            except Exception:
+                log.exception("failed to read exchange PnL for trade #%s", open_trade.id)
+                realized, exchange_details = None, None
+
+        if realized is not None:
+            reported_pnl = float(realized)
+            open_trade.realized_pnl = float(realized)
+            open_trade.pnl = float(realized)  # UI / metrics use this
+            log.info(
+                "group %s trade #%s LIVE account PnL=%.6g (model was %.6g) details=%s",
+                group.id, open_trade.id, realized, model_pnl, exchange_details,
+            )
+        else:
+            reported_pnl = float(model_pnl)
+            open_trade.pnl = float(model_pnl)
+            open_trade.realized_pnl = None
+            if trading_mode == "live":
+                log.warning(
+                    "group %s trade #%s live close: no exchange PnL yet — storing model_pnl=%.6g",
+                    group.id, open_trade.id, model_pnl,
+                )
 
         open_trade.status = "closed"
         open_trade.close_time = dt.datetime.utcnow()
@@ -228,18 +362,16 @@ class BotEngine:
         open_trade.close_prices = latest_prices
         open_trade.legs_entry = legs_entry
         open_trade.legs_close = legs_close
-        open_trade.pnl = float(cash_pnl)
-        open_trade.model_pnl = float(cash_pnl)
-        open_trade.fee_paid = float(fee_paid)
-        open_trade.realized_pnl = None
+        open_trade.model_pnl = float(model_pnl)
+        open_trade.fee_paid = float(fee_model)
         open_trade.realized_fee = None
         if open_trade.trade_notional is None:
             open_trade.trade_notional = notional
         db.commit()
 
         log.info(
-            "group %s trade #%s closed mode=%s reason=%s pnl=%.6g",
-            group.id, open_trade.id, trading_mode, exit_dec.reason, cash_pnl,
+            "group %s trade #%s closed mode=%s reason=%s pnl=%.6g model_pnl=%.6g",
+            group.id, open_trade.id, trading_mode, exit_dec.reason, reported_pnl, model_pnl,
         )
 
     async def _check_entry(
@@ -282,7 +414,6 @@ class BotEngine:
             return
 
         notional = float(backbone.get("trade_notional", 100) or 100)
-        # Ensure config notional is at least the exchange floor for IRT deps.
         dep = group.dependent_symbol
         if str(dep).upper().endswith(("IRT", "RLS")):
             notional = max(notional, MIN_ORDER_VALUE_IRT)
