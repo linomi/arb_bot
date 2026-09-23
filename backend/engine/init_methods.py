@@ -1,12 +1,18 @@
 """
 Initialization approaches: random_init / sector_init.
 
-Candidate-group backtests run in a *process* pool so OLS + ADF/KPSS
-actually use multiple CPU cores (threads would be mostly serial under the GIL).
+Candidate-group backtests run in a process pool so OLS + ADF/KPSS
+use multiple CPU cores.
+
+Ranking (after backtest):
+  1. Keep only groups with total_pnl > 0
+  2. Score balances low max drawdown vs sample size (few trades with
+     tiny DD are not preferred over steadier series with more trades)
 """
 from __future__ import annotations
 
 import itertools
+import math
 import os
 import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -17,9 +23,9 @@ import pandas as pd
 from backend.sectors import group_symbols_by_sector
 from backend.engine.backtester import backtest_group
 
-# ---------------------------------------------------------------------------
-# Process-pool worker state (set once per worker via initializer)
-# ---------------------------------------------------------------------------
+# Soft sample-size anchor: at n ≈ this, trade-count confidence ≈ 2/3.
+_TRADE_CONF_HALF = 6.0
+
 _WORKER_PRICE_DF: pd.DataFrame | None = None
 _WORKER_PARAMS: dict | None = None
 
@@ -31,10 +37,6 @@ def _worker_init(price_df: pd.DataFrame, backbone_params: dict) -> None:
 
 
 def _worker_eval(job: tuple) -> dict | None:
-    """
-    job = (symbols_tuple, source, sector_or_None)
-    Runs in a child process; uses module-level price frame from _worker_init.
-    """
     symbols, source, sector = job
     price_df_full = _WORKER_PRICE_DF
     backbone_params = _WORKER_PARAMS
@@ -86,14 +88,65 @@ def _align_price_df(ohlc_by_symbol: dict[str, dict]) -> pd.DataFrame:
 
 
 def _score_group(perf) -> float:
-    if perf.trade_count == 0:
-        return -1e9
-    return float(perf.total_pnl) * 1000.0 + float(perf.sharpe_ratio)
+    """
+    Balanced rank score (higher = better).
+
+    Design:
+      - Non-positive PnL or zero trades → buried at the bottom
+      - Primary quality: PnL / effective_drawdown (Calmar-style)
+      - effective_drawdown floors tiny DDs that only look good because
+        there were 1–2 lucky trades
+      - trade_conf ∈ (0, 1) grows with trade_count so low-n series
+        cannot dominate solely on a near-zero DD
+      - Small secondary terms for win_rate and sharpe
+    """
+    n = int(getattr(perf, "trade_count", 0) or 0)
+    pnl = float(getattr(perf, "total_pnl", 0.0) or 0.0)
+    dd = float(getattr(perf, "max_drawdown", 0.0) or 0.0)
+    avg = float(getattr(perf, "avg_pnl", 0.0) or 0.0)
+    wr = float(getattr(perf, "win_rate", 0.0) or 0.0)
+    sharpe = float(getattr(perf, "sharpe_ratio", 0.0) or 0.0)
+
+    if n < 1 or pnl <= 0:
+        # Still differentiate slightly so sort is stable among rejects
+        return -1e9 + min(pnl, 0.0) - 0.01 * dd
+
+    # Confidence in the sample: n=6 → ~0.5, n=18 → ~0.75, asymptote 1
+    trade_conf = n / (n + _TRADE_CONF_HALF)
+
+    # Floor DD so a single small loss (or none) cannot inflate Calmar.
+    # Use a fraction of mean |trade| × sqrt(n) as a statistical noise floor.
+    avg_abs = abs(avg) if avg else abs(pnl) / max(n, 1)
+    noise_floor = avg_abs * 0.35 * math.sqrt(max(n, 1))
+    # Also absolute tiny floor for near-zero scale series
+    dd_eff = max(dd, noise_floor, 1e-9)
+
+    calmar = pnl / dd_eff
+
+    # Prefer lower raw DD among similar Calmar (secondary tie-break via inverse)
+    dd_bonus = 1.0 / (1.0 + dd / max(avg_abs, 1e-9))
+
+    score = (
+        calmar * trade_conf
+        + 0.25 * trade_conf * max(wr, 0.0)
+        + 0.10 * trade_conf * max(sharpe, 0.0)
+        + 0.05 * trade_conf * dd_bonus
+    )
+    return float(score)
+
+
+def _select_top(ranked: list[dict], keep_top_n: int) -> list[dict]:
+    """Positive PnL first (already scored); drop non-positive for the kept set."""
+    positive = [
+        r for r in ranked
+        if float((r.get("backtest_metrics") or {}).get("total_pnl") or 0) > 0
+    ]
+    # Already sorted by score descending in _backtest_candidates
+    return positive[: max(0, int(keep_top_n))]
 
 
 def _default_workers() -> int:
     n = os.cpu_count() or 4
-    # Use almost all cores; leave 1 for the API process if many cores.
     if n <= 2:
         return n
     return max(2, min(n - 1, 12))
@@ -124,8 +177,6 @@ def _backtest_candidates(
     results: list[dict] = []
     done = 0
 
-    # Process pool = true multi-core. Initializer ships the price frame once
-    # per worker (fork/COW on Linux) instead of pickling it per job.
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_worker_init,
@@ -183,7 +234,7 @@ def random_init(
         candidates, ohlc_by_symbol, backbone_params, source="random",
         progress_cb=progress_cb, max_workers=max_workers,
     )
-    return ranked[:keep_top_n]
+    return _select_top(ranked, keep_top_n)
 
 
 def sector_init(
@@ -217,4 +268,4 @@ def sector_init(
         candidates, ohlc_by_symbol, backbone_params, source="sector",
         sector_lookup=sector_lookup, progress_cb=progress_cb, max_workers=max_workers,
     )
-    return ranked[:keep_top_n]
+    return _select_top(ranked, keep_top_n)
