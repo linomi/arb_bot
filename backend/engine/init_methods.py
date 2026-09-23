@@ -24,7 +24,7 @@ from backend.sectors import group_symbols_by_sector
 from backend.engine.backtester import backtest_group
 
 # Soft sample-size anchor: at n ≈ this, trade-count confidence ≈ 2/3.
-_TRADE_CONF_HALF = 6.0
+_TRADE_CONF_HALF = 20
 
 _WORKER_PRICE_DF: pd.DataFrame | None = None
 _WORKER_PARAMS: dict | None = None
