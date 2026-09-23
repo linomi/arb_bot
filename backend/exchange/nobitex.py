@@ -17,22 +17,19 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from backend.exchange.rate_limit import throttle
+from backend.strategy.sizing import MIN_ORDER_VALUE_IRT
 
 BASE_URL_DEFAULT = "https://apiv2.nobitex.ir"
-MIN_ORDER_VALUE_IRT = 50_000.0
 
 
 class NobitexError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str | None = None, payload: dict | None = None):
+        super().__init__(message)
+        self.code = code
+        self.payload = payload or {}
 
 
 def _load_ed25519_private(secret: str) -> Ed25519PrivateKey:
-    """
-    Accept either:
-      - URL-safe / standard base64 of 32 raw private-key bytes (Nobitex privateKey field)
-      - PEM ('-----BEGIN PRIVATE KEY-----' …)
-      - hex of 32 bytes
-    """
     s = (secret or "").strip()
     if not s:
         raise NobitexError("Empty private key")
@@ -369,6 +366,53 @@ class NobitexClient:
             return s[:-3].lower(), "rls"
         return s[:-3].lower(), s[-3:].lower()
 
+    # ---------------------------------------------------------------- wallets / equity
+
+    async def get_wallets(self, currencies: list[str] | None = None) -> list[dict]:
+        """
+        GET /users/wallets/list — returns wallet rows with balance / activeBalance.
+        Optional currency filter (lowercase codes, e.g. rls, usdt).
+        """
+        await throttle("wallets_list")
+        params = {}
+        if currencies:
+            # Nobitex accepts comma-separated or repeated; send first as query if single
+            params["currencies"] = ",".join(c.lower() for c in currencies)
+        r = await self._request("GET", "/users/wallets/list", params=params or None, auth=True)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("status") != "ok":
+            raise NobitexError(f"wallets/list failed: {data}", payload=data)
+        return list(data.get("wallets") or [])
+
+    async def get_margin_active_balance_irt(self) -> float | None:
+        """Best-effort free margin collateral in IRT (rls wallet activeBalance)."""
+        try:
+            wallets = await self.get_wallets(currencies=["rls", "irt"])
+        except Exception:
+            return None
+        total = 0.0
+        found = False
+        for w in wallets:
+            cur = str(w.get("currency") or "").lower()
+            if cur not in ("rls", "irt"):
+                continue
+            # Prefer activeBalance (available), fall back to balance - blocked
+            ab = w.get("activeBalance")
+            if ab is None:
+                try:
+                    bal = float(w.get("balance") or 0)
+                    blocked = float(w.get("blockedBalance") or 0)
+                    ab = bal - blocked
+                except (TypeError, ValueError):
+                    ab = w.get("balance")
+            try:
+                total += float(ab or 0)
+                found = True
+            except (TypeError, ValueError):
+                continue
+        return total if found else None
+
     async def place_order(
         self,
         symbol: str,
@@ -379,17 +423,27 @@ class NobitexClient:
         stop_price: float | None = None,
         client_order_id: str | None = None,
         leverage: str = "1",
+        ref_price: float | None = None,
     ) -> dict:
         src, dst = self._split_symbol(symbol)
         exec_type = execution or ("market" if price is None else "limit")
 
-        if dst == "rls" and price is not None:
-            notional = float(amount) * float(price)
-            if notional < MIN_ORDER_VALUE_IRT:
-                raise NobitexError(
-                    f"Order notional {notional:.0f} IRT for {symbol} is below "
-                    f"minimum {MIN_ORDER_VALUE_IRT:.0f} IRT"
-                )
+        # Min order value for IRT — always check, including market orders.
+        if dst == "rls":
+            px = price if price is not None else ref_price
+            if px is None:
+                try:
+                    px = await self.get_last_price(symbol)
+                except Exception:
+                    px = None
+            if px is not None:
+                notional = float(amount) * float(px)
+                if notional < MIN_ORDER_VALUE_IRT:
+                    raise NobitexError(
+                        f"Order notional {notional:.0f} IRT for {symbol} is below "
+                        f"minimum {MIN_ORDER_VALUE_IRT:.0f} IRT",
+                        code="SmallOrder",
+                    )
 
         payload = {
             "type": side,
@@ -404,22 +458,23 @@ class NobitexClient:
         if stop_price is not None:
             payload["stopPrice"] = str(stop_price)
         if client_order_id:
-            payload["clientOrderId"] = client_order_id
+            payload["clientOrderId"] = str(client_order_id)[:32]
 
         await throttle("margin_orders_add")
         r = await self._request("POST", "/margin/orders/add", json_body=payload, auth=True)
         if r.status_code == 401:
             raise NobitexError(
-                "401 Unauthorized from Nobitex. "
-                "If you have apiKey+secretKey, save them under Settings → "
-                "Auth Method = API Key + Ed25519 Secret (both fields). "
-                "If you have a classic Token, use Auth Method = API Token. "
-                f"Body: {r.text[:300]}"
+                "401 Unauthorized from Nobitex. Check credentials in Settings.",
+                code="Unauthorized",
             )
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
-            raise NobitexError(f"margin order failed: {data}")
+            raise NobitexError(
+                f"margin order failed: {data}",
+                code=str((data.get("code") or data.get("message") or "order_failed")),
+                payload=data,
+            )
         return data
 
     async def list_positions(
@@ -440,7 +495,7 @@ class NobitexClient:
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
-            raise NobitexError(f"positions/list failed: {data}")
+            raise NobitexError(f"positions/list failed: {data}", payload=data)
         return list(data.get("positions") or [])
 
     async def get_position(self, position_id: int) -> dict:
@@ -450,7 +505,7 @@ class NobitexClient:
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
-            raise NobitexError(f"position status failed: {data}")
+            raise NobitexError(f"position status failed: {data}", payload=data)
         return data.get("position") or {}
 
     async def close_position(
@@ -468,7 +523,7 @@ class NobitexClient:
         if execution == "limit" and price is not None:
             payload["price"] = str(price)
         if client_order_id:
-            payload["clientOrderId"] = client_order_id
+            payload["clientOrderId"] = str(client_order_id)[:32]
 
         await throttle("positions_close")
         path = f"/positions/{int(position_id)}/close"
@@ -476,7 +531,11 @@ class NobitexClient:
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
-            raise NobitexError(f"position close failed: {data}")
+            raise NobitexError(
+                f"position close failed: {data}",
+                code=str(data.get("code") or data.get("message") or "close_failed"),
+                payload=data,
+            )
         return data
 
     async def resolve_position_id(
@@ -485,6 +544,11 @@ class NobitexClient:
         side: str,
         opened_after_iso: str | None = None,
     ) -> int | None:
+        """
+        Match an open position for (symbol, side).
+        If opened_after_iso is set, only positions with openedAt/createdAt >= that
+        timestamp are considered (avoids attaching another group's position).
+        """
         src, dst = self._split_symbol(symbol)
         positions = await self.list_positions(status="active", src_currency=src, dst_currency=dst)
         candidates = [
@@ -492,6 +556,18 @@ class NobitexClient:
             if str(p.get("side", "")).lower() == side.lower()
             and str(p.get("status", "")).lower() in ("open", "active")
         ]
+        if opened_after_iso:
+            after = opened_after_iso.replace("Z", "+00:00")
+            filtered = []
+            for p in candidates:
+                ts = p.get("openedAt") or p.get("createdAt") or ""
+                if not ts:
+                    continue
+                # Lexicographic ISO compare works for standard formats
+                if str(ts) >= after[:19] or str(ts) >= opened_after_iso:
+                    filtered.append(p)
+            if filtered:
+                candidates = filtered
         if not candidates:
             return None
         candidates.sort(key=lambda p: p.get("openedAt") or p.get("createdAt") or "", reverse=True)
@@ -509,7 +585,7 @@ class NobitexClient:
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
-            raise NobitexError(f"wallet transfer failed: {data}")
+            raise NobitexError(f"wallet transfer failed: {data}", payload=data)
         return data
 
 
