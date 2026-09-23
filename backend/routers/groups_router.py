@@ -12,6 +12,8 @@ from backend.strategy.metrics import compute_group_performance
 from backend.strategy.ols import fit_ols
 from backend.strategy.stats_tests import test_stationarity
 from backend.exchange import factory
+from backend.exchange.paper import PaperExchangeClient
+from backend.exchange.nobitex import NobitexClient
 from backend.utils import seconds_to_resolution, fetch_price_df
 from backend.group_names import generate_group_name, is_legacy_name
 from backend.bot_state_service import get_or_create_bot_state
@@ -63,20 +65,20 @@ def _fit_to_dict(f: OLSFit) -> dict:
 
 
 def _trade_pnl(t: Trade):
+    """
+    Display / metrics PnL:
+      live  → ONLY exchange realized_pnl (never model). Null if missing.
+      paper → model residual cash pnl
+    """
     if getattr(t, "mode", None) == "live":
         if getattr(t, "realized_pnl", None) is not None:
             return float(t.realized_pnl)
-        if t.pnl is not None:
-            return float(t.pnl)
-        if getattr(t, "model_pnl", None) is not None:
-            return float(t.model_pnl)
+        # Do NOT fall back to model for live — that is what inflated the UI loss.
         return None
     if t.pnl is not None:
         return float(t.pnl)
     if getattr(t, "model_pnl", None) is not None:
         return float(t.model_pnl)
-    if getattr(t, "realized_pnl", None) is not None:
-        return float(t.realized_pnl)
     return None
 
 
@@ -93,9 +95,15 @@ def _trade_to_dict(t: Trade) -> dict:
         "close_time": t.close_time.isoformat() if t.close_time else None,
         "close_reason": t.close_reason, "close_z": t.close_z,
         "close_residual": t.close_residual, "close_prices": t.close_prices,
+        # Primary PnL shown in UI (exchange-only when live)
         "pnl": pnl,
         "realized_pnl": realized,
-        "model_pnl": model if model is not None else pnl,
+        # model kept for research only; UI should not use it for live totals
+        "model_pnl": model,
+        "pnl_source": (
+            "exchange" if (t.mode == "live" and realized is not None)
+            else ("pending_exchange" if t.mode == "live" else "model")
+        ),
         "fee_paid": float(t.fee_paid) if t.fee_paid is not None else None,
         "legs_entry": getattr(t, "legs_entry", None),
         "legs_close": getattr(t, "legs_close", None),
@@ -165,6 +173,12 @@ def all_groups_performance(
             for t in closed if _trade_pnl(t) is not None
         ]
         perf = compute_group_performance(closed_dicts).as_dict()
+        missing_exchange = 0
+        if resolved == "live":
+            missing_exchange = sum(
+                1 for t in closed
+                if getattr(t, "realized_pnl", None) is None
+            )
         out.append({
             "group_id": g.id,
             "name": g.name or f"group-{g.id}",
@@ -174,6 +188,8 @@ def all_groups_performance(
             "source": g.source,
             "sector": g.sector,
             "mode": resolved or "all",
+            "pnl_source": "exchange" if resolved == "live" else "model",
+            "missing_exchange_pnl_count": missing_exchange,
             **perf,
         })
     return out
@@ -195,14 +211,12 @@ def set_group_status(group_id: int, body: GroupStatusUpdate, db: Session = Depen
     if body.status not in ("active", "inactive", "archived", "candidate"):
         raise HTTPException(400, "invalid status")
 
-    # Do not orphan open risk by deactivating/archiving while a trade is open.
     if body.status != "active" and g.status == "active":
         open_n = db.query(Trade).filter_by(group_id=g.id, status="open").count()
         if open_n > 0:
             raise HTTPException(
                 409,
-                f"Group has {open_n} open trade(s). Close them before setting status to {body.status}. "
-                f"(The bot still manages open trades on non-active groups as a safety net.)",
+                f"Group has {open_n} open trade(s). Close them before setting status to {body.status}.",
             )
 
     g.status = body.status
@@ -385,11 +399,19 @@ def group_performance(
 
 
 @router.get("/{group_id}/equity_curve")
-def equity_curve(
+async def equity_curve(
     group_id: int,
     mode: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
+    """
+    Cumulative equity for the group.
+
+    paper: starts at 0, adds model PnL each close.
+    live: starts from current margin wallet free balance minus sum of this
+          group's exchange realized PnLs (so the curve ends near account
+          level and is grounded in exchange data, not model residual).
+    """
     g = db.get(Group, group_id)
     if not g:
         raise HTTPException(404, "group not found")
@@ -398,14 +420,64 @@ def equity_curve(
     if resolved:
         q = q.filter_by(mode=resolved)
     closed = q.order_by(Trade.close_time.asc()).all()
-    points = []
-    cum = 0.0
+
+    pnls = []
     for t in closed:
         if t.close_time is None:
             continue
         p = _trade_pnl(t)
         if p is None:
             continue
-        cum += float(p)
-        points.append({"time": t.close_time.isoformat(), "cum_pnl": cum, "pnl": float(p)})
-    return points
+        pnls.append((t.close_time.isoformat(), float(p)))
+
+    start_equity = 0.0
+    source = "model_cum_pnl"
+    account_balance = None
+
+    if resolved == "live":
+        source = "exchange_realized"
+        try:
+            client = factory.build_trading_client(db)
+            if isinstance(client, NobitexClient):
+                account_balance = await client.get_margin_active_balance_irt()
+            if not isinstance(client, PaperExchangeClient):
+                await client.aclose()
+        except Exception as e:
+            log.warning("equity_curve: could not read balance: %s", e)
+            account_balance = None
+
+        sum_realized = sum(p for _, p in pnls)
+        if account_balance is not None:
+            # Reconstruct starting equity so final point ≈ current free balance
+            # (this group's contribution only).
+            start_equity = float(account_balance) - sum_realized
+        else:
+            start_equity = 0.0
+            source = "exchange_realized_no_balance"
+
+    points = []
+    cum = float(start_equity)
+    points.append({
+        "time": None,
+        "equity": cum,
+        "cum_pnl": 0.0,
+        "pnl": 0.0,
+        "is_start": True,
+    })
+    for ts, p in pnls:
+        cum += p
+        points.append({
+            "time": ts,
+            "equity": cum,
+            "cum_pnl": cum - float(start_equity),
+            "pnl": p,
+            "is_start": False,
+        })
+
+    return {
+        "mode": resolved or "all",
+        "source": source,
+        "start_equity": start_equity,
+        "account_balance": account_balance,
+        "points": points,
+    }
