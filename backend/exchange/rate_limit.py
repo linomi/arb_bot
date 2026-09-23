@@ -14,17 +14,11 @@ from collections import defaultdict
 
 
 class RateLimiter:
-    """
-    Per-key sliding window: at most `max_calls` in `period_sec`.
-    Blocks (async sleep) until a slot is free.
-    """
-
     def __init__(self):
         self._hits: dict[str, list[float]] = defaultdict(list)
         self._lock = asyncio.Lock()
 
     async def acquire(self, key: str, max_calls: int, period_sec: float):
-        # max_calls <= 0 → unlimited (no wait)
         if max_calls <= 0:
             return
         while True:
@@ -43,31 +37,23 @@ class RateLimiter:
 
 limiter = RateLimiter()
 
-# ---------------------------------------------------------------------------
-# Market data — loose. Init/backtest need many parallel OHLC pulls.
-# Nobitex handles ~60+/min on public history; we allow ~120/min with a soft cap.
-# ---------------------------------------------------------------------------
 MARKET_DATA_LIMITS = {
-    "udf_history": (60, 60.0),          # OHLC bars — main init bottleneck
-    "market_stats": (20, 60.0),          # volume ranking / last price
-    "margin_markets_list": (30, 60.0),   # symbol universe (cached 60s in client)
+    "udf_history": (60, 60.0),
+    "market_stats": (20, 60.0),
+    "margin_markets_list": (30, 60.0),
 }
 
-# ---------------------------------------------------------------------------
-# Live trading — tight, headroom under documented caps.
-# ---------------------------------------------------------------------------
 LIVE_TRADING_LIMITS = {
-    "margin_orders_add": (280, 600.0),   # docs: 300 / 10 min (shared with spot)
-    "positions_list": (25, 600.0),       # docs: 30 / 10 min
-    "positions_status": (90, 600.0),     # docs: 100 / 10 min
+    "margin_orders_add": (280, 600.0),
+    "positions_list": (25, 600.0),
+    "positions_status": (90, 600.0),
     "positions_close": (90, 600.0),
-    "wallets_transfer": (8, 60.0),       # docs: 10 / min
-    "delegation_limit": (10, 60.0),      # docs: 12 / min
+    "wallets_transfer": (8, 60.0),
+    "wallets_list": (30, 60.0),
+    "delegation_limit": (10, 60.0),
 }
 
 LIMITS = {**MARKET_DATA_LIMITS, **LIVE_TRADING_LIMITS}
-
-# Keys that skip throttling entirely (set empty or override if needed).
 SKIP = set()
 
 
