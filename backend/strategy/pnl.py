@@ -25,4 +25,11 @@ def residual_cash_pnl(
 
 
 def legs_gross_notional(legs: list[dict]) -> float:
-    return float(sum(abs(float(l["qty"])) * float(l["price"]) for l in (legs or [])))
+    total = 0.0
+    for l in legs or []:
+        q = l.get("filled_qty")
+        if q is None:
+            q = l.get("qty") or 0
+        p = l.get("price") or 0
+        total += abs(float(q)) * float(p)
+    return float(total)
