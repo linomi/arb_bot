@@ -5,7 +5,8 @@ Paper: cash PnL from residual model (qty_y * ΔR − fees).
 Live: PnL from Nobitex position.PNL after close (account data).
 
 Safety (audit-driven):
-  - Pre-trade margin balance check (live)
+  - Pre-trade margin balance check (live) — refuse if balance unreadable
+  - Scale trade_notional down to fit free balance (keep ≥50k IRT/leg)
   - Sequential legs with rollback of filled legs on partial failure
   - Close fallback only if position still has liability
   - Exit management runs even when bot is "stopped" (no new entries only)
@@ -20,6 +21,8 @@ import logging
 import re
 import traceback
 import uuid
+
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from backend.db import SessionLocal
 from backend import config_service
@@ -44,7 +47,9 @@ from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional
 log = logging.getLogger("bot_engine")
 
 # Refuse entry if required collateral exceeds this fraction of free balance.
-BALANCE_SAFETY_FRACTION = 0.90
+BALANCE_SAFETY_FRACTION = 0.85
+# Extra headroom for fees / mark-price drift between sizing and fill.
+BALANCE_BUFFER_IRT = 20_000.0
 
 
 def _parse_money(val) -> float | None:
@@ -107,8 +112,6 @@ class BotEngine:
         backbone = config_service.get_section(db, "backbone")
         trading_mode = state.trading_mode or "paper"
 
-        # Active groups always. Also manage inactive groups that still have open trades
-        # so deactivating a group does not orphan live risk (audit #13).
         active = db.query(Group).filter_by(status="active").all()
         active_ids = {g.id for g in active}
         open_trade_group_ids = {
@@ -141,18 +144,27 @@ class BotEngine:
 
         try:
             for group in groups:
+                gid = group.id
                 try:
+                    status = group.status
                     await self._process_group(
                         db, group, backbone, md_client, trading_client,
                         resolution, trading_mode, state.is_running,
-                        allow_new_entries=(group.status == "active"),
+                        allow_new_entries=(status == "active"),
                     )
-                    self._group_errors.pop(group.id, None)
+                    self._group_errors.pop(gid, None)
+                except ObjectDeletedError:
+                    log.warning("group %s was deleted during cycle — skipping", gid)
+                    self._group_errors.pop(gid, None)
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
                 except Exception:
                     err = traceback.format_exc()
                     self._last_error = err
-                    self._group_errors[group.id] = err
-                    log.exception("group %s failed this cycle", group.id)
+                    self._group_errors[gid] = err
+                    log.exception("group %s failed this cycle", gid)
         finally:
             await md_client.aclose()
             if not isinstance(trading_client, PaperExchangeClient):
@@ -198,7 +210,6 @@ class BotEngine:
         )
 
         if open_trade is not None:
-            # Always manage exits — even if bot is stopped (audit #6).
             await self._check_exit(
                 db, group, open_trade, latest_prices, backbone_local, trading_client, trading_mode,
             )
@@ -207,24 +218,105 @@ class BotEngine:
                 db, group, price_df, latest_prices, backbone_local, trading_client, trading_mode,
             )
 
-    async def _pretrade_balance_ok(
-        self, trading_client, legs: list[dict], trading_mode: str,
-    ) -> tuple[bool, str]:
+    async def _read_free_balance_irt(self, trading_client) -> float | None:
+        if not isinstance(trading_client, NobitexClient):
+            return None
+        try:
+            free = await trading_client.get_margin_active_balance_irt()
+        except Exception as e:
+            log.warning("balance read failed: %s", e)
+            return None
+        return free
+
+    async def _fit_notional_to_balance(
+        self,
+        trading_client,
+        *,
+        dependent_symbol: str,
+        direction: str,
+        betas: dict,
+        prices: dict,
+        desired_notional: float,
+        trading_mode: str,
+    ) -> tuple[list[dict] | None, float, str]:
+        """
+        Build legs for desired_notional. On live, scale down so total collateral
+        fits free balance × safety − buffer, while every IRT leg stays ≥ 50k.
+
+        Returns (legs | None, final_notional, message).
+        """
+        def _build(n: float) -> list[dict]:
+            return leg_orders(dependent_symbol, direction, betas, prices, float(n))
+
         if trading_mode != "live" or not isinstance(trading_client, NobitexClient):
-            return True, ""
-        required = total_required_collateral(legs, leverage=1.0)
-        free = await trading_client.get_margin_active_balance_irt()
+            legs = _build(desired_notional)
+            return legs, float(desired_notional), ""
+
+        free = await self._read_free_balance_irt(trading_client)
         if free is None:
-            log.warning("could not read margin wallet balance — proceeding with caution")
-            return True, ""
-        limit = free * BALANCE_SAFETY_FRACTION
-        if required > limit:
-            msg = (
-                f"insufficient margin: need ~{required:.0f} IRT collateral "
-                f"but free active balance={free:.0f} (safety {BALANCE_SAFETY_FRACTION:.0%})"
+            return None, 0.0, (
+                "cannot read margin wallet balance — refusing live entry "
+                "(API key needs wallet read; endpoint /users/wallets/list)"
             )
-            return False, msg
-        return True, ""
+
+        usable = max(0.0, float(free) * BALANCE_SAFETY_FRACTION - BALANCE_BUFFER_IRT)
+        if usable < MIN_ORDER_VALUE_IRT * 2:
+            return None, 0.0, (
+                f"free balance too low: free={free:.0f} IRT, usable≈{usable:.0f} "
+                f"(need ≥ {MIN_ORDER_VALUE_IRT * 2:.0f} for a 2-leg basket)"
+            )
+
+        try:
+            legs = _build(desired_notional)
+        except Exception as e:
+            return None, 0.0, f"sizing failed: {e}"
+        need = total_required_collateral(legs, leverage=1.0)
+        notional = float(desired_notional)
+
+        if need > usable:
+            if need <= 0:
+                return None, 0.0, "zero required collateral?"
+            scale = (usable / need) * 0.98
+            notional = float(desired_notional) * scale
+            if notional < MIN_ORDER_VALUE_IRT:
+                return None, 0.0, (
+                    f"insufficient margin: desired need≈{need:.0f} IRT for "
+                    f"notional={desired_notional:.0f}, free={free:.0f}, usable={usable:.0f}"
+                )
+            try:
+                legs = _build(notional)
+            except Exception as e:
+                return None, 0.0, f"sizing failed after scale: {e}"
+            need = total_required_collateral(legs, leverage=1.0)
+            if need > usable:
+                scale2 = (usable / need) * 0.98
+                notional = notional * scale2
+                if notional < MIN_ORDER_VALUE_IRT:
+                    return None, 0.0, (
+                        f"insufficient margin after min-order scale-up: need≈{need:.0f}, "
+                        f"usable={usable:.0f}, free={free:.0f}"
+                    )
+                legs = _build(notional)
+                need = total_required_collateral(legs, leverage=1.0)
+                if need > usable:
+                    return None, 0.0, (
+                        f"insufficient margin: need≈{need:.0f} IRT, free={free:.0f}, "
+                        f"usable={usable:.0f}"
+                    )
+
+        msg = ""
+        if notional + 1 < float(desired_notional):
+            msg = (
+                f"scaled notional {desired_notional:.0f} → {notional:.0f} IRT "
+                f"(collateral need={need:.0f}, free={free:.0f}, usable={usable:.0f})"
+            )
+            log.warning("%s", msg)
+        else:
+            log.info(
+                "pretrade OK notional=%.0f need=%.0f free=%.0f usable=%.0f",
+                notional, need, free, usable,
+            )
+        return legs, notional, msg
 
     async def _place_legs(
         self,
@@ -234,10 +326,6 @@ class BotEngine:
         is_close: bool = False,
         attempt_id: str | None = None,
     ) -> list[dict]:
-        """
-        Place or close legs sequentially. Never raises mid-basket without
-        attempting to unwind already-filled entry legs (audit #2).
-        """
         out: list[dict] = []
         attempt_id = attempt_id or uuid.uuid4().hex[:8]
         filled_entry_indices: list[int] = []
@@ -252,7 +340,6 @@ class BotEngine:
             ref_price = leg.get("price")
             coid = _client_order_id("c" if is_close else "o", symbol, side)
 
-            # -------- CLOSE path --------
             if is_close and isinstance(trading_client, NobitexClient) and leg.get("position_id"):
                 close_qty = qty
                 already_done = False
@@ -296,7 +383,6 @@ class BotEngine:
                     out.append(leg)
                     continue
                 except NobitexError as e:
-                    # Only fall back to opposite order if liability still open.
                     liab_now = None
                     try:
                         pos_now = await trading_client.get_position(int(leg["position_id"]))
@@ -330,7 +416,6 @@ class BotEngine:
                         leg.get("position_id"), liab_now, e,
                     )
 
-            # -------- OPEN / fallback opposite order --------
             try:
                 kwargs = {"price": None, "client_order_id": coid}
                 if isinstance(trading_client, NobitexClient):
@@ -347,7 +432,6 @@ class BotEngine:
                     ) from e
                 if not is_close:
                     raise PartialLegsError(f"entry leg {symbol} failed: {e}", out) from e
-                # On close path: record failure, continue other legs
                 log.error("close leg %s failed: %s", symbol, e)
                 continue
 
@@ -382,7 +466,6 @@ class BotEngine:
             if not is_close:
                 filled_entry_indices.append(len(out) - 1)
 
-        # Entry: if any leg marked failed (shouldn't reach here without raise)
         if not is_close and any(l.get("failed") for l in out):
             raise PartialLegsError("partial entry basket", out)
 
@@ -391,7 +474,6 @@ class BotEngine:
     async def _rollback_filled_entries(
         self, trading_client, legs: list[dict], indices: list[int],
     ):
-        """Best-effort reverse of successfully opened entry legs."""
         log.error("rolling back %d filled entry leg(s)", len(indices))
         for idx in reversed(indices):
             leg = legs[idx]
@@ -534,13 +616,11 @@ class BotEngine:
                 attempt_id=f"x{open_trade.id}",
             )
         except Exception as e:
-            # Keep trade open for next cycle; do not mark closed.
             self._last_error = str(e)
             self._group_errors[group.id] = f"exit failed: {e}"
             log.error("group %s trade #%s exit place failed: %s", group.id, open_trade.id, e)
             return
 
-        # If any close leg still failed and not already_closed, keep open.
         still_open = [
             l for l in legs_close
             if l.get("failed") and not l.get("already_closed")
@@ -569,10 +649,9 @@ class BotEngine:
         fee_model = cost_rate * 2.0 * gross
 
         realized = None
-        exchange_details = None
         if trading_mode == "live" and isinstance(trading_client, NobitexClient):
             try:
-                realized, exchange_details = await self._realized_pnl_from_exchange(
+                realized, _ = await self._realized_pnl_from_exchange(
                     trading_client, legs_entry, legs_close,
                 )
             except Exception:
@@ -655,24 +734,22 @@ class BotEngine:
         if str(dep).upper().endswith(("IRT", "RLS")):
             notional = max(notional, MIN_ORDER_VALUE_IRT)
 
-        try:
-            legs = leg_orders(
-                group.dependent_symbol,
-                entry_dec.direction,
-                fit_res.betas,
-                latest_prices,
-                notional,
-            )
-        except Exception as e:
-            log.error("group %s sizing failed: %s", group.id, e)
-            return
-
-        ok, bal_msg = await self._pretrade_balance_ok(trading_client, legs, trading_mode)
-        if not ok:
+        legs, notional, bal_msg = await self._fit_notional_to_balance(
+            trading_client,
+            dependent_symbol=group.dependent_symbol,
+            direction=entry_dec.direction,
+            betas=fit_res.betas,
+            prices=latest_prices,
+            desired_notional=notional,
+            trading_mode=trading_mode,
+        )
+        if legs is None:
             self._last_error = bal_msg
             self._group_errors[group.id] = bal_msg
             log.error("group %s entry blocked: %s", group.id, bal_msg)
             return
+        if bal_msg:
+            log.info("group %s: %s", group.id, bal_msg)
 
         try:
             legs = await self._place_legs(
@@ -683,7 +760,6 @@ class BotEngine:
             self._last_error = str(e)
             self._group_errors[group.id] = str(e)
             log.error("group %s partial entry (rolled back if possible): %s", group.id, e)
-            # Persist a failed_partial trade for audit visibility
             trade = Trade(
                 group_id=group.id,
                 ols_fit_id=ols_row.id,
