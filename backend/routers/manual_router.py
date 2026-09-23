@@ -6,6 +6,7 @@ from backend.db import get_db
 from backend.models import Group
 from backend.schemas import ManualGroupCreate
 from backend.group_names import generate_group_name
+from backend.strategy.sizing import assert_same_quote
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
@@ -34,6 +35,11 @@ def create_manual_group(body: ManualGroupCreate, db: Session = Depends(get_db)):
     dependent = (body.dependent_symbol or uniq[0]).strip().upper()
     if dependent not in uniq:
         raise HTTPException(400, f"dependent_symbol {dependent} must be one of the selected symbols")
+    try:
+        assert_same_quote(uniq, dependent)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
     used = {n for (n,) in db.query(Group.name).all()}
     name = (body.name or "").strip() or generate_group_name(used=used)
     g = Group(
