@@ -63,11 +63,6 @@ def _fit_to_dict(f: OLSFit) -> dict:
 
 
 def _trade_pnl(t: Trade):
-    """
-    Display / metrics PnL:
-      live  → realized_pnl (exchange) if set, else pnl, else model
-      paper → pnl / model_pnl
-    """
     if getattr(t, "mode", None) == "live":
         if getattr(t, "realized_pnl", None) is not None:
             return float(t.realized_pnl)
@@ -199,6 +194,17 @@ def set_group_status(group_id: int, body: GroupStatusUpdate, db: Session = Depen
         raise HTTPException(404, "group not found")
     if body.status not in ("active", "inactive", "archived", "candidate"):
         raise HTTPException(400, "invalid status")
+
+    # Do not orphan open risk by deactivating/archiving while a trade is open.
+    if body.status != "active" and g.status == "active":
+        open_n = db.query(Trade).filter_by(group_id=g.id, status="open").count()
+        if open_n > 0:
+            raise HTTPException(
+                409,
+                f"Group has {open_n} open trade(s). Close them before setting status to {body.status}. "
+                f"(The bot still manages open trades on non-active groups as a safety net.)",
+            )
+
     g.status = body.status
     db.commit()
     return _group_to_dict(g)
@@ -209,6 +215,9 @@ def delete_group(group_id: int, db: Session = Depends(get_db)):
     g = db.get(Group, group_id)
     if not g:
         raise HTTPException(404, "group not found")
+    open_n = db.query(Trade).filter_by(group_id=g.id, status="open").count()
+    if open_n > 0:
+        raise HTTPException(409, f"Cannot delete group with {open_n} open trade(s)")
     db.delete(g)
     db.commit()
     return {"deleted": group_id}
