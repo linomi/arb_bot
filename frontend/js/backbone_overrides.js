@@ -1,11 +1,39 @@
 /**
  * Overrides for Backbone tab after main.js loads.
  * Trades / performance / equity follow current bot mode (server default).
+ * Live equity starts from wallet balance via /equity_curve API.
  */
 (function () {
   window.renderGroupList = function () {};
   const gs = document.getElementById("group-search");
   if (gs) gs.replaceWith(gs.cloneNode(true));
+
+  async function loadEquityForGroup(groupId) {
+    const emptyEl = document.getElementById("equity-empty");
+    try {
+      const curve = await API.equityCurve(groupId);
+      const points = (curve && curve.points) ? curve.points : (Array.isArray(curve) ? curve : []);
+      if (!points.length) {
+        if (emptyEl) emptyEl.hidden = false;
+        return;
+      }
+      if (emptyEl) emptyEl.hidden = true;
+      const meta = {
+        startEquity: curve && curve.start_equity != null ? Number(curve.start_equity) : 0,
+        accountBalance: curve && curve.account_balance != null ? Number(curve.account_balance) : null,
+        source: (curve && curve.source) || "model_cum_pnl",
+      };
+      if (typeof renderEquityCurvePoints === "function") {
+        renderEquityCurvePoints("equity-canvas", points, meta);
+      }
+    } catch (e) {
+      console.warn("equity_curve API failed, fallback trades", e);
+      try {
+        const trades = await API.listTrades(groupId);
+        if (typeof renderEquityChart === "function") renderEquityChart("equity-canvas", trades);
+      } catch (e2) {}
+    }
+  }
 
   window.loadGroupList = async function loadGroupList() {
     const groups = await API.listGroups();
@@ -66,23 +94,14 @@
     if (fit && !fit.group_name) fit.group_name = gname;
 
     state.selectedFit = fit;
-    // mode omitted → server uses current bot trading_mode
     const trades = await API.listTrades(groupId);
     renderTradesTable(trades);
     renderResidualChart("residual-chart", fit, backboneCfg, trades, (trade) => {
       _showFitForTrade(groupId, trade, trades);
     });
 
-    try {
-      const closed = (trades || []).filter((t) => t.status === "closed" && t.pnl != null);
-      const emptyEl = document.getElementById("equity-empty");
-      if (!closed.length) {
-        if (emptyEl) emptyEl.hidden = false;
-      } else {
-        if (emptyEl) emptyEl.hidden = true;
-        if (typeof renderEquityChart === "function") renderEquityChart("equity-canvas", trades);
-      }
-    } catch (e) {}
+    // Live: start from account balance via dedicated API (not from zero)
+    await loadEquityForGroup(groupId);
 
     if (typeof renderBetaDiagram === "function") {
       renderBetaDiagram("beta-diagram", g, fit);
@@ -132,12 +151,21 @@
     await loadPerfTable();
   };
 
-  // After mode switch in top bar, refresh tables so paper/live data swaps.
+  // Override showGroupDetail equity section when detail panel is used
+  const _origShow = window.showGroupDetail;
+  window.showGroupDetail = async function (row) {
+    if (typeof _origShow === "function") {
+      await _origShow(row);
+    }
+    if (row && row.group_id) {
+      await loadEquityForGroup(row.group_id);
+    }
+  };
+
   const modeSelect = document.getElementById("trading-mode-select");
   if (modeSelect && !modeSelect.dataset.modeRefreshWired) {
     modeSelect.dataset.modeRefreshWired = "1";
     modeSelect.addEventListener("change", async () => {
-      // main.js already posts botMode; wait a tick then reload mode-scoped data
       setTimeout(async () => {
         try {
           const s = await API.botState();
