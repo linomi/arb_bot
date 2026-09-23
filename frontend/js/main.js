@@ -49,8 +49,9 @@ function stopFitPoll() {
 }
 
 function renderParamForm(formEl, data) {
+  if (!formEl) return;
   formEl.innerHTML = "";
-  Object.entries(data).forEach(([key, value]) => {
+  Object.entries(data || {}).forEach(([key, value]) => {
     const label = document.createElement("label");
     const isNumber = typeof value === "number";
     label.dataset.type = isNumber ? "number" : "string";
@@ -75,6 +76,7 @@ function renderParamForm(formEl, data) {
 
 function collectFormData(formEl) {
   const out = {};
+  if (!formEl) return out;
   formEl.querySelectorAll("label").forEach((label) => {
     const input = label.querySelector("input,select,textarea");
     if (!input) return;
@@ -93,10 +95,13 @@ function _prettyLabel(key) {
 async function refreshBotState() {
   const s = await API.botState();
   const btn = document.getElementById("bot-toggle");
+  if (!btn) return;
   btn.classList.toggle("running", s.is_running);
   btn.classList.toggle("idle", !s.is_running);
-  btn.querySelector(".label").textContent = s.is_running ? "ACTIVE" : "INACTIVE";
-  document.getElementById("trading-mode-select").value = s.trading_mode;
+  const label = btn.querySelector(".label");
+  if (label) label.textContent = s.is_running ? "ACTIVE" : "INACTIVE";
+  const modeSel = document.getElementById("trading-mode-select");
+  if (modeSel) modeSel.value = s.trading_mode;
 }
 
 document.getElementById("bot-toggle").addEventListener("click", async () => {
@@ -168,8 +173,10 @@ async function selectGroup(groupId, force = true) {
   const group = state.groups.find((g) => g.id === groupId);
   if (!group) return;
 
-  document.getElementById("plot-title").textContent = `Residual / Z-Score — ${group.name}`;
-  document.getElementById("plot-meta").textContent = "Fitting OLS on the latest window…";
+  const plotTitle = document.getElementById("plot-title");
+  if (plotTitle) plotTitle.textContent = `Residual / Z-Score — ${group.name}`;
+  const plotMeta = document.getElementById("plot-meta");
+  if (plotMeta) plotMeta.textContent = "Fitting OLS on the latest window…";
 
   const backboneCfg = state.backboneCfg || (await API.getConfigSection("backbone"));
   state.backboneCfg = backboneCfg;
@@ -185,8 +192,7 @@ async function selectGroup(groupId, force = true) {
       state.lastFitAt[groupId] = Date.now();
       state.lastFitData[groupId] = fit;
     } catch (e) {
-      document.getElementById("plot-meta").textContent =
-        "Could not fit residual: " + (e.message || e);
+      if (plotMeta) plotMeta.textContent = "Could not fit residual: " + (e.message || e);
       return;
     }
   }
@@ -196,7 +202,6 @@ async function selectGroup(groupId, force = true) {
   renderTradesTable(trades);
   renderResidualChart("residual-chart", fit, backboneCfg, trades, null);
 
-  // Equity from API — live starts at account balance
   try {
     const curve = await API.equityCurve(groupId);
     const points = (curve && curve.points) ? curve.points : [];
@@ -219,10 +224,12 @@ async function selectGroup(groupId, force = true) {
 
   const bars = fit.bars_used != null ? fit.bars_used : "?";
   const res = fit.resolution || "?";
-  document.getElementById("plot-meta").innerHTML =
-    `Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
-    `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
-    `${bars} bars @ ${res} · fitted ${fmtTime(fit.fitted_at)}`;
+  if (plotMeta) {
+    plotMeta.innerHTML =
+      `Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
+      `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
+      `${bars} bars @ ${res} · fitted ${fmtTime(fit.fitted_at)}`;
+  }
 }
 
 async function loadPerfTable() {
@@ -257,6 +264,14 @@ function _collectPerfFiltersFromUI() {
   if (pnlVal && pnlVal.value !== "") {
     setPerfFilter("total_pnl", document.getElementById("filter-pnl-op").value, pnlVal.value);
   }
+  const sharpeVal = document.getElementById("filter-sharpe-val");
+  if (sharpeVal && sharpeVal.value !== "") {
+    setPerfFilter("sharpe_ratio", document.getElementById("filter-sharpe-op").value, sharpeVal.value);
+  }
+  const tradesVal = document.getElementById("filter-trades-val");
+  if (tradesVal && tradesVal.value !== "") {
+    setPerfFilter("trade_count", document.getElementById("filter-trades-op").value, tradesVal.value);
+  }
 }
 
 const applyBtn = document.getElementById("perf-filter-apply");
@@ -266,17 +281,35 @@ if (applyBtn) applyBtn.addEventListener("click", () => {
 });
 const clearBtn = document.getElementById("perf-filter-clear");
 if (clearBtn) clearBtn.addEventListener("click", () => {
+  ["filter-status", "filter-pnl-val", "filter-sharpe-val", "filter-trades-val"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
   clearPerfFilters();
   applyPerfFiltersAndRedraw(showGroupDetail);
 });
 
+// -------------------- Initialization tab --------------------
 document.querySelectorAll(".method-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".method-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     state.initMethod = btn.dataset.method;
+    _syncManualPanelVisibility();
   });
 });
+
+function _syncManualPanelVisibility() {
+  const isManual = state.initMethod === "manual";
+  const panel = document.getElementById("manual-group-panel");
+  const autoActions = document.getElementById("init-auto-actions");
+  if (panel) {
+    panel.hidden = !isManual;
+    panel.style.display = isManual ? "" : "none";
+  }
+  if (autoActions) autoActions.style.display = isManual ? "none" : "flex";
+  if (isManual && typeof loadLiquidSymbols === "function") loadLiquidSymbols();
+}
 
 async function refreshInitTab() {
   const [backbone, init] = await Promise.all([
@@ -285,6 +318,14 @@ async function refreshInitTab() {
   ]);
   state.backboneCfg = backbone;
   state.initCfg = init;
+  state.initMethod = (init && init.method) || state.initMethod || "random";
+  if (state.initMethod === "manual") {
+    /* keep manual if user selected it */
+  }
+  document.querySelectorAll(".method-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.method === state.initMethod)
+  );
+  _syncManualPanelVisibility();
   renderParamForm(document.getElementById("backbone-form"), backbone);
   renderParamForm(document.getElementById("init-form"), init);
   await loadCandidatesTable();
@@ -305,33 +346,182 @@ async function loadCandidatesTable() {
   );
 }
 
+function showInitProgress(visible) {
+  const wrap = document.getElementById("init-progress-wrap");
+  if (!wrap) return;
+  wrap.hidden = !visible;
+  wrap.classList.remove("done", "error");
+}
+
+function updateInitProgressUI(p) {
+  const wrap = document.getElementById("init-progress-wrap");
+  if (!wrap) return;
+  wrap.hidden = false;
+  wrap.classList.toggle("done", p.phase === "done");
+  wrap.classList.toggle("error", p.phase === "error" || !!p.error);
+
+  const phaseEl = document.getElementById("init-progress-phase");
+  const pctEl = document.getElementById("init-progress-pct");
+  const bar = document.getElementById("init-progress-bar");
+  const msg = document.getElementById("init-progress-msg");
+
+  const phaseLabels = {
+    idle: "Idle",
+    starting: "Starting",
+    fetch_symbols: "Markets",
+    fetch_ohlc: "Downloading",
+    backtest: "Backtesting",
+    persist: "Saving",
+    done: "Done",
+    error: "Error",
+  };
+  if (phaseEl) phaseEl.textContent = phaseLabels[p.phase] || p.phase || "…";
+  const pct = Math.round(Number(p.percent) || 0);
+  if (pctEl) pctEl.textContent = pct + "%";
+  if (bar) bar.style.width = pct + "%";
+  if (msg) {
+    let line = p.message || "";
+    if (p.total && p.current != null && p.phase === "backtest") {
+      line = p.message || `Backtesting ${p.current}/${p.total}`;
+    }
+    if (p.error) line = p.error;
+    msg.textContent = line;
+  }
+}
+
+function setInitStatus(text) {
+  const el = document.getElementById("init-status");
+  if (el) el.textContent = text || "";
+}
+
 const saveCfg = document.getElementById("save-config-btn");
 if (saveCfg) saveCfg.addEventListener("click", async () => {
   const backboneData = collectFormData(document.getElementById("backbone-form"));
   const initData = collectFormData(document.getElementById("init-form"));
+  initData.method = state.initMethod === "manual" ? "random" : state.initMethod;
   await API.updateConfigSection("backbone", backboneData);
   await API.updateConfigSection("init", initData);
   state.backboneCfg = backboneData;
-  alert("Parameters saved.");
+  setInitStatus("Parameters saved.");
 });
 
 const runInit = document.getElementById("run-init-btn");
 if (runInit) runInit.addEventListener("click", async () => {
+  if (state.initMethod === "manual") {
+    setInitStatus("Use 'Create Manual Group' for the manual method.");
+    return;
+  }
   runInit.disabled = true;
+  showInitProgress(true);
+  setInitStatus("");
+  updateInitProgressUI({ phase: "starting", message: "Starting…", percent: 0, running: true });
+
   try {
     await API.runInit(state.initMethod || "random", true);
-    const poll = async () => {
-      const p = await API.initProgress();
-      if (p.running) { setTimeout(poll, 500); return; }
-      runInit.disabled = false;
-      await loadCandidatesTable();
-    };
-    setTimeout(poll, 300);
   } catch (e) {
     runInit.disabled = false;
-    alert(e.message);
+    updateInitProgressUI({ phase: "error", message: e.message, percent: 0, running: false, error: e.message });
+    setInitStatus("Error: " + e.message);
+    return;
   }
+
+  const poll = async () => {
+    try {
+      const p = await API.initProgress();
+      updateInitProgressUI(p);
+      if (p.running) {
+        setTimeout(poll, 400);
+        return;
+      }
+      runInit.disabled = false;
+      if (p.phase === "error" || p.error) {
+        setInitStatus("Error: " + (p.error || p.message || "unknown"));
+        return;
+      }
+      const r = p.result || {};
+      setInitStatus(
+        `Done. Method=${r.method || state.initMethod} · liquid symbols=${r.liquid_symbols_considered ?? "?"} · ` +
+        `candidates kept=${r.candidates_evaluated ?? "?"} · groups created=${(r.groups_created || []).length}`
+      );
+      await loadCandidatesTable();
+    } catch (e) {
+      runInit.disabled = false;
+      setInitStatus("Error polling progress: " + e.message);
+      updateInitProgressUI({ phase: "error", message: e.message, percent: 0, running: false, error: e.message });
+    }
+  };
+  setTimeout(poll, 300);
 });
+
+// Manual group (if UI elements exist)
+async function loadLiquidSymbols() {
+  try {
+    const symbols = await API.listLiquidSymbols();
+    state.liquidSymbols = symbols || [];
+    const list = document.getElementById("symbol-checklist");
+    const dep = document.getElementById("manual-dependent");
+    if (dep) {
+      dep.innerHTML = state.liquidSymbols.map((s) => {
+        const sym = typeof s === "string" ? s : (s.symbol || s.name || "");
+        return `<option value="${sym}">${sym}</option>`;
+      }).join("");
+    }
+    if (list) {
+      list.innerHTML = state.liquidSymbols.map((s) => {
+        const sym = typeof s === "string" ? s : (s.symbol || s.name || "");
+        return `<label class="sym-check"><input type="checkbox" value="${sym}" /> ${sym}</label>`;
+      }).join("");
+      list.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+        cb.addEventListener("change", () => {
+          if (cb.checked) state.selectedSymbols.add(cb.value);
+          else state.selectedSymbols.delete(cb.value);
+          const lab = document.getElementById("selected-symbols-label");
+          if (lab) lab.textContent = state.selectedSymbols.size
+            ? [...state.selectedSymbols].join(", ")
+            : "none";
+        });
+      });
+    }
+  } catch (e) {
+    console.warn("loadLiquidSymbols", e);
+  }
+}
+
+const createManualBtn = document.getElementById("create-manual-group-btn");
+if (createManualBtn) {
+  createManualBtn.addEventListener("click", async () => {
+    const symbols = [...state.selectedSymbols];
+    const dependent = (document.getElementById("manual-dependent") || {}).value;
+    const name = (document.getElementById("manual-group-name") || {}).value || undefined;
+    if (symbols.length < 2) {
+      setInitStatus("Select at least 2 symbols.");
+      return;
+    }
+    if (!dependent || !symbols.includes(dependent)) {
+      setInitStatus("Dependent symbol must be one of the selected symbols.");
+      return;
+    }
+    try {
+      await API.createManualGroup({ name, symbols, dependent_symbol: dependent });
+      setInitStatus("Manual group created.");
+      await loadCandidatesTable();
+      await loadPerfTable();
+    } catch (e) {
+      setInitStatus("Error: " + e.message);
+    }
+  });
+}
+
+const symbolSearch = document.getElementById("symbol-search");
+if (symbolSearch) {
+  symbolSearch.addEventListener("input", () => {
+    const q = symbolSearch.value.trim().toLowerCase();
+    document.querySelectorAll("#symbol-checklist .sym-check").forEach((el) => {
+      const t = el.textContent.toLowerCase();
+      el.style.display = !q || t.includes(q) ? "" : "none";
+    });
+  });
+}
 
 async function refreshSettingsTab() {
   try {
@@ -352,7 +542,8 @@ if (credForm) credForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(credForm);
   const payload = Object.fromEntries(fd.entries());
-  payload.auth_method = document.getElementById("auth-method-select").value;
+  const authSel = document.getElementById("auth-method-select");
+  if (authSel) payload.auth_method = authSel.value;
   await API.saveCred(payload);
   refreshSettingsTab();
   alert("Credentials saved.");
