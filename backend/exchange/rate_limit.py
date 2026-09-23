@@ -48,8 +48,8 @@ limiter = RateLimiter()
 # Nobitex handles ~60+/min on public history; we allow ~120/min with a soft cap.
 # ---------------------------------------------------------------------------
 MARKET_DATA_LIMITS = {
-    "udf_history": (120, 60.0),          # OHLC bars — main init bottleneck
-    "market_stats": (90, 60.0),          # volume ranking / last price
+    "udf_history": (500, 60.0),          # OHLC bars — main init bottleneck
+    "market_stats": (500, 60.0),          # volume ranking / last price
     "margin_markets_list": (60, 60.0),   # symbol universe (cached 60s in client)
 }
 
