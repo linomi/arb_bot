@@ -26,6 +26,19 @@ function pnlClass(v) {
   return v >= 0 ? "num-pos" : "num-neg";
 }
 
+/** Live trades must use exchange realized_pnl only. */
+function displayTradePnl(t) {
+  if (!t) return null;
+  if (t.mode === "live") {
+    if (t.realized_pnl != null && isFinite(Number(t.realized_pnl))) return Number(t.realized_pnl);
+    if (t.pnl != null && t.pnl_source === "exchange" && isFinite(Number(t.pnl))) return Number(t.pnl);
+    return null;
+  }
+  if (t.pnl != null && isFinite(Number(t.pnl))) return Number(t.pnl);
+  if (t.model_pnl != null && isFinite(Number(t.model_pnl))) return Number(t.model_pnl);
+  return null;
+}
+
 function renderPerfTable(rows, onRowClick) {
   PerfTableState.rows = rows || [];
   _applyPerfFilters();
@@ -78,6 +91,7 @@ function _redrawPerfTable(onRowClick) {
     const isActive = String(r.status).toLowerCase() === "active";
     const toggleLabel = isActive ? "Deactivate" : "Activate";
     const toggleCls = isActive ? "btn-secondary perf-toggle" : "btn-primary perf-toggle";
+    const srcNote = r.pnl_source === "exchange" ? "" : "";
 
     const tr = document.createElement("tr");
     if (typeof state !== "undefined" && state.selectedGroupId === gid) {
@@ -193,6 +207,14 @@ function renderTradesTable(trades) {
     const tr = document.createElement("tr");
     const dirCls = t.direction === "long_residual" ? "dir-long" : "dir-short";
     const reasonCls = t.close_reason ? `reason-${t.close_reason}` : "";
+    const p = displayTradePnl(t);
+    let pnlCell;
+    if (t.mode === "live" && p == null && t.status === "closed") {
+      pnlCell = `<span title="Waiting for Nobitex position.PNL">pending</span>`;
+    } else {
+      pnlCell = fmtNum(p);
+    }
+    const src = t.mode === "live" ? (p != null ? "exch" : "?") : "model";
     tr.innerHTML = `
       <td class="${dirCls}">${t.direction === "long_residual" ? "LONG" : "SHORT"}</td>
       <td>${fmtTime(t.entry_time)}</td>
@@ -200,8 +222,8 @@ function renderTradesTable(trades) {
       <td class="${reasonCls}">${t.close_reason || (t.status === "open" ? "open" : "--")}</td>
       <td>${fmtNum(t.entry_z, 2)}</td>
       <td>${fmtNum(t.close_z, 2)}</td>
-      <td class="${pnlClass(t.pnl)}">${fmtNum(t.pnl)}</td>
-      <td>${t.mode}</td>
+      <td class="${pnlClass(p)}">${pnlCell}</td>
+      <td>${t.mode}/${src}</td>
     `;
     tbody.appendChild(tr);
   });
