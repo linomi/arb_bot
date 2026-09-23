@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 
 from backend.db import get_db
 from backend.schemas import BotModeUpdate
-from backend.engine.bot_engine import bot_engine, get_or_create_bot_state
+from backend.engine.bot_engine import bot_engine
+from backend.bot_state_service import get_or_create_bot_state
 from backend.exchange.factory import credentials_configured
 
 router = APIRouter(prefix="/api/bot", tags=["bot"])
@@ -16,7 +17,9 @@ def get_state(db: Session = Depends(get_db)):
         "is_running": state.is_running,
         "trading_mode": state.trading_mode,
         "last_error": bot_engine._last_error,
+        "group_errors": dict(getattr(bot_engine, "_group_errors", {}) or {}),
         "credentials_configured": credentials_configured(db),
+        "note": "is_running=False only blocks new entries; open positions are still managed",
     }
 
 
@@ -35,10 +38,14 @@ def start_bot(db: Session = Depends(get_db)):
 
 @router.post("/stop")
 def stop_bot(db: Session = Depends(get_db)):
+    """Pause new entries only — exit/stop-loss still runs for open trades."""
     state = get_or_create_bot_state(db)
     state.is_running = False
     db.commit()
-    return {"is_running": False}
+    return {
+        "is_running": False,
+        "message": "New entries paused; open positions still managed",
+    }
 
 
 @router.post("/mode")
