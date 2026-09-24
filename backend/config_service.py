@@ -1,6 +1,7 @@
 """
 Config is stored in the DB (ConfigBlob, one row per section).
-default_config.yaml only seeds the DB on first run.
+default_config.yaml only seeds the DB on first run; missing keys in an
+existing section are filled additively from defaults (never overwrite user values).
 """
 from pathlib import Path
 import yaml
@@ -11,13 +12,28 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "defau
 SECTIONS = ("backbone", "init", "system")
 
 
-def seed_defaults_if_missing(db: Session):
+def _load_yaml_defaults() -> dict:
     with open(DEFAULT_CONFIG_PATH) as f:
-        defaults = yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
+
+
+def seed_defaults_if_missing(db: Session):
+    defaults = _load_yaml_defaults()
     for section in SECTIONS:
         existing = db.query(ConfigBlob).filter_by(section=section).first()
+        section_defaults = dict(defaults.get(section, {}) or {})
         if existing is None:
-            db.add(ConfigBlob(section=section, data=defaults.get(section, {})))
+            db.add(ConfigBlob(section=section, data=section_defaults))
+        else:
+            # Additive merge: fill keys present in yaml but missing in DB
+            data = dict(existing.data or {})
+            changed = False
+            for k, v in section_defaults.items():
+                if k not in data:
+                    data[k] = v
+                    changed = True
+            if changed:
+                existing.data = data
     db.commit()
 
 
@@ -25,7 +41,13 @@ def get_section(db: Session, section: str) -> dict:
     row = db.query(ConfigBlob).filter_by(section=section).first()
     if row is None:
         raise ValueError(f"Unknown config section: {section}")
-    return dict(row.data)
+    data = dict(row.data or {})
+    # Fill missing keys from defaults at read time (no write unless seed was run)
+    defaults = _load_yaml_defaults().get(section, {}) or {}
+    for k, v in defaults.items():
+        if k not in data:
+            data[k] = v
+    return data
 
 
 def get_all(db: Session) -> dict:
@@ -55,6 +77,9 @@ def _validate_backbone(data: dict):
     st = int(data.get("sampling_time", 60))
     if st < 1:
         raise ValueError("sampling_time must be >= 1")
+    tpr = float(data.get("target_profit_rate", 0.0))
+    if tpr < 0 or tpr >= 1:
+        raise ValueError("target_profit_rate must be in [0, 1)")
 
 
 def _validate_init(data: dict):
