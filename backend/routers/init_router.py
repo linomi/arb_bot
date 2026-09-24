@@ -212,4 +212,5 @@ def _backbone_params(backbone_cfg: dict) -> dict:
         "z_close": float(backbone_cfg["z_close"]),
         "z_stop_loss": float(backbone_cfg["z_stop_loss"]),
         "transaction_fee_rate": float(backbone_cfg["fee_rate"]) + float(backbone_cfg["slippage_rate"]),
+        "target_profit_rate": float(backbone_cfg.get("target_profit_rate", 0.0) or 0.0),
     }
