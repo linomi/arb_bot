@@ -3,6 +3,7 @@ Bar-by-bar replay of the backbone logic over historical OHLC closes.
 
 PnL model (raw-price OLS): cash ≈ qty_y * Δresidual − costs, with
 qty_y = 1 share of the dependent for ranking (unit share).
+Gross notional uses G = P_y + Σ|β|·P_x (same as live legs_gross_notional).
 """
 from dataclasses import dataclass
 import pandas as pd
@@ -11,7 +12,7 @@ from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
 from backend.strategy.zscore import decide_entry, decide_exit
 from backend.strategy.metrics import compute_group_performance, GroupPerformance
-from backend.strategy.pnl import residual_cash_pnl
+from backend.strategy.pnl import residual_cash_pnl, gross_per_unit_y, entry_target_check
 
 
 @dataclass
@@ -60,6 +61,7 @@ def backtest_group(
     z_close: float,
     z_stop_loss: float,
     transaction_cost_rate: float,
+    target_profit_rate: float = 0.0,
 ) -> BacktestResult:
     symbols = list(price_df.columns)
     n = len(price_df)
@@ -79,8 +81,10 @@ def backtest_group(
                 z_close, z_stop_loss,
             )
             if exit_dec.should_exit:
-                py = float(position["entry_prices"].get(dependent_symbol) or prices_now[dependent_symbol])
-                gross = abs(py) * (1.0 + sum(abs(float(b)) for b in position["betas"].values()))
+                # Correct G: P_y + Σ|β|·P_x at entry (matches live legs_gross_notional)
+                gross = gross_per_unit_y(
+                    position["entry_prices"], dependent_symbol, position["betas"],
+                )
                 pnl = residual_cash_pnl(
                     position["entry_residual"], resid_now, position["direction"],
                     qty_dependent=1.0,
@@ -113,6 +117,19 @@ def backtest_group(
         resid_now = float(fit.residual[-1])
         entry_dec = decide_entry(resid_now, fit.resid_mean, fit.resid_std, z_entry)
         if entry_dec.should_enter:
+            G_unit = gross_per_unit_y(prices_now, dependent_symbol, fit.betas)
+            ok, _det = entry_target_check(
+                z_now=entry_dec.z,
+                sigma=fit.resid_std,
+                z_close=z_close,
+                z_stop=z_stop_loss,
+                gross_per_unit_y=G_unit,
+                cost_rate=transaction_cost_rate,
+                target_rate=float(target_profit_rate or 0.0),
+            )
+            if not ok:
+                i += 1
+                continue
             position = {
                 "direction": entry_dec.direction,
                 "betas": fit.betas,
