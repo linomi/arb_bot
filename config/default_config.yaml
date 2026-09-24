@@ -1,6 +1,7 @@
 # Defaults loaded into the DB the first time the app starts. After that,
 # the DB is the source of truth -- edit everything from the UI. This file
 # is only a starting point, not a hard limit on anything.
+# Missing keys in an existing install are filled additively from this file.
 
 backbone:
   window_size: 100          # bars used to fit the OLS
@@ -13,6 +14,9 @@ backbone:
   fee_rate: 0.001           # exchange trading fee, fractional
   slippage_rate: 0.0005     # modeled slippage, fractional
   trade_notional: 100       # quote-currency notional per leg (paper + sizing hint for live)
+  # Min net profit (as fraction of total leg notional G) required at a perfect
+  # close to |z|=z_close, after round-trip costs. 0.01 = 1%. 0 disables the gate.
+  target_profit_rate: 0.01
 
 init:
   method: random            # "random" | "sector"
