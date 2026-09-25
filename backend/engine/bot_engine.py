@@ -42,7 +42,7 @@ from backend.strategy.sizing import (
     total_required_collateral,
     assert_same_quote,
 )
-from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional
+from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional, entry_target_check
 
 log = logging.getLogger("bot_engine")
 
@@ -733,6 +733,46 @@ class BotEngine:
         dep = group.dependent_symbol
         if str(dep).upper().endswith(("IRT", "RLS")):
             notional = max(notional, MIN_ORDER_VALUE_IRT)
+
+        # Profit-target entry gate (pure sizing, no I/O): skip if a perfect
+        # close at z_close would not clear target_profit_rate of G after costs.
+        try:
+            preview_legs = leg_orders(
+                group.dependent_symbol,
+                entry_dec.direction,
+                fit_res.betas,
+                latest_prices,
+                float(notional),
+            )
+            qty0 = float(preview_legs[0].get("qty") or 0) if preview_legs else 0.0
+            if qty0 > 0:
+                G_unit = legs_gross_notional(preview_legs) / qty0
+            else:
+                G_unit = 0.0
+            cost_rate = float(backbone.get("fee_rate", 0)) + float(backbone.get("slippage_rate", 0))
+            target_rate = float(backbone.get("target_profit_rate", 0.0) or 0.0)
+            ok_gate, gate_det = entry_target_check(
+                z_now=entry_dec.z,
+                sigma=fit_res.resid_std,
+                z_close=float(backbone["z_close"]),
+                z_stop=float(backbone["z_stop_loss"]),
+                gross_per_unit_y=G_unit,
+                cost_rate=cost_rate,
+                target_rate=target_rate,
+            )
+            if not ok_gate:
+                log.info(
+                    "group %s skip entry (profit gate): z_now=%.3f z_min=%s sigma_rel=%s G=%.4g reason=%s",
+                    group.id,
+                    entry_dec.z,
+                    gate_det.get("z_min"),
+                    gate_det.get("sigma_rel"),
+                    G_unit,
+                    gate_det.get("reject_reason"),
+                )
+                return
+        except Exception as e:
+            log.warning("group %s profit gate error (allowing entry): %s", group.id, e)
 
         legs, notional, bal_msg = await self._fit_notional_to_balance(
             trading_client,

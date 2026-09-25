@@ -62,6 +62,7 @@ def _worker_eval(job: tuple) -> dict | None:
             z_close=float(backbone_params["z_close"]),
             z_stop_loss=float(backbone_params["z_stop_loss"]),
             transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
+            target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
         )
     except Exception:
         return None
