@@ -315,7 +315,8 @@ function _syncManualPanelVisibility() {
   const autoActions = document.getElementById("init-auto-actions");
   if (panel) {
     panel.hidden = !isManual;
-    panel.style.display = isManual ? "" : "none";
+    panel.style.display = isManual ? "block" : "none";
+    panel.classList.toggle("is-open", isManual);
   }
   if (autoActions) autoActions.style.display = isManual ? "none" : "flex";
   if (isManual) loadLiquidSymbols();
@@ -465,6 +466,8 @@ if (runInit) runInit.addEventListener("click", async () => {
 
 // -------------------- manual group entry --------------------
 async function loadLiquidSymbols() {
+  const box = document.getElementById("symbol-checklist");
+  if (box) box.innerHTML = "<div class=\"sym-loading\">Loading liquid symbols…</div>";
   try {
     const data = await API.listLiquidSymbols();
     // API returns { symbols: [...], quote, top_n } — not a bare array
@@ -472,9 +475,15 @@ async function loadLiquidSymbols() {
     state.liquidSymbols = Array.isArray(raw)
       ? raw.map((s) => (typeof s === "string" ? s : (s && (s.symbol || s.name)) || "")).filter(Boolean)
       : [];
+    if (!state.liquidSymbols.length) {
+      setInitStatus("No liquid symbols returned. Check exchange connectivity / quote_currency in init config.");
+    } else {
+      setInitStatus(`Loaded ${state.liquidSymbols.length} liquid symbols.`);
+    }
     renderSymbolChecklist();
   } catch (e) {
     console.warn("loadLiquidSymbols", e);
+    if (box) box.innerHTML = "<div class=\"sym-loading\">Failed to load symbols.</div>";
     setInitStatus("Could not load symbols: " + (e.message || e));
   }
 }
@@ -486,6 +495,11 @@ function renderSymbolChecklist() {
   if (!box) return;
   box.innerHTML = "";
   const list = state.liquidSymbols.filter((s) => !filter || String(s).toLowerCase().includes(filter));
+  if (!list.length) {
+    box.innerHTML = "<div class=\"sym-loading\">" + (state.liquidSymbols.length ? "No match for filter." : "No symbols available.") + "</div>";
+    _refreshSelectedSymbolsUI();
+    return;
+  }
   list.forEach((sym) => {
     const label = document.createElement("label");
     label.className = "symbol-check-item sym-check";
