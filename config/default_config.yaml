@@ -17,6 +17,11 @@ backbone:
   # Min net profit (as fraction of total leg notional G) required at a perfect
   # close to |z|=z_close, after round-trip costs. 0.01 = 1%. 0 disables the gate.
   target_profit_rate: 0.01
+  # Cap how much leg_orders may inflate a basket to clear MIN_ORDER_VALUE_IRT.
+  # Large scale is a proxy for thin books (small natural notional). 3.0 rejects
+  # the worst historical thin-cap trades while allowing moderate majors (~1.3x).
+  # Set to 0 to disable.
+  max_entry_scale: 3.0
 
 init:
   method: random            # "random" | "sector"
