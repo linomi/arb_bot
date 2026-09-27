@@ -80,6 +80,12 @@ def _validate_backbone(data: dict):
     tpr = float(data.get("target_profit_rate", 0.0))
     if tpr < 0 or tpr >= 1:
         raise ValueError("target_profit_rate must be in [0, 1)")
+    mes = data.get("max_entry_scale", 3.0)
+    if mes is not None and mes != "":
+        mes_f = float(mes)
+        # 0 or None disables the guard; otherwise require >= 1.
+        if mes_f != 0 and mes_f < 1:
+            raise ValueError("max_entry_scale must be >= 1 (or 0/None to disable)")
 
 
 def _validate_init(data: dict):
