@@ -36,6 +36,8 @@ class Group(Base):
     source = Column(String, nullable=False, default="random")
     sector = Column(String, nullable=True)
     status = Column(String, nullable=False, default="candidate")
+    # Exchange this group trades on. Default "nobitex" keeps existing rows valid.
+    exchange = Column(String, nullable=False, default="nobitex")
     params_snapshot = Column(JSON, nullable=True)
     backtest_metrics = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=now)
@@ -119,4 +121,7 @@ class BotState(Base):
     id = Column(Integer, primary_key=True)
     is_running = Column(Boolean, default=False)
     trading_mode = Column(String, default="paper")
+    # Active exchange for live trading (single-active-exchange architecture).
+    # "nobitex" | "xt". Default preserves existing behaviour.
+    exchange = Column(String, default="nobitex")
     updated_at = Column(DateTime, default=now, onupdate=now)
