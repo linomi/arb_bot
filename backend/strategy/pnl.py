@@ -30,7 +30,10 @@ def legs_gross_notional(legs: list[dict]) -> float:
         q = l.get("filled_qty")
         if q is None:
             q = l.get("qty") or 0
-        p = l.get("price") or 0
+        # Prefer actual fill_price when available (Task B); fall back to decision price.
+        p = l.get("fill_price")
+        if p is None:
+            p = l.get("price") or 0
         total += abs(float(q)) * float(p)
     return float(total)
 
