@@ -62,6 +62,8 @@ def backtest_group(
     z_stop_loss: float,
     transaction_cost_rate: float,
     target_profit_rate: float = 0.0,
+    max_entry_scale: float | None = None,
+    trade_notional: float = 100.0,
 ) -> BacktestResult:
     symbols = list(price_df.columns)
     n = len(price_df)
@@ -81,7 +83,6 @@ def backtest_group(
                 z_close, z_stop_loss,
             )
             if exit_dec.should_exit:
-                # Correct G: P_y + Σ|β|·P_x at entry (matches live legs_gross_notional)
                 gross = gross_per_unit_y(
                     position["entry_prices"], dependent_symbol, position["betas"],
                 )
@@ -130,6 +131,22 @@ def backtest_group(
             if not ok:
                 i += 1
                 continue
+            if max_entry_scale is not None and float(max_entry_scale) > 0:
+                try:
+                    from backend.strategy.sizing import leg_orders, ExcessiveScalingError
+                    leg_orders(
+                        dependent_symbol,
+                        entry_dec.direction,
+                        fit.betas,
+                        prices_now,
+                        float(trade_notional),
+                        max_scale=float(max_entry_scale),
+                    )
+                except ExcessiveScalingError:
+                    i += 1
+                    continue
+                except Exception:
+                    pass
             position = {
                 "direction": entry_dec.direction,
                 "betas": fit.betas,
