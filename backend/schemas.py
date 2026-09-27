@@ -12,6 +12,7 @@ class ConfigSectionUpdate(BaseModel):
 class InitRunRequest(BaseModel):
     method: Optional[str] = None  # overrides init.method if provided ("random"|"sector")
     activate: bool = True         # if true, surviving groups get status="active" immediately
+    exchange: Optional[str] = None  # "nobitex" | "xt"; defaults to BotState.exchange
 
 
 class ManualGroupCreate(BaseModel):
@@ -19,6 +20,7 @@ class ManualGroupCreate(BaseModel):
     symbols: list[str]
     dependent_symbol: Optional[str] = None
     activate: bool = True
+    exchange: Optional[str] = None  # "nobitex" | "xt"
 
 
 class GroupOut(BaseModel):
@@ -29,6 +31,7 @@ class GroupOut(BaseModel):
     source: str
     sector: Optional[str] = None
     status: str
+    exchange: str = "nobitex"
     backtest_metrics: Optional[dict] = None
     created_at: str
 
@@ -87,6 +90,7 @@ class OLSFitOut(BaseModel):
 class BotStateOut(BaseModel):
     is_running: bool
     trading_mode: str
+    exchange: str = "nobitex"
     last_error: Optional[str] = None
 
 
@@ -94,11 +98,18 @@ class BotModeUpdate(BaseModel):
     trading_mode: str  # "paper" | "live"
 
 
+class BotExchangeUpdate(BaseModel):
+    exchange: str  # "nobitex" | "xt"
+
+
 class CredentialIn(BaseModel):
-    auth_method: str = "token"          # "token" | "key_signature"
+    # "token" | "key_signature" (Nobitex Ed25519) | "key_secret" (XT HMAC)
+    auth_method: str = "token"
     token: Optional[str] = None
     api_key: Optional[str] = None
+    # Nobitex Ed25519 PEM/base64, or XT HMAC secret
     api_secret_pem: Optional[str] = None
+    exchange: Optional[str] = None  # defaults to "nobitex"
 
 
 class CredentialStatusOut(BaseModel):

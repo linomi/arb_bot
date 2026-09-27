@@ -24,6 +24,7 @@ from backend.routers import (
     credentials_router,
     manual_router,
     symbols_router,
+    debug_router,
 )
 from backend import security
 from backend.routers.groups_router import assign_codenames
@@ -40,6 +41,7 @@ app.include_router(init_router.router)
 app.include_router(symbols_router.router)
 app.include_router(bot_router.router)
 app.include_router(credentials_router.router)
+app.include_router(debug_router.router)
 
 
 @app.on_event("startup")

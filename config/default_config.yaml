@@ -22,6 +22,16 @@ backbone:
   # the worst historical thin-cap trades while allowing moderate majors (~1.3x).
   # Set to 0 to disable.
   max_entry_scale: 3.0
+  # XT-only: leverage applied once per symbol before first order (default 2).
+  xt_leverage: 2
+  # XT-only: "isolated" | "cross" (default isolated).
+  xt_margin_mode: isolated
+  # Assumed funding cost per holding interval (fraction). 0.0 = no funding cost
+  # so Nobitex behaviour is unchanged. Tune from fetchFundingRateHistory.
+  funding_rate_estimate: 0.0
+  # Fixed number of funding intervals assumed at entry (simplification; not a
+  # half-life forecast). Multiplied by funding_rate_estimate into cost_rate.
+  expected_holding_funding_intervals: 1
 
 init:
   method: random            # "random" | "sector"

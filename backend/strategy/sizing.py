@@ -8,7 +8,7 @@ qty_xj = |beta_j| * qty_y
 
 Negligible independent legs (contrib << dependent notional) are dropped
 instead of scaling the whole basket up to meet the exchange min order size.
-Remaining IRT legs are then scaled so each meets MIN_ORDER_VALUE_IRT.
+Remaining legs are then scaled so each meets min_order_value.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import logging
 log = logging.getLogger("sizing")
 
 # Single source of truth for Nobitex IRT minimum order value (Rial).
+# XT uses per-market limits from load_markets instead.
 MIN_ORDER_VALUE_IRT = 50_000.0
 
 # Drop independent leg if its notional is below this fraction of dependent notional.
@@ -44,7 +45,8 @@ def leg_orders(
     betas: dict,
     prices: dict,
     trade_notional: float,
-    min_order_value_irt: float = MIN_ORDER_VALUE_IRT,
+    min_order_value: float | None = None,
+    min_order_value_irt: float | None = None,  # backward-compat alias
     min_weight_fraction: float = DEFAULT_MIN_WEIGHT_FRACTION,
     max_scale: float | None = None,
 ) -> list[dict]:
@@ -53,6 +55,14 @@ def leg_orders(
     notional = float(trade_notional)
     if notional <= 0:
         raise ValueError("trade_notional must be positive")
+
+    # Resolve minimum: explicit min_order_value > legacy min_order_value_irt > default IRT
+    if min_order_value is not None:
+        min_val = float(min_order_value)
+    elif min_order_value_irt is not None:
+        min_val = float(min_order_value_irt)
+    else:
+        min_val = MIN_ORDER_VALUE_IRT
 
     py = float(prices[dependent_symbol])
     if py <= 0:
@@ -109,17 +119,16 @@ def leg_orders(
             [(d["symbol"], round(d["weight"], 5)) for d in dropped],
         )
 
-    # Scale remaining IRT legs to meet exchange minimum — never inflate for dropped legs.
+    # Scale remaining legs to meet exchange minimum — never inflate for dropped legs.
     scale = 1.0
     scale_symbol = None
     for leg in legs:
-        if _is_irt(leg["symbol"]):
-            leg_notional = float(leg["qty"]) * float(leg["price"])
-            if leg_notional > 0 and leg_notional < min_order_value_irt:
-                needed = min_order_value_irt / leg_notional
-                if needed > scale:
-                    scale = needed
-                    scale_symbol = leg["symbol"]
+        leg_notional = float(leg["qty"]) * float(leg["price"])
+        if leg_notional > 0 and leg_notional < min_val:
+            needed = min_val / leg_notional
+            if needed > scale:
+                scale = needed
+                scale_symbol = leg["symbol"]
 
     if max_scale is not None and scale > float(max_scale):
         raise ExcessiveScalingError(scale, symbol=scale_symbol, max_scale=float(max_scale))
@@ -142,7 +151,10 @@ def _is_irt(symbol: str) -> bool:
 
 def quote_suffix(symbol: str) -> str:
     s = (symbol or "").upper()
-    if s.endswith("USDT"):
+    # Unified ccxt swap form BTC/USDT:USDT
+    if ":USDT" in s or s.endswith(":USDT"):
+        return "USDT"
+    if s.endswith("USDT") or "/USDT" in s:
         return "USDT"
     if s.endswith("IRT") or s.endswith("RLS"):
         return "IRT"
@@ -164,6 +176,31 @@ def assert_same_quote(symbols: list[str], dependent: str | None = None) -> str:
             f"(symbols={symbols}, dependent={dependent})"
         )
     return next(iter(quotes))
+
+
+def assert_same_exchange(
+    symbols: list[str],
+    exchange: str,
+    dependent: str | None = None,
+) -> str:
+    """
+    Ensure symbols are consistent with the group's exchange.
+    Nobitex groups must be IRT-quoted; XT groups must be USDT swap form.
+    A group cannot mix a Nobitex IRT symbol with an XT USDT perpetual.
+    """
+    quote = assert_same_quote(symbols, dependent)
+    ex = (exchange or "nobitex").lower()
+    if ex == "nobitex" and quote != "IRT":
+        raise ValueError(
+            f"nobitex groups require IRT quote, got {quote} "
+            f"(symbols={symbols}, dependent={dependent})"
+        )
+    if ex == "xt" and quote != "USDT":
+        raise ValueError(
+            f"xt groups require USDT settle, got {quote} "
+            f"(symbols={symbols}, dependent={dependent})"
+        )
+    return quote
 
 
 def close_legs_from_entry(legs_entry: list[dict], close_prices: dict) -> list[dict]:
