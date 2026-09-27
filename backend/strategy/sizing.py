@@ -23,6 +23,21 @@ MIN_ORDER_VALUE_IRT = 50_000.0
 DEFAULT_MIN_WEIGHT_FRACTION = 0.02
 
 
+class ExcessiveScalingError(ValueError):
+    """Raised when leg_orders would inflate the basket beyond max_scale."""
+
+    def __init__(self, scale: float, symbol: str | None = None, max_scale: float | None = None):
+        self.scale = scale
+        self.symbol = symbol
+        self.max_scale = max_scale
+        msg = f"scale {scale:.3f}"
+        if symbol:
+            msg += f" required for {symbol}"
+        if max_scale is not None:
+            msg += f" exceeds max_scale={max_scale}"
+        super().__init__(msg)
+
+
 def leg_orders(
     dependent_symbol: str,
     direction: str,
@@ -31,6 +46,7 @@ def leg_orders(
     trade_notional: float,
     min_order_value_irt: float = MIN_ORDER_VALUE_IRT,
     min_weight_fraction: float = DEFAULT_MIN_WEIGHT_FRACTION,
+    max_scale: float | None = None,
 ) -> list[dict]:
     if direction not in ("long_residual", "short_residual"):
         raise ValueError(f"unknown direction: {direction}")
@@ -95,11 +111,19 @@ def leg_orders(
 
     # Scale remaining IRT legs to meet exchange minimum — never inflate for dropped legs.
     scale = 1.0
+    scale_symbol = None
     for leg in legs:
         if _is_irt(leg["symbol"]):
             leg_notional = float(leg["qty"]) * float(leg["price"])
             if leg_notional > 0 and leg_notional < min_order_value_irt:
-                scale = max(scale, min_order_value_irt / leg_notional)
+                needed = min_order_value_irt / leg_notional
+                if needed > scale:
+                    scale = needed
+                    scale_symbol = leg["symbol"]
+
+    if max_scale is not None and scale > float(max_scale):
+        raise ExcessiveScalingError(scale, symbol=scale_symbol, max_scale=float(max_scale))
+
     if scale > 1.0:
         for leg in legs:
             leg["qty"] = float(leg["qty"]) * scale
@@ -165,7 +189,7 @@ def legs_gross_notional(legs: list[dict]) -> float:
     total = 0.0
     for leg in legs or []:
         q = float(leg.get("filled_qty") if leg.get("filled_qty") is not None else leg.get("qty") or 0)
-        p = float(leg.get("price") or 0)
+        p = float(leg.get("fill_price") if leg.get("fill_price") is not None else leg.get("price") or 0)
         total += abs(q * p)
     return total
 
