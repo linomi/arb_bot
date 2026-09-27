@@ -41,6 +41,7 @@ from backend.strategy.sizing import (
     MIN_ORDER_VALUE_IRT,
     total_required_collateral,
     assert_same_quote,
+    ExcessiveScalingError,
 )
 from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional, entry_target_check
 
@@ -81,6 +82,19 @@ class PartialLegsError(RuntimeError):
     def __init__(self, message: str, legs: list[dict]):
         super().__init__(message)
         self.legs = legs
+
+
+
+def _fill_price_from_position(pos: dict | None, *, is_close: bool = False) -> float | None:
+    """Extract Rial fill price from a Nobitex position payload."""
+    if not pos:
+        return None
+    key = "exitPrice" if is_close else "entryPrice"
+    for k in ((key, "markPrice", "entryPrice") if is_close else (key, "markPrice")):
+        v = _parse_money(pos.get(k))
+        if v is not None and v > 0:
+            return float(v)
+    return None
 
 
 class BotEngine:
@@ -238,6 +252,7 @@ class BotEngine:
         prices: dict,
         desired_notional: float,
         trading_mode: str,
+        max_scale: float | None = None,
     ) -> tuple[list[dict] | None, float, str]:
         """
         Build legs for desired_notional. On live, scale down so total collateral
@@ -246,7 +261,10 @@ class BotEngine:
         Returns (legs | None, final_notional, message).
         """
         def _build(n: float) -> list[dict]:
-            return leg_orders(dependent_symbol, direction, betas, prices, float(n))
+            return leg_orders(
+                dependent_symbol, direction, betas, prices, float(n),
+                max_scale=max_scale,
+            )
 
         if trading_mode != "live" or not isinstance(trading_client, NobitexClient):
             legs = _build(desired_notional)
@@ -380,6 +398,31 @@ class BotEngine:
                         "client_order_id": coid,
                         "filled_qty": close_qty,
                     }
+                    # Poll position for actual exit/fill price (Rial).
+                    decision_px = float(leg.get("price") or 0) or None
+                    fill = None
+                    try:
+                        for attempt in range(3):
+                            await asyncio.sleep(0.4 if attempt else 0.2)
+                            pos_after = await trading_client.get_position(int(leg["position_id"]))
+                            fill = _fill_price_from_position(pos_after, is_close=True)
+                            if fill is not None:
+                                break
+                    except Exception as e:
+                        log.debug("post-close fill_price poll failed: %s", e)
+                    if fill is not None:
+                        leg["decision_price"] = decision_px
+                        leg["fill_price"] = fill
+                        if decision_px and decision_px > 0:
+                            slip = (fill - decision_px) / decision_px
+                            log.info(
+                                "close leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
+                                symbol, fill, decision_px, slip,
+                            )
+                    else:
+                        leg["decision_price"] = decision_px
+                        leg["fill_price"] = decision_px
+                        leg["fill_price_estimated"] = True
                     out.append(leg)
                     continue
                 except NobitexError as e:
@@ -459,8 +502,59 @@ class BotEngine:
                     )
                     if pid:
                         leg["position_id"] = pid
+                        # Capture real fill price (Rial) from position status.
+                        fill = None
+                        for attempt in range(3):
+                            try:
+                                pos = await trading_client.get_position(int(pid))
+                                fill = _fill_price_from_position(pos, is_close=False)
+                                if fill is not None:
+                                    break
+                            except Exception as e:
+                                log.debug("get_position for fill_price failed: %s", e)
+                            await asyncio.sleep(0.4)
+                        decision_px = float(leg.get("price") or 0) or None
+                        if fill is not None:
+                            leg["decision_price"] = decision_px
+                            leg["fill_price"] = fill
+                            if decision_px and decision_px > 0:
+                                slip = (fill - decision_px) / decision_px
+                                log.info(
+                                    "leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
+                                    symbol, fill, decision_px, slip,
+                                )
+                        else:
+                            leg["decision_price"] = decision_px
+                            leg["fill_price"] = decision_px
+                            leg["fill_price_estimated"] = True
+                            log.info(
+                                "leg %s fill_price unavailable; using decision_price=%.4g",
+                                symbol, decision_px or 0,
+                            )
                 except Exception as e:
                     log.debug("resolve_position_id failed: %s", e)
+
+            # For closes via place_order fallback, try to capture fill similarly
+            if is_close and isinstance(trading_client, NobitexClient) and leg.get("position_id"):
+                try:
+                    pos = await trading_client.get_position(int(leg["position_id"]))
+                    fill = _fill_price_from_position(pos, is_close=True)
+                    decision_px = float(leg.get("price") or 0) or None
+                    if fill is not None:
+                        leg["decision_price"] = decision_px
+                        leg["fill_price"] = fill
+                        if decision_px and decision_px > 0:
+                            slip = (fill - decision_px) / decision_px
+                            log.info(
+                                "close leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
+                                symbol, fill, decision_px, slip,
+                            )
+                    else:
+                        leg["decision_price"] = decision_px
+                        leg["fill_price"] = decision_px
+                        leg["fill_price_estimated"] = True
+                except Exception as e:
+                    log.debug("close fill_price poll failed: %s", e)
 
             out.append(leg)
             if not is_close:
@@ -774,6 +868,32 @@ class BotEngine:
         except Exception as e:
             log.warning("group %s profit gate error (allowing entry): %s", group.id, e)
 
+        max_entry_scale = backbone.get("max_entry_scale")
+        if max_entry_scale is not None:
+            try:
+                max_entry_scale = float(max_entry_scale)
+                if max_entry_scale <= 0:
+                    max_entry_scale = None
+            except (TypeError, ValueError):
+                max_entry_scale = None
+
+        # Preview sizing against max_entry_scale before balance fit (same treatment as profit gate).
+        try:
+            leg_orders(
+                group.dependent_symbol,
+                entry_dec.direction,
+                fit_res.betas,
+                latest_prices,
+                float(notional),
+                max_scale=max_entry_scale,
+            )
+        except ExcessiveScalingError as e:
+            log.info(
+                "group %s skip entry (max_entry_scale): %s",
+                group.id, e,
+            )
+            return
+
         legs, notional, bal_msg = await self._fit_notional_to_balance(
             trading_client,
             dependent_symbol=group.dependent_symbol,
@@ -782,6 +902,7 @@ class BotEngine:
             prices=latest_prices,
             desired_notional=notional,
             trading_mode=trading_mode,
+            max_scale=max_entry_scale,
         )
         if legs is None:
             self._last_error = bal_msg

@@ -50,6 +50,7 @@ function stopFitPoll() {
 
 const FIELD_HINTS = {
   target_profit_rate: "0.01 = 1% of total position notional, net of fees; 0 disables",
+  max_entry_scale: "Cap on leg_orders inflation to meet exchange min; large values mean the natural position was too small (thin book). 0 disables.",
 };
 
 function renderParamForm(formEl, data) {
