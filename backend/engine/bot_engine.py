@@ -41,9 +41,20 @@ from backend.strategy.sizing import (
     MIN_ORDER_VALUE_IRT,
     total_required_collateral,
     assert_same_quote,
+    assert_same_exchange,
     ExcessiveScalingError,
 )
 from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional, entry_target_check
+from backend.engine import xt_hooks
+try:
+    from backend.exchange.xt import XTClient, XTError
+except ImportError:
+    XTClient = None  # type: ignore
+    XTError = RuntimeError  # type: ignore
+try:
+    from ccxt.base.errors import RateLimitExceeded as CcxtRateLimitExceeded
+except ImportError:
+    CcxtRateLimitExceeded = type("CcxtRateLimitExceeded", (Exception,), {})
 
 log = logging.getLogger("bot_engine")
 
@@ -67,6 +78,20 @@ def _parse_money(val) -> float | None:
         return float(s)
     except ValueError:
         return None
+
+
+
+def _pos_id(raw):
+    """Nobitex uses int ids; XT may use symbol strings."""
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    s = str(raw)
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return s
 
 
 def _client_order_id(prefix: str, symbol: str, side: str) -> str:
@@ -102,6 +127,7 @@ class BotEngine:
         self._task: asyncio.Task | None = None
         self._last_error: str | None = None
         self._group_errors: dict[int, str] = {}
+        self._pause_until: str | None = None  # ISO timestamp; XT rate-limit lockout
 
     def start_background_loop(self):
         if self._task is None or self._task.done():
@@ -125,6 +151,12 @@ class BotEngine:
     async def _run_cycle(self, db, state: BotState):
         backbone = config_service.get_section(db, "backbone")
         trading_mode = state.trading_mode or "paper"
+        exchange = (getattr(state, "exchange", None) or "nobitex").strip().lower()
+
+        if xt_hooks.is_paused(self):
+            log.warning("bot paused until %s (rate-limit lockout) — skipping cycle entries", self._pause_until)
+            # Still process exits only: fall through with is_running forced false for entries
+            # by temporarily treating is_running as False below via allow_new_entries.
 
         active = db.query(Group).filter_by(status="active").all()
         active_ids = {g.id for g in active}
@@ -161,10 +193,12 @@ class BotEngine:
                 gid = group.id
                 try:
                     status = group.status
+                    allow_entries = (status == "active") and (not xt_hooks.is_paused(self))
                     await self._process_group(
                         db, group, backbone, md_client, trading_client,
                         resolution, trading_mode, state.is_running,
-                        allow_new_entries=(status == "active"),
+                        allow_new_entries=allow_entries,
+                        exchange=exchange,
                     )
                     self._group_errors.pop(gid, None)
                 except ObjectDeletedError:
@@ -174,7 +208,11 @@ class BotEngine:
                         db.rollback()
                     except Exception:
                         pass
-                except Exception:
+                except Exception as cycle_exc:
+                    if xt_hooks.handle_rate_limit(self, cycle_exc, exchange=exchange):
+                        self._last_error = f"XT rate-limit pause until {self._pause_until}"
+                        log.error("account-wide rate limit — stopping group loop this cycle")
+                        break
                     err = traceback.format_exc()
                     self._last_error = err
                     self._group_errors[gid] = err
@@ -188,11 +226,13 @@ class BotEngine:
         self, db, group: Group, backbone, md_client, trading_client,
         resolution, trading_mode, is_running: bool,
         allow_new_entries: bool = True,
+        exchange: str = "nobitex",
     ):
+        group_ex = (getattr(group, "exchange", None) or exchange or "nobitex").strip().lower()
         try:
-            assert_same_quote(list(group.symbols or []), group.dependent_symbol)
+            assert_same_exchange(list(group.symbols or []), group_ex, group.dependent_symbol)
         except ValueError as e:
-            log.error("group %s currency mismatch: %s", group.id, e)
+            log.error("group %s currency/exchange mismatch: %s", group.id, e)
             self._group_errors[group.id] = str(e)
             return
 
@@ -226,21 +266,17 @@ class BotEngine:
         if open_trade is not None:
             await self._check_exit(
                 db, group, open_trade, latest_prices, backbone_local, trading_client, trading_mode,
+                exchange=group_ex,
             )
         elif is_running and allow_new_entries:
             await self._check_entry(
                 db, group, price_df, latest_prices, backbone_local, trading_client, trading_mode,
+                exchange=group_ex,
             )
 
-    async def _read_free_balance_irt(self, trading_client) -> float | None:
-        if not isinstance(trading_client, NobitexClient):
-            return None
-        try:
-            free = await trading_client.get_margin_active_balance_irt()
-        except Exception as e:
-            log.warning("balance read failed: %s", e)
-            return None
-        return free
+    async def _read_free_balance_irt(self, trading_client, exchange: str = "nobitex") -> float | None:
+        """Legacy name; quote is IRT for nobitex, USDT for xt."""
+        return await xt_hooks.read_free_balance(trading_client, exchange=exchange)
 
     async def _fit_notional_to_balance(
         self,
@@ -253,35 +289,44 @@ class BotEngine:
         desired_notional: float,
         trading_mode: str,
         max_scale: float | None = None,
+        exchange: str = "nobitex",
+        symbols: list[str] | None = None,
     ) -> tuple[list[dict] | None, float, str]:
         """
         Build legs for desired_notional. On live, scale down so total collateral
-        fits free balance × safety − buffer, while every IRT leg stays ≥ 50k.
+        fits free balance × safety − buffer, while every leg stays ≥ exchange min.
 
         Returns (legs | None, final_notional, message).
         """
+        min_val = await xt_hooks.resolve_min_order_value(
+            trading_client, symbols or [dependent_symbol],
+            exchange=exchange, default_irt=MIN_ORDER_VALUE_IRT,
+        )
+        buffer = BALANCE_BUFFER_IRT if exchange == "nobitex" else max(1.0, min_val * 0.1)
+
         def _build(n: float) -> list[dict]:
             return leg_orders(
                 dependent_symbol, direction, betas, prices, float(n),
+                min_order_value=min_val,
                 max_scale=max_scale,
             )
 
-        if trading_mode != "live" or not isinstance(trading_client, NobitexClient):
+        if trading_mode != "live" or not (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
             legs = _build(desired_notional)
             return legs, float(desired_notional), ""
 
-        free = await self._read_free_balance_irt(trading_client)
+        free = await self._read_free_balance_irt(trading_client, exchange=exchange)
         if free is None:
             return None, 0.0, (
                 "cannot read margin wallet balance — refusing live entry "
                 "(API key needs wallet read; endpoint /users/wallets/list)"
             )
 
-        usable = max(0.0, float(free) * BALANCE_SAFETY_FRACTION - BALANCE_BUFFER_IRT)
-        if usable < MIN_ORDER_VALUE_IRT * 2:
+        usable = max(0.0, float(free) * BALANCE_SAFETY_FRACTION - buffer)
+        if usable < min_val * 2:
             return None, 0.0, (
                 f"free balance too low: free={free:.0f} IRT, usable≈{usable:.0f} "
-                f"(need ≥ {MIN_ORDER_VALUE_IRT * 2:.0f} for a 2-leg basket)"
+                f"(need ≥ {min_val * 2:.0f} for a 2-leg basket)"
             )
 
         try:
@@ -296,7 +341,7 @@ class BotEngine:
                 return None, 0.0, "zero required collateral?"
             scale = (usable / need) * 0.98
             notional = float(desired_notional) * scale
-            if notional < MIN_ORDER_VALUE_IRT:
+            if notional < min_val:
                 return None, 0.0, (
                     f"insufficient margin: desired need≈{need:.0f} IRT for "
                     f"notional={desired_notional:.0f}, free={free:.0f}, usable={usable:.0f}"
@@ -309,7 +354,7 @@ class BotEngine:
             if need > usable:
                 scale2 = (usable / need) * 0.98
                 notional = notional * scale2
-                if notional < MIN_ORDER_VALUE_IRT:
+                if notional < min_val:
                     return None, 0.0, (
                         f"insufficient margin after min-order scale-up: need≈{need:.0f}, "
                         f"usable={usable:.0f}, free={free:.0f}"
@@ -358,11 +403,11 @@ class BotEngine:
             ref_price = leg.get("price")
             coid = _client_order_id("c" if is_close else "o", symbol, side)
 
-            if is_close and isinstance(trading_client, NobitexClient) and leg.get("position_id"):
+            if is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id"):
                 close_qty = qty
                 already_done = False
                 try:
-                    pos = await trading_client.get_position(int(leg["position_id"]))
+                    pos = await trading_client.get_position(_pos_id(leg["position_id"]))
                     liab = _parse_money(pos.get("liability"))
                     st = str(pos.get("status") or "").lower()
                     if st in ("closed", "liquidated", "expired") or (liab is not None and liab <= 0):
@@ -385,7 +430,7 @@ class BotEngine:
 
                 try:
                     resp = await trading_client.close_position(
-                        int(leg["position_id"]),
+                        _pos_id(leg["position_id"]),
                         amount=close_qty,
                         execution="market",
                         client_order_id=coid,
@@ -404,7 +449,7 @@ class BotEngine:
                     try:
                         for attempt in range(3):
                             await asyncio.sleep(0.4 if attempt else 0.2)
-                            pos_after = await trading_client.get_position(int(leg["position_id"]))
+                            pos_after = await trading_client.get_position(_pos_id(leg["position_id"]))
                             fill = _fill_price_from_position(pos_after, is_close=True)
                             if fill is not None:
                                 break
@@ -425,10 +470,10 @@ class BotEngine:
                         leg["fill_price_estimated"] = True
                     out.append(leg)
                     continue
-                except NobitexError as e:
+                except (NobitexError, XTError) as e:
                     liab_now = None
                     try:
-                        pos_now = await trading_client.get_position(int(leg["position_id"]))
+                        pos_now = await trading_client.get_position(_pos_id(leg["position_id"]))
                         liab_now = _parse_money(pos_now.get("liability"))
                         st = str(pos_now.get("status") or "").lower()
                         if st in ("closed", "liquidated", "expired") or (liab_now is not None and liab_now <= 0):
@@ -461,7 +506,7 @@ class BotEngine:
 
             try:
                 kwargs = {"price": None, "client_order_id": coid}
-                if isinstance(trading_client, NobitexClient):
+                if (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
                     kwargs["ref_price"] = ref_price
                 opened_after = dt.datetime.utcnow().isoformat()
                 resp = await trading_client.place_order(symbol, side, qty, **kwargs)
@@ -494,7 +539,7 @@ class BotEngine:
                 "requested_qty": qty,
             }
 
-            if not is_close and isinstance(trading_client, NobitexClient) and order_id:
+            if not is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and order_id:
                 try:
                     await asyncio.sleep(0.6)
                     pid = await trading_client.resolve_position_id(
@@ -535,9 +580,9 @@ class BotEngine:
                     log.debug("resolve_position_id failed: %s", e)
 
             # For closes via place_order fallback, try to capture fill similarly
-            if is_close and isinstance(trading_client, NobitexClient) and leg.get("position_id"):
+            if is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id"):
                 try:
-                    pos = await trading_client.get_position(int(leg["position_id"]))
+                    pos = await trading_client.get_position(_pos_id(leg["position_id"]))
                     fill = _fill_price_from_position(pos, is_close=True)
                     decision_px = float(leg.get("price") or 0) or None
                     if fill is not None:
@@ -574,24 +619,24 @@ class BotEngine:
             if leg.get("failed") or leg.get("rolled_back"):
                 continue
             try:
-                if isinstance(trading_client, NobitexClient) and leg.get("position_id"):
+                if (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id"):
                     qty = float(leg.get("filled_qty") or leg["qty"])
                     try:
-                        pos = await trading_client.get_position(int(leg["position_id"]))
+                        pos = await trading_client.get_position(_pos_id(leg["position_id"]))
                         liab = _parse_money(pos.get("liability"))
                         if liab is not None and liab > 0:
                             qty = liab
                     except Exception:
                         pass
                     await trading_client.close_position(
-                        int(leg["position_id"]), amount=qty, execution="market",
+                        _pos_id(leg["position_id"]), amount=qty, execution="market",
                         client_order_id=_client_order_id("rb", leg["symbol"], "x"),
                     )
                 else:
                     opp = "sell" if leg["side"] == "buy" else "buy"
                     qty = float(leg.get("filled_qty") or leg["qty"])
                     kwargs = {"price": None}
-                    if isinstance(trading_client, NobitexClient):
+                    if (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
                         kwargs["ref_price"] = leg.get("price")
                         kwargs["client_order_id"] = _client_order_id("rb", leg["symbol"], opp)
                     await trading_client.place_order(leg["symbol"], opp, qty, **kwargs)
@@ -670,7 +715,7 @@ class BotEngine:
             return None, details
         return float(total), details
 
-    async def _check_exit(self, db, group, open_trade: Trade, latest_prices, backbone, trading_client, trading_mode):
+    async def _check_exit(self, db, group, open_trade: Trade, latest_prices, backbone, trading_client, trading_mode, exchange: str = "nobitex"):
         fit = open_trade.ols_fit
         if fit is None:
             log.error("trade #%s missing ols_fit — cannot exit", open_trade.id)
@@ -743,7 +788,7 @@ class BotEngine:
         fee_model = cost_rate * 2.0 * gross
 
         realized = None
-        if trading_mode == "live" and isinstance(trading_client, NobitexClient):
+        if trading_mode == "live" and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
             try:
                 realized, _ = await self._realized_pnl_from_exchange(
                     trading_client, legs_entry, legs_close,
@@ -785,6 +830,7 @@ class BotEngine:
 
     async def _check_entry(
         self, db, group, price_df, latest_prices, backbone, trading_client, trading_mode,
+        exchange: str = "nobitex",
     ):
         window = price_df.iloc[-int(backbone["window_size"]):]
         price_matrix = {s: window[s].to_numpy() for s in group.symbols}
@@ -825,7 +871,8 @@ class BotEngine:
             log.error("group %s: trade_notional <= 0 — skip entry", group.id)
             return
         dep = group.dependent_symbol
-        if str(dep).upper().endswith(("IRT", "RLS")):
+        group_ex = (getattr(group, "exchange", None) or exchange or "nobitex").lower()
+        if group_ex == "nobitex" and str(dep).upper().endswith(("IRT", "RLS")):
             notional = max(notional, MIN_ORDER_VALUE_IRT)
 
         # Profit-target entry gate (pure sizing, no I/O): skip if a perfect
@@ -843,7 +890,10 @@ class BotEngine:
                 G_unit = legs_gross_notional(preview_legs) / qty0
             else:
                 G_unit = 0.0
-            cost_rate = float(backbone.get("fee_rate", 0)) + float(backbone.get("slippage_rate", 0))
+            # XT adds funding_rate_estimate * expected_holding_funding_intervals (default 0 for nobitex)
+            cost_rate = xt_hooks.effective_cost_rate(
+                backbone, exchange=getattr(group, "exchange", None) or "nobitex"
+            )
             target_rate = float(backbone.get("target_profit_rate", 0.0) or 0.0)
             ok_gate, gate_det = entry_target_check(
                 z_now=entry_dec.z,
@@ -903,6 +953,8 @@ class BotEngine:
             desired_notional=notional,
             trading_mode=trading_mode,
             max_scale=max_entry_scale,
+            exchange=(getattr(group, "exchange", None) or exchange or "nobitex"),
+            symbols=list(group.symbols or []),
         )
         if legs is None:
             self._last_error = bal_msg

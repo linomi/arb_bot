@@ -13,7 +13,6 @@ from typing import Any
 
 log = logging.getLogger("bot_engine")
 
-# Default account-wide lockout pause when XT rate-limits (seconds).
 XT_RATE_LIMIT_PAUSE_SEC = 60
 
 
@@ -33,10 +32,6 @@ def effective_cost_rate(
 
 
 def handle_rate_limit(engine: Any, exc: BaseException, *, exchange: str) -> bool:
-    """
-    If this is an XT rate-limit lockout, set engine._pause_until and return True.
-    Callers must not retry immediately and must not treat it as a per-group error.
-    """
     name = type(exc).__name__
     msg = str(exc).lower()
     is_rl = (
@@ -76,10 +71,6 @@ async def resolve_min_order_value(
     exchange: str = "nobitex",
     default_irt: float = 50_000.0,
 ) -> float:
-    """
-    For XT, take the max of per-symbol min notionals from load_markets limits.
-    For Nobitex, keep the historical fixed IRT minimum.
-    """
     if (exchange or "").lower() != "xt":
         return float(default_irt)
     mins: list[float] = []
@@ -93,8 +84,7 @@ async def resolve_min_order_value(
                 log.debug("get_min_notional(%s): %s", sym, e)
     if mins:
         return max(mins)
-    # Conservative fallback if markets didn't load
-    return 5.0  # typical XT USDT min notional is small
+    return 5.0
 
 
 async def read_free_balance(
@@ -103,7 +93,6 @@ async def read_free_balance(
     exchange: str = "nobitex",
     quote: str | None = None,
 ) -> float | None:
-    """Prefer get_active_balance(quote); fall back to Nobitex IRT helper."""
     q = quote or ("USDT" if (exchange or "").lower() == "xt" else "IRT")
     if hasattr(trading_client, "get_active_balance"):
         try:
