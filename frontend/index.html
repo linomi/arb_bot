@@ -7,10 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20260925a" />
-<link rel="stylesheet" href="/static/css/style_extra.css?v=20260925a" />
-<link rel="stylesheet" href="/static/css/mobile.css?v=20260925a" />
-<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20260925a" />
+<link rel="stylesheet" href="/static/css/style.css?v=20260928xt" />
+<link rel="stylesheet" href="/static/css/style_extra.css?v=20260928xt" />
+<link rel="stylesheet" href="/static/css/mobile.css?v=20260928xt" />
+<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20260928xt" />
 <script src="/static/js/chart.umd.min.js"></script>
 </head>
 <body>
@@ -28,6 +28,13 @@
   </nav>
 
   <div class="bot-control">
+    <div class="mode-select">
+      <label>Exchange</label>
+      <select id="exchange-select">
+        <option value="nobitex">Nobitex</option>
+        <option value="xt">XT.com</option>
+      </select>
+    </div>
     <div class="mode-select">
       <label>Mode</label>
       <select id="trading-mode-select">
@@ -263,13 +270,22 @@
         <p class="warn-note">
           Credentials are encrypted at rest and are only used when Mode is switched to
           <strong>Live</strong> in the top bar. Paper mode never touches these.
+          Select the exchange below, then save credentials for that exchange.
+          The top-bar <strong>Exchange</strong> control chooses which one is active for market data and trading.
         </p>
         <div id="cred-status" class="cred-status"></div>
         <form id="cred-form" class="param-form">
+          <label>Exchange
+            <select name="exchange" id="cred-exchange-select">
+              <option value="nobitex">Nobitex (margin)</option>
+              <option value="xt">XT.com (USDT-M linear perps)</option>
+            </select>
+          </label>
           <label>Auth Method
             <select name="auth_method" id="auth-method-select">
-              <option value="token">API Token</option>
-              <option value="key_signature">API Key + Ed25519 Secret</option>
+              <option value="token">API Token (Nobitex)</option>
+              <option value="key_signature">API Key + Ed25519 Secret (Nobitex)</option>
+              <option value="key_secret">API Key + Secret HMAC (XT)</option>
             </select>
           </label>
           <div id="cred-fields-token">
@@ -279,12 +295,16 @@
           </div>
           <div id="cred-fields-key" style="display:none">
             <label>API Key
-              <input type="text" name="api_key" placeholder="Public key (apiKey)" />
+              <input type="text" name="api_key" placeholder="Public apiKey" />
             </label>
-            <label>Private Key / secretKey (base64 or PEM)
-              <textarea name="api_secret_pem" rows="3" placeholder="paste secretKey base64 from Nobitex, or PEM"></textarea>
+            <label id="cred-secret-label">Private Key / secretKey
+              <textarea name="api_secret_pem" rows="3" placeholder="Nobitex: secretKey base64 or PEM · XT: plain HMAC secret"></textarea>
             </label>
           </div>
+          <p id="cred-xt-hint" class="field-hint" style="display:none;margin:0 0 8px">
+            XT live requires one-way (net) position mode in the XT UI — hedge mode is not supported.
+            Only USDT-M linear perpetuals are used.
+          </p>
           <div class="init-actions">
             <button type="submit" class="btn-primary">Save Credentials</button>
             <button type="button" id="delete-cred-btn" class="btn-danger">Remove Credentials</button>
@@ -303,14 +323,14 @@
 
 </main>
 
-<script src="/static/js/time.js?v=20260925a"></script>
-<script src="/static/js/api.js?v=20260925a"></script>
-<script src="/static/js/charts.js?v=20260925a"></script>
-<script src="/static/js/charts_equity.js?v=20260925a"></script>
-<script src="/static/js/tables.js?v=20260925a"></script>
-<script src="/static/js/beta_diagram.js?v=20260925a"></script>
-<script src="/static/js/main.js?v=20260925a"></script>
-<script src="/static/js/ui_fixes.js?v=20260925a"></script>
-<script src="/static/js/backbone_overrides.js?v=20260925a"></script>
+<script src="/static/js/time.js?v=20260928xt"></script>
+<script src="/static/js/api.js?v=20260928xt"></script>
+<script src="/static/js/charts.js?v=20260928xt"></script>
+<script src="/static/js/charts_equity.js?v=20260928xt"></script>
+<script src="/static/js/tables.js?v=20260928xt"></script>
+<script src="/static/js/beta_diagram.js?v=20260928xt"></script>
+<script src="/static/js/main.js?v=20260928xt"></script>
+<script src="/static/js/ui_fixes.js?v=20260928xt"></script>
+<script src="/static/js/backbone_overrides.js?v=20260928xt"></script>
 </body>
 </html>
