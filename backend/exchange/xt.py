@@ -87,6 +87,14 @@ class XTClient(ExchangeClient):
             opts["secret"] = api_secret
 
         self._ex = ccxt.xt(opts)
+        # We only ever need swap market specs (precision, min notional, leverage
+        # brackets), which come from fetch_markets(). ccxt's load_markets() also
+        # calls fetch_currencies() first (GET sapi.xt.com/v4/public/wallet/support/
+        # currency) when has['fetchCurrencies'] is True, and if that single call
+        # fails for any reason (network blip, geo/IP restriction, transient 5xx),
+        # the whole load_markets() call fails even though we never use currency
+        # data. Disable it so a currency-endpoint hiccup can't block market data.
+        self._ex.has["fetchCurrencies"] = False
         # Per-symbol: leverage/margin already configured this process
         self._configured_symbols: set[str] = set()
         self._markets_loaded = False
@@ -99,9 +107,19 @@ class XTClient(ExchangeClient):
             log.debug("xt close: %s", e)
 
     async def _ensure_markets(self) -> None:
-        if not self._markets_loaded:
+        if self._markets_loaded:
+            return
+        try:
             await self._ex.load_markets()
-            self._markets_loaded = True
+        except Exception as e:
+            raise XTError(
+                f"XT load_markets() failed: {e}. If this is a connection/network "
+                "error (not an auth or 4xx/5xx application error), check that this "
+                "host can actually reach XT's API — some regions/IPs are blocked "
+                "by XT's infrastructure independent of anything in this client.",
+                code="load_markets_failed",
+            ) from e
+        self._markets_loaded = True
 
     def _assert_linear_usdt_swap(self, symbol: str) -> dict:
         """Reject anything that is not a linear USDT-settled perpetual swap."""

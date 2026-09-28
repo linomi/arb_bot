@@ -11,7 +11,15 @@ import pytest
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # A fresh loop per call, not asyncio.get_event_loop(): this file runs
+    # alongside pytest-asyncio-managed tests (test_market_data_scale.py) in
+    # the same session, and get_event_loop() can return a loop that
+    # pytest-asyncio has already closed depending on collection order.
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 @pytest.fixture

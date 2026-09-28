@@ -13,7 +13,10 @@ from typing import Any
 
 log = logging.getLogger("bot_engine")
 
-XT_RATE_LIMIT_PAUSE_SEC = 60
+# XT's documented futures rate-limit penalty is a 10-minute account lockout,
+# not a short backoff — pausing for only 60s would have the bot start
+# retrying while XT still has it locked out, which can extend the lockout.
+XT_RATE_LIMIT_PAUSE_SEC = 10 * 60
 
 
 def effective_cost_rate(
