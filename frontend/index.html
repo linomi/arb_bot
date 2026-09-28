@@ -7,10 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20260925a" />
-<link rel="stylesheet" href="/static/css/style_extra.css?v=20260925a" />
-<link rel="stylesheet" href="/static/css/mobile.css?v=20260925a" />
-<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20260925a" />
+<link rel="stylesheet" href="/static/css/style.css?v=20260928xt" />
+<link rel="stylesheet" href="/static/css/style_extra.css?v=20260928xt" />
+<link rel="stylesheet" href="/static/css/mobile.css?v=20260928xt" />
+<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20260928xt" />
 <script src="/static/js/chart.umd.min.js"></script>
 </head>
 <body>
@@ -28,6 +28,13 @@
   </nav>
 
   <div class="bot-control">
+    <div class="mode-select">
+      <label>Exchange</label>
+      <select id="exchange-select" title="Active exchange for market data and live trading">
+        <option value="nobitex">Nobitex</option>
+        <option value="xt">XT.com</option>
+      </select>
+    </div>
     <div class="mode-select">
       <label>Mode</label>
       <select id="trading-mode-select">
@@ -122,29 +129,29 @@
           </label>
           <label>PnL
             <select id="filter-pnl-op">
-              <option value=">">></option>
-              <option value=">=">>=</option>
-              <option value="<"><</option>
-              <option value="<="><=</option>
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
               <option value="=">=</option>
             </select>
             <input id="filter-pnl-val" type="number" step="any" placeholder="e.g. 0.1" />
           </label>
           <label>Sharpe
             <select id="filter-sharpe-op">
-              <option value=">">></option>
-              <option value=">=">>=</option>
-              <option value="<"><</option>
-              <option value="<="><=</option>
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
             </select>
             <input id="filter-sharpe-val" type="number" step="any" placeholder="e.g. 1" />
           </label>
           <label>Trades
             <select id="filter-trades-op">
-              <option value=">">></option>
-              <option value=">=">>=</option>
-              <option value="<"><</option>
-              <option value="<="><=</option>
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
             </select>
             <input id="filter-trades-val" type="number" step="1" placeholder="e.g. 5" />
           </label>
@@ -263,9 +270,16 @@
         <p class="warn-note">
           Credentials are encrypted at rest and are only used when Mode is switched to
           <strong>Live</strong> in the top bar. Paper mode never touches these.
+          Select the exchange below, then save credentials for that exchange.
         </p>
         <div id="cred-status" class="cred-status"></div>
         <form id="cred-form" class="param-form">
+          <label>Exchange
+            <select name="exchange" id="cred-exchange-select">
+              <option value="nobitex">Nobitex (IRT margin)</option>
+              <option value="xt">XT.com (USDT-M linear perps)</option>
+            </select>
+          </label>
           <label>Auth Method
             <select name="auth_method" id="auth-method-select">
               <option value="token">API Token</option>
@@ -281,8 +295,8 @@
             <label>API Key
               <input type="text" name="api_key" placeholder="Public key (apiKey)" />
             </label>
-            <label>Private Key / secretKey (base64 or PEM)
-              <textarea name="api_secret_pem" rows="3" placeholder="paste secretKey base64 from Nobitex, or PEM"></textarea>
+            <label><span id="cred-secret-hint">Private Key / secretKey</span>
+              <textarea name="api_secret_pem" rows="3" placeholder="Nobitex: secretKey base64 or PEM · XT: plain HMAC secret"></textarea>
             </label>
           </div>
           <div class="init-actions">
@@ -303,14 +317,14 @@
 
 </main>
 
-<script src="/static/js/time.js?v=20260925a"></script>
-<script src="/static/js/api.js?v=20260925a"></script>
-<script src="/static/js/charts.js?v=20260925a"></script>
-<script src="/static/js/charts_equity.js?v=20260925a"></script>
-<script src="/static/js/tables.js?v=20260925a"></script>
-<script src="/static/js/beta_diagram.js?v=20260925a"></script>
-<script src="/static/js/main.js?v=20260925a"></script>
-<script src="/static/js/ui_fixes.js?v=20260925a"></script>
-<script src="/static/js/backbone_overrides.js?v=20260925a"></script>
+<script src="/static/js/time.js?v=20260928xt"></script>
+<script src="/static/js/api.js?v=20260928xt"></script>
+<script src="/static/js/charts.js?v=20260928xt"></script>
+<script src="/static/js/charts_equity.js?v=20260928xt"></script>
+<script src="/static/js/tables.js?v=20260928xt"></script>
+<script src="/static/js/beta_diagram.js?v=20260928xt"></script>
+<script src="/static/js/main.js?v=20260928xt"></script>
+<script src="/static/js/ui_fixes.js?v=20260928xt"></script>
+<script src="/static/js/backbone_overrides.js?v=20260928xt"></script>
 </body>
 </html>

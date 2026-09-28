@@ -13,6 +13,7 @@ const state = {
   lastFitData: {},
   liquidSymbols: [],
   selectedSymbols: new Set(),
+  activeExchange: "nobitex",
 };
 
 document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -113,6 +114,14 @@ async function refreshBotState() {
   if (label) label.textContent = s.is_running ? "ACTIVE" : "INACTIVE";
   const modeSel = document.getElementById("trading-mode-select");
   if (modeSel) modeSel.value = s.trading_mode;
+  const exSel = document.getElementById("exchange-select");
+  if (exSel && s.exchange) {
+    exSel.value = s.exchange;
+    state.activeExchange = s.exchange;
+  }
+  if (s.pause_until) {
+    console.warn("Bot rate-limit pause until", s.pause_until);
+  }
 }
 
 document.getElementById("bot-toggle").addEventListener("click", async () => {
@@ -124,9 +133,9 @@ document.getElementById("bot-toggle").addEventListener("click", async () => {
 document.getElementById("trading-mode-select").addEventListener("change", async (e) => {
   const mode = e.target.value;
   if (mode === "live") {
-    const status = await API.credStatus();
+    const status = await API.credStatus(state.activeExchange || "nobitex");
     if (!status.configured) {
-      alert("No live credentials saved yet. Add them under Settings & Credentials first.");
+      alert("No live credentials saved for " + (state.activeExchange || "nobitex") + ". Add them under Settings & Credentials first.");
       e.target.value = "paper";
       return;
     }
@@ -136,6 +145,20 @@ document.getElementById("trading-mode-select").addEventListener("change", async 
     }
   }
   await API.botMode(mode);
+  refreshBotState();
+});
+
+const exchangeSel = document.getElementById("exchange-select");
+if (exchangeSel) exchangeSel.addEventListener("change", async (e) => {
+  const ex = e.target.value;
+  if (!confirm("Switch active exchange to " + ex + "? Market data and live trading will use this exchange.")) {
+    e.target.value = state.activeExchange || "nobitex";
+    return;
+  }
+  await API.botExchange(ex);
+  state.activeExchange = ex;
+  // Refresh credential status for the new exchange
+  if (state.activeTab === "settings") refreshSettingsTab();
   refreshBotState();
 });
 
@@ -470,7 +493,7 @@ async function loadLiquidSymbols() {
   const box = document.getElementById("symbol-checklist");
   if (box) box.innerHTML = "<div class=\"sym-loading\">Loading liquid symbols…</div>";
   try {
-    const data = await API.listLiquidSymbols();
+    const data = await API.listLiquidSymbols(null, state.activeExchange || "nobitex");
     // API returns { symbols: [...], quote, top_n } — not a bare array
     const raw = data && data.symbols != null ? data.symbols : data;
     state.liquidSymbols = Array.isArray(raw)
@@ -557,6 +580,7 @@ if (createManualBtn) {
         symbols,
         dependent_symbol: dependent,
         activate: true,
+        exchange: state.activeExchange || "nobitex",
       });
       setInitStatus(`Created manual group #${g.id}: ${g.name} (${(g.symbols || symbols).join(", ")})`);
       state.selectedSymbols.clear();
@@ -570,11 +594,48 @@ if (createManualBtn) {
   });
 }
 
+function _syncCredFieldsForExchange() {
+  const exSel = document.getElementById("cred-exchange-select");
+  const authSel = document.getElementById("auth-method-select");
+  const ex = (exSel && exSel.value) || state.activeExchange || "nobitex";
+  if (!authSel) return;
+  // Populate auth methods per exchange
+  if (ex === "xt") {
+    authSel.innerHTML = '<option value="key_secret">API Key + Secret (HMAC)</option>';
+    authSel.value = "key_secret";
+  } else {
+    authSel.innerHTML =
+      '<option value="token">API Token</option>' +
+      '<option value="key_signature">API Key + Ed25519 Secret</option>';
+  }
+  const method = authSel.value;
+  const t = document.getElementById("cred-fields-token");
+  const k = document.getElementById("cred-fields-key");
+  const hint = document.getElementById("cred-secret-hint");
+  if (t) t.style.display = method === "token" ? "" : "none";
+  if (k) k.style.display = method === "token" ? "none" : "";
+  if (hint) {
+    if (method === "key_secret") {
+      hint.textContent = "XT HMAC secret (plain string, not PEM)";
+    } else if (method === "key_signature") {
+      hint.textContent = "Nobitex secretKey base64 or PEM Ed25519";
+    }
+  }
+}
+
 async function refreshSettingsTab() {
+  const exSel = document.getElementById("cred-exchange-select");
+  const ex = (exSel && exSel.value) || state.activeExchange || "nobitex";
+  if (exSel) exSel.value = ex;
+  _syncCredFieldsForExchange();
   try {
-    const status = await API.credStatus();
+    const status = await API.credStatus(ex);
     const el = document.getElementById("cred-status");
-    if (el) el.textContent = status.configured ? "Credentials configured." : "No credentials saved.";
+    if (el) {
+      el.textContent = status.configured
+        ? `Credentials configured for ${ex} (${status.auth_method || "?"}).`
+        : `No credentials saved for ${ex}.`;
+    }
   } catch (e) {}
   try {
     const sys = await API.getConfigSection("system");
@@ -584,33 +645,34 @@ async function refreshSettingsTab() {
   } catch (e) {}
 }
 
+const credExSel = document.getElementById("cred-exchange-select");
+if (credExSel) credExSel.addEventListener("change", () => refreshSettingsTab());
+
 const credForm = document.getElementById("cred-form");
 if (credForm) credForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(credForm);
   const payload = Object.fromEntries(fd.entries());
   const authSel = document.getElementById("auth-method-select");
+  const exSel = document.getElementById("cred-exchange-select");
   if (authSel) payload.auth_method = authSel.value;
+  if (exSel) payload.exchange = exSel.value;
   await API.saveCred(payload);
   refreshSettingsTab();
-  alert("Credentials saved.");
+  alert("Credentials saved for " + (payload.exchange || "nobitex") + ".");
 });
 
 const delCred = document.getElementById("delete-cred-btn");
 if (delCred) delCred.addEventListener("click", async () => {
-  if (!confirm("Remove credentials?")) return;
-  await API.deleteCred();
+  const exSel = document.getElementById("cred-exchange-select");
+  const ex = (exSel && exSel.value) || "nobitex";
+  if (!confirm("Remove credentials for " + ex + "?")) return;
+  await API.deleteCred(ex);
   refreshSettingsTab();
 });
 
 const authSel = document.getElementById("auth-method-select");
-if (authSel) authSel.addEventListener("change", () => {
-  const isKey = authSel.value === "key_signature";
-  const t = document.getElementById("cred-fields-token");
-  const k = document.getElementById("cred-fields-key");
-  if (t) t.style.display = isKey ? "none" : "";
-  if (k) k.style.display = isKey ? "" : "none";
-});
+if (authSel) authSel.addEventListener("change", () => _syncCredFieldsForExchange());
 
 const saveSys = document.getElementById("save-system-btn");
 if (saveSys) saveSys.addEventListener("click", async () => {

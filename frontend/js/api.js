@@ -31,7 +31,6 @@ const API = {
   listFits(id) { return this.get(`/api/groups/${id}/fits`); },
   latestFit(id) { return this.get(`/api/groups/${id}/fits/latest`); },
   liveFit(id) { return this.get(`/api/groups/${id}/live-fit`); },
-  /** mode: paper | live | all | undefined (server uses current bot mode) */
   listTrades(id, mode) {
     const q = mode ? `?mode=${encodeURIComponent(mode)}` : "";
     return this.get(`/api/groups/${id}/trades${q}`);
@@ -50,10 +49,17 @@ const API = {
   },
   createManualGroup(payload) { return this.post("/api/groups/manual", payload); },
 
-  runInit(method, activate) { return this.post("/api/init/run", { method, activate }); },
+  runInit(method, activate, exchange) {
+    const body = { method, activate };
+    if (exchange) body.exchange = exchange;
+    return this.post("/api/init/run", body);
+  },
   initProgress() { return this.get("/api/init/progress"); },
-  listLiquidSymbols(topN) {
-    const q = topN ? `?top_n=${topN}` : "";
+  listLiquidSymbols(topN, exchange) {
+    const params = new URLSearchParams();
+    if (topN) params.set("top_n", topN);
+    if (exchange) params.set("exchange", exchange);
+    const q = params.toString() ? `?${params}` : "";
     return this.get(`/api/init/symbols${q}`);
   },
 
@@ -61,8 +67,21 @@ const API = {
   botStart() { return this.post("/api/bot/start"); },
   botStop() { return this.post("/api/bot/stop"); },
   botMode(mode) { return this.post("/api/bot/mode", { trading_mode: mode }); },
+  botExchange(exchange) { return this.post("/api/bot/exchange", { exchange }); },
 
-  credStatus() { return this.get("/api/credentials/status"); },
+  credStatus(exchange) {
+    const q = exchange ? `?exchange=${encodeURIComponent(exchange)}` : "";
+    return this.get(`/api/credentials/status${q}`);
+  },
   saveCred(payload) { return this.post("/api/credentials", payload); },
-  deleteCred() { return this.del("/api/credentials"); },
+  deleteCred(exchange) {
+    const q = exchange ? `?exchange=${encodeURIComponent(exchange)}` : "";
+    return this.del(`/api/credentials${q}`);
+  },
+
+  fundingRates(symbol, limit) {
+    const params = new URLSearchParams({ symbol });
+    if (limit) params.set("limit", limit);
+    return this.get(`/api/debug/funding-rates?${params}`);
+  },
 };
