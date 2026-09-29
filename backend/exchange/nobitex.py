@@ -379,27 +379,93 @@ class NobitexClient:
 
     # ---------------------------------------------------------------- wallets / equity
 
-    async def get_wallets(self, currencies: list[str] | None = None) -> list[dict]:
+    @staticmethod
+    def _normalize_wallet_rows(raw) -> list[dict]:
+        """Normalize list or currency-keyed dict into a list of wallet dicts."""
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return list(raw)
+        if isinstance(raw, dict):
+            out = []
+            for key, val in raw.items():
+                if not isinstance(val, dict):
+                    continue
+                row = dict(val)
+                # Ensure currency is present (v2/wallets keys are often RLS/BTC)
+                if not row.get("currency"):
+                    row["currency"] = str(key).lower()
+                # v2 uses "blocked" instead of "blockedBalance"
+                if "blockedBalance" not in row and "blocked" in row:
+                    row["blockedBalance"] = row.get("blocked")
+                if "activeBalance" not in row:
+                    try:
+                        bal = float(row.get("balance") or 0)
+                        blocked = float(row.get("blockedBalance") or row.get("blocked") or 0)
+                        row["activeBalance"] = bal - blocked
+                    except (TypeError, ValueError):
+                        pass
+                out.append(row)
+            return out
+        return []
+
+    async def get_wallets(
+        self,
+        currencies: list[str] | None = None,
+        wallet_type: str = "spot",
+    ) -> list[dict]:
         """
-        GET /users/wallets/list — returns wallet rows with balance / activeBalance.
-        Optional currency filter (lowercase codes, e.g. rls, usdt).
+        List wallets for the given type.
+
+        Nobitex keeps **spot** and **margin** balances in separate wallets.
+        Default API behaviour is type=spot — callers that trade margin MUST
+        pass wallet_type="margin".
+
+        Prefers GET /v2/wallets?type=… (documented type=spot|margin),
+        falls back to GET /users/wallets/list?type=…
         """
+        wtype = (wallet_type or "spot").strip().lower()
+        if wtype not in ("spot", "margin"):
+            wtype = "spot"
+
         await throttle("wallets_list")
-        params = {}
+        params: dict = {"type": wtype}
         if currencies:
-            # Nobitex accepts comma-separated or repeated; send first as query if single
             params["currencies"] = ",".join(c.lower() for c in currencies)
-        r = await self._request("GET", "/users/wallets/list", params=params or None, auth=True)
+
+        # Preferred: /v2/wallets explicitly supports type=margin
+        try:
+            r = await self._request("GET", "/v2/wallets", params=params, auth=True)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("status") == "ok":
+                rows = self._normalize_wallet_rows(data.get("wallets"))
+                if rows:
+                    return rows
+        except Exception:
+            pass
+
+        # Fallback: /users/wallets/list (defaults to spot unless type is set)
+        r = await self._request("GET", "/users/wallets/list", params=params, auth=True)
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
             raise NobitexError(f"wallets/list failed: {data}", payload=data)
-        return list(data.get("wallets") or [])
+        return self._normalize_wallet_rows(data.get("wallets"))
 
     async def get_margin_active_balance_irt(self) -> float | None:
-        """Best-effort free margin collateral in IRT (rls wallet activeBalance)."""
+        """
+        Free margin-wallet collateral in IRT/RLS (activeBalance).
+
+        Uses wallet_type="margin" — NOT the spot RLS wallet. Spot and margin
+        are separate on Nobitex; the bot places margin orders, so equity and
+        pre-trade checks must read the margin wallet.
+        """
         try:
-            wallets = await self.get_wallets(currencies=["rls", "irt"])
+            wallets = await self.get_wallets(
+                currencies=["rls", "irt"],
+                wallet_type="margin",
+            )
         except Exception:
             return None
         total = 0.0
@@ -408,12 +474,11 @@ class NobitexClient:
             cur = str(w.get("currency") or "").lower()
             if cur not in ("rls", "irt"):
                 continue
-            # Prefer activeBalance (available), fall back to balance - blocked
             ab = w.get("activeBalance")
             if ab is None:
                 try:
                     bal = float(w.get("balance") or 0)
-                    blocked = float(w.get("blockedBalance") or 0)
+                    blocked = float(w.get("blockedBalance") or w.get("blocked") or 0)
                     ab = bal - blocked
                 except (TypeError, ValueError):
                     ab = w.get("balance")
@@ -423,6 +488,13 @@ class NobitexClient:
             except (TypeError, ValueError):
                 continue
         return total if found else None
+
+    async def get_active_balance(self, quote: str) -> float | None:
+        """ABC-compatible alias: IRT/RLS → margin wallet free balance."""
+        q = (quote or "IRT").upper()
+        if q in ("IRT", "RLS"):
+            return await self.get_margin_active_balance_irt()
+        return None
 
     async def place_order(
         self,
