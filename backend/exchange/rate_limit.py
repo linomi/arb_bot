@@ -38,7 +38,7 @@ class RateLimiter:
 limiter = RateLimiter()
 
 MARKET_DATA_LIMITS = {
-    "udf_history": (60, 60.0),
+    "udf_history": (500, 60.0),
     "market_stats": (20, 60.0),
     "margin_markets_list": (30, 60.0),
 }
