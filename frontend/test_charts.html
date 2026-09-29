@@ -3,23 +3,29 @@
 <head>
   <meta charset="utf-8" />
   <title>Chart smoke test</title>
+  <!-- Serve the frontend/ folder as the web root, e.g.  python -m http.server -d frontend 8001
+       then open http://localhost:8001/test_charts.html -->
   <script src="/js/chart.umd.min.js"></script>
+  <script src="/js/lightweight-charts.standalone.production.js"></script>
   <style>
+    :root { --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+            --bg-2:#2e241c; --line:#4a3c30; --text-hi:#f5efe6; --text-mid:#c4b5a0; --accent:#c4783a; }
     body { background: #1a1410; color: #f5efe6; font-family: system-ui, sans-serif; padding: 20px; }
     .row { display: grid; grid-template-columns: 1fr 280px; gap: 16px; }
     .box { background: #241c16; border: 1px solid #4a3c30; border-radius: 6px; padding: 12px; }
-    .chart-wrap { height: 320px; position: relative; }
+    #residual-chart { height: 320px; position: relative; }
     .radar-wrap { height: 220px; position: relative; }
     h2 { font-size: 14px; margin: 0 0 8px; }
     #status { font-family: monospace; font-size: 12px; color: #c4b5a0; margin-top: 12px; }
   </style>
+  <link rel="stylesheet" href="/css/style.css" />
 </head>
 <body>
   <h1>Dummy chart smoke test</h1>
   <div class="row">
     <div class="box">
       <h2>Residual / Z-Score</h2>
-      <div class="chart-wrap"><canvas id="residual-chart"></canvas></div>
+      <div id="residual-chart"></div>
     </div>
     <div class="box">
       <h2>Radar</h2>
@@ -27,37 +33,53 @@
     </div>
   </div>
   <pre id="status">running…</pre>
+  <script src="/js/time.js"></script>
   <script src="/js/charts.js"></script>
   <script>
     (function () {
       const status = document.getElementById("status");
+      function makeDummyFit(n) {
+        const end = Math.floor(Date.now() / 60000) * 60000;
+        let x = 0;
+        const series = [];
+        for (let i = 0; i < n; i++) {
+          x = 0.85 * x + (Math.sin(i * 12.9898) * 43758.5453 % 1) * 2;
+          series.push([new Date(end - (n - 1 - i) * 60000).toISOString().replace("Z", ""), x]);
+        }
+        const vals = series.map((p) => p[1]);
+        const mean = vals.reduce((a, b) => a + b, 0) / n;
+        const std = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+        return { group_id: 1, group_name: "dummy", resid_mean: mean, resid_std: std, residual_series: series };
+      }
       try {
         if (typeof Chart === "undefined") throw new Error("Chart.js missing");
-        if (typeof makeDummyFit !== "function") throw new Error("makeDummyFit missing");
+        if (typeof LightweightCharts === "undefined") throw new Error("Lightweight Charts missing");
         const fit = makeDummyFit(80);
         const backbone = { z_entry: 2, z_close: 0.5, z_stop_loss: 3.5 };
         const trades = [{
           id: 1, ols_fit_id: -1,
-          entry_time: fit.residual_series[20][0],
-          entry_residual: fit.residual_series[20][1],
-          close_time: fit.residual_series[45][0],
-          close_residual: fit.residual_series[45][1],
-          close_reason: "close",
-          pnl: 0.0123,
+          entry_time: fit.residual_series[20][0], entry_residual: fit.residual_series[20][1],
+          close_time: fit.residual_series[45][0], close_residual: fit.residual_series[45][1],
+          close_reason: "close", pnl: 0.0123,
+        }, {
+          id: 2, ols_fit_id: -1,
+          entry_time: fit.residual_series[55][0], entry_residual: fit.residual_series[55][1],
+          close_time: fit.residual_series[70][0], close_residual: fit.residual_series[70][1],
+          close_reason: "stop_loss", pnl: -0.0456,
         }];
-        renderResidualChart("residual-chart", fit, backbone, trades, () => {});
+        renderResidualChart("residual-chart", fit, backbone, trades, (t) => {
+          status.textContent = "marker click -> trade #" + t.id;
+        });
         renderRadarChart("radar-canvas", {
           win_rate: 0.55, sharpe_ratio: 1.2, sortino_ratio: 1.5,
           profit_factor: 1.8, max_drawdown: 0.04, trade_count: 12,
         });
-        const okRes = !!(residualChart && residualChart.data.datasets.length);
-        const okRad = !!(radarChart && radarChart.data.datasets.length);
         status.textContent = JSON.stringify({
-          ok: okRes && okRad,
+          ok: !!(residualChart && residualChart.chart && radarChart && radarChart.data.datasets.length),
           residual_points: fit.residual_series.length,
-          residual_datasets: residualChart ? residualChart.data.datasets.length : 0,
+          price_lines: residualChart ? residualChart.priceLines.length : 0,
+          markers: residualChart ? residualChart.data.markerInfo.markers.length : 0,
           radar_labels: radarChart ? radarChart.data.labels : [],
-          sample_value: fit.residual_series[0],
         }, null, 2);
       } catch (e) {
         status.textContent = "FAIL: " + e.stack;

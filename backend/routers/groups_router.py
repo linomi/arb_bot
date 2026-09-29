@@ -363,6 +363,15 @@ def latest_fit(group_id: int, db: Session = Depends(get_db)):
     return _fit_to_dict(f)
 
 
+@router.get("/{group_id}/fits/{fit_id}")
+def get_fit(group_id: int, fit_id: int, db: Session = Depends(get_db)):
+    """One stored fit by id (a trade's ols_fit_id may be older than the /fits newest-200 window)."""
+    f = db.query(OLSFit).filter_by(id=fit_id, group_id=group_id).first()
+    if not f:
+        raise HTTPException(404, "fit not found for this group")
+    return _fit_to_dict(f)
+
+
 @router.get("/{group_id}/trades")
 def list_trades(
     group_id: int,

@@ -44,6 +44,12 @@
   };
 
   window.selectGroup = async function selectGroup(groupId, force = true) {
+    // A marker click pins the stored fit a trade was based on. The 5s poll (force=false)
+    // must not replace it; any explicit selection (force=true) or "Back to live fit" unpins.
+    if (state.pinnedFit) {
+      if (force === false && state.pinnedFit.groupId === groupId) return;
+      state.pinnedFit = null;
+    }
     state.selectedGroupId = groupId;
     if (!state.groups.find((g) => g.id === groupId)) {
       try {
@@ -114,6 +120,66 @@
       `<b>${gname}</b> · <span class="mode-tag">${modeLabel || "mode?"}</span> · Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
       `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
       `${bars} bars @ ${res} · fitted ${fmtTime(fit.fitted_at)}`;
+  };
+
+  function _escHtml(x) {
+    return String(x).replace(/[&<>"']/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+    ));
+  }
+
+  function _wireBackToLive(groupId) {
+    const a = document.querySelector("#plot-meta .rc-back");
+    if (!a) return;
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      state.pinnedFit = null;
+      selectGroup(groupId, true);
+    });
+  }
+
+  /**
+   * Residual-chart marker click: show the stored fit this trade was based on
+   * (its own residual window, mean/std and z-bands), pinned until "Back to live fit".
+   */
+  window._showFitForTrade = async function (groupId, trade, trades) {
+    const meta = document.getElementById("plot-meta");
+    if (!trade) return;
+    const g = (state.groups || []).find((x) => x.id === groupId);
+    const gname = (g && g.name) || `group-${groupId}`;
+    const back = ` · <a href="#" class="rc-back">Back to live fit</a>`;
+    if (trade.ols_fit_id == null) {
+      if (meta) meta.innerHTML = `Trade #${_escHtml(trade.id)} has no stored fit${back}`;
+      _wireBackToLive(groupId);
+      return;
+    }
+    let fit;
+    try {
+      fit = await API.getFit(groupId, trade.ols_fit_id);
+    } catch (e) {
+      if (meta) {
+        meta.innerHTML = `Fit for trade #${_escHtml(trade.id)} is not available ` +
+          `(${_escHtml(e.message || e)})${back}`;
+      }
+      _wireBackToLive(groupId);
+      return;
+    }
+    const backboneCfg = state.backboneCfg || (await API.getConfigSection("backbone"));
+    state.backboneCfg = backboneCfg;
+    fit.group_name = gname;
+    fit._pinned_trade_id = trade.id;
+    state.pinnedFit = { groupId, tradeId: trade.id };
+    renderResidualChart("residual-chart", fit, backboneCfg, trades, (t) => {
+      window._showFitForTrade(groupId, t, trades);
+    });
+    if (meta) {
+      meta.innerHTML =
+        `<b>${_escHtml(gname)}</b> · <span class="mode-tag">fit used by trade #${_escHtml(trade.id)}</span> · ` +
+        `ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
+        `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
+        `fitted ${fmtTime(fit.fitted_at)}${back}`;
+    }
+    _wireBackToLive(groupId);
   };
 
   window.deleteGroupFromTable = async function (groupId, name) {

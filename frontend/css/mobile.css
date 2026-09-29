@@ -177,10 +177,15 @@
   .plot-panel .chart-wrap canvas,
   .equity-wrap canvas,
   .chart-wrap canvas,
-  #residual-chart,
   #equity-canvas {
     max-width: none; /* canvas may be wider for history pan */
     display: block;
+  }
+  /* residual chart is a Lightweight Charts <div>: it fits the panel and pans/zooms itself */
+  #residual-chart {
+    max-width: 100%;
+    display: block;
+    touch-action: pan-y;
   }
 
   .panel-head {
