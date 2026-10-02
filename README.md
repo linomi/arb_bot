@@ -32,6 +32,22 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 Leave `NOBITEX_BASE_URL` as the mainnet URL, or point it at
 `https://testnetapiv2.nobitex.ir` while you're testing live-order plumbing.
 
+### Basic authentication (recommended)
+
+To protect the UI and API, set both values in `.env`:
+
+```bash
+AUTH_USERNAME=admin
+AUTH_PASSWORD=your-strong-password
+# Optional (defaults to ENCRYPTION_KEY):
+# SESSION_SECRET=another-random-string
+```
+
+After restart you will see a login screen. A signed session cookie is issued
+and stays valid for **5 days**. HTTP Basic Auth also works for scripts
+(`curl -u user:pass ...`). If the two variables are left empty, auth stays
+disabled (previous behaviour).
+
 ## 4. Run
 
 ```bash
@@ -77,7 +93,8 @@ in the top bar to actually turn trading on.
 
 ```
 backend/
-  main.py              FastAPI app, startup wiring
+  main.py              FastAPI app, startup wiring, SessionMiddleware
+  auth.py              username/password + 5-day session cookie
   models.py            SQLAlchemy models (Group, OLSFit, Trade, Credential, BotState)
   db.py                SQLite engine/session
   config_service.py    reads/writes config sections stored in the DB
@@ -98,7 +115,7 @@ backend/
     nobitex.py         real Nobitex REST client (market data + orders)
     paper.py           paper-trading simulator (real prices, simulated fills)
     factory.py         picks paper vs live client from current settings
-  routers/             FastAPI route handlers (config/groups/init/bot/credentials)
+  routers/             FastAPI route handlers (auth/config/groups/init/bot/credentials)
 frontend/
   index.html, css/, js/  vanilla HTML/CSS/JS UI (Chart.js from cdnjs), no build step
 config/default_config.yaml  seeds the DB on first run only
