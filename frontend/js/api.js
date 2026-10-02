@@ -1,11 +1,24 @@
 const API = {
   async _req(method, path, body) {
-    const opts = { method, headers: {} };
+    const opts = {
+      method,
+      headers: {},
+      credentials: "include", // send session cookie
+    };
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
     const res = await fetch(path, opts);
+    if (res.status === 401) {
+      // Signal UI that login is required
+      if (typeof window !== "undefined" && typeof window.__onAuthRequired === "function") {
+        window.__onAuthRequired();
+      }
+      let detail = "Not authenticated";
+      try { detail = (await res.json()).detail || detail; } catch (e) {}
+      throw new Error(`${method} ${path} -> 401: ${detail}`);
+    }
     if (!res.ok) {
       let detail = res.statusText;
       try { detail = (await res.json()).detail || detail; } catch (e) {}
@@ -19,6 +32,11 @@ const API = {
   put(path, body) { return this._req("PUT", path, body ?? {}); },
   patch(path, body) { return this._req("PATCH", path, body ?? {}); },
   del(path) { return this._req("DELETE", path); },
+
+  // Auth
+  authStatus() { return this.get("/api/auth/status"); },
+  login(username, password) { return this.post("/api/auth/login", { username, password }); },
+  logout() { return this.post("/api/auth/logout"); },
 
   getAllConfig() { return this.get("/api/config"); },
   getConfigSection(section) { return this.get(`/api/config/${section}`); },

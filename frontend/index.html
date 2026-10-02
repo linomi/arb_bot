@@ -7,10 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20260929tv" />
-<link rel="stylesheet" href="/static/css/style_extra.css?v=20260929tv" />
-<link rel="stylesheet" href="/static/css/mobile.css?v=20260929tv" />
-<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20260929tv" />
+<link rel="stylesheet" href="/static/css/style.css?v=20261002auth" />
+<link rel="stylesheet" href="/static/css/style_extra.css?v=20261002auth" />
+<link rel="stylesheet" href="/static/css/mobile.css?v=20261002auth" />
+<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20261002auth" />
+<link rel="stylesheet" href="/static/css/auth.css?v=20261002auth" />
 <script src="/static/js/chart.umd.min.js"></script>
 <script src="/static/js/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -130,29 +131,29 @@
           </label>
           <label>PnL
             <select id="filter-pnl-op">
-              <option value=">">&gt;</option>
-              <option value=">=">&gt;=</option>
-              <option value="<">&lt;</option>
-              <option value="<=">&lt;=</option>
+              <option value=">">></option>
+              <option value=">=">>=</option>
+              <option value="<"><</option>
+              <option value="<="><=</option>
               <option value="=">=</option>
             </select>
             <input id="filter-pnl-val" type="number" step="any" placeholder="e.g. 0.1" />
           </label>
           <label>Sharpe
             <select id="filter-sharpe-op">
-              <option value=">">&gt;</option>
-              <option value=">=">&gt;=</option>
-              <option value="<">&lt;</option>
-              <option value="<=">&lt;=</option>
+              <option value=">">></option>
+              <option value=">=">>=</option>
+              <option value="<"><</option>
+              <option value="<="><=</option>
             </select>
             <input id="filter-sharpe-val" type="number" step="any" placeholder="e.g. 1" />
           </label>
           <label>Trades
             <select id="filter-trades-op">
-              <option value=">">&gt;</option>
-              <option value=">=">&gt;=</option>
-              <option value="<">&lt;</option>
-              <option value="<=">&lt;=</option>
+              <option value=">">></option>
+              <option value=">=">>=</option>
+              <option value="<"><</option>
+              <option value="<="><=</option>
             </select>
             <input id="filter-trades-val" type="number" step="1" placeholder="e.g. 5" />
           </label>
@@ -318,14 +319,15 @@
 
 </main>
 
-<script src="/static/js/time.js?v=20260929tv"></script>
-<script src="/static/js/api.js?v=20260929tv"></script>
-<script src="/static/js/charts.js?v=20260929tv"></script>
-<script src="/static/js/charts_equity.js?v=20260929tv"></script>
-<script src="/static/js/tables.js?v=20260929tv"></script>
-<script src="/static/js/beta_diagram.js?v=20260929tv"></script>
-<script src="/static/js/main.js?v=20260929tv"></script>
-<script src="/static/js/ui_fixes.js?v=20260929tv"></script>
-<script src="/static/js/backbone_overrides.js?v=20260929tv"></script>
+<script src="/static/js/time.js?v=20261002auth"></script>
+<script src="/static/js/api.js?v=20261002auth"></script>
+<script src="/static/js/auth.js?v=20261002auth"></script>
+<script src="/static/js/charts.js?v=20261002auth"></script>
+<script src="/static/js/charts_equity.js?v=20261002auth"></script>
+<script src="/static/js/tables.js?v=20261002auth"></script>
+<script src="/static/js/beta_diagram.js?v=20261002auth"></script>
+<script src="/static/js/main.js?v=20261002auth"></script>
+<script src="/static/js/ui_fixes.js?v=20261002auth"></script>
+<script src="/static/js/backbone_overrides.js?v=20261002auth"></script>
 </body>
 </html>
