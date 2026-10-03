@@ -60,10 +60,10 @@
     if (!g) return;
 
     const gname = g.name || `group-${groupId}`;
-    document.getElementById("plot-title").textContent = `Residual / Z-Score — ${gname}`;
+    document.getElementById("plot-title").textContent = t("plot.title.group", { name: gname });
     const eqTitle = document.getElementById("equity-title");
-    if (eqTitle) eqTitle.textContent = `Equity Curve — ${gname}`;
-    document.getElementById("plot-meta").textContent = "Fitting OLS on the latest window…";
+    if (eqTitle) eqTitle.textContent = t("equity.title.group", { name: gname });
+    document.getElementById("plot-meta").textContent = t("plot.fitting");
 
     const backboneCfg = state.backboneCfg || (await API.getConfigSection("backbone"));
     state.backboneCfg = backboneCfg;
@@ -84,14 +84,14 @@
           residualChart = null;
         }
         document.getElementById("plot-meta").textContent =
-          "Could not fit residual: " + (e.message || e);
+          t("plot.fit.failed", { error: e.message || e });
         const tbody = document.querySelector("#trades-table tbody");
         if (tbody) tbody.innerHTML = "";
         const bd = document.getElementById("beta-diagram");
         if (bd) {
           bd.innerHTML =
             `<div class="beta-group-title">${gname}</div>` +
-            `<div class="detail-empty" style="padding:12px">Fit failed — betas unavailable.</div>`;
+            `<div class="detail-empty" style="padding:12px">${t("beta.fit.failed")}</div>`;
         }
         return;
       }
@@ -116,10 +116,14 @@
     const modeLabel = (trades && trades[0] && trades[0].mode) || state.tradingMode || "";
     const bars = fit.bars_used != null ? fit.bars_used : "?";
     const res = fit.resolution || "?";
-    document.getElementById("plot-meta").innerHTML =
-      `<b>${gname}</b> · <span class="mode-tag">${modeLabel || "mode?"}</span> · Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
-      `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
-      `${bars} bars @ ${res} · fitted ${fmtTime(fit.fitted_at)}`;
+    document.getElementById("plot-meta").innerHTML = t("plot.meta.live.named", {
+      name: gname,
+      mode: modeLabel || "mode?",
+      adf: fmtNum(fit.adf_pvalue, 3),
+      kpss: fmtNum(fit.kpss_pvalue, 3),
+      flag: `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? t("plot.stationary") : t("plot.rejected")}</span>`,
+      bars, res, fitted: fmtTime(fit.fitted_at),
+    });
   };
 
   function _escHtml(x) {
@@ -147,9 +151,9 @@
     if (!trade) return;
     const g = (state.groups || []).find((x) => x.id === groupId);
     const gname = (g && g.name) || `group-${groupId}`;
-    const back = ` · <a href="#" class="rc-back">Back to live fit</a>`;
+    const back = ` · <a href="#" class="rc-back">${t("plot.back.live")}</a>`;
     if (trade.ols_fit_id == null) {
-      if (meta) meta.innerHTML = `Trade #${_escHtml(trade.id)} has no stored fit${back}`;
+      if (meta) meta.innerHTML = t("plot.trade.no.fit", { id: _escHtml(trade.id) }) + back;
       _wireBackToLive(groupId);
       return;
     }
@@ -158,8 +162,7 @@
       fit = await API.getFit(groupId, trade.ols_fit_id);
     } catch (e) {
       if (meta) {
-        meta.innerHTML = `Fit for trade #${_escHtml(trade.id)} is not available ` +
-          `(${_escHtml(e.message || e)})${back}`;
+        meta.innerHTML = t("plot.trade.fit.missing", { id: _escHtml(trade.id), error: _escHtml(e.message || e) }) + back;
       }
       _wireBackToLive(groupId);
       return;
@@ -173,33 +176,36 @@
       window._showFitForTrade(groupId, t, trades);
     });
     if (meta) {
-      meta.innerHTML =
-        `<b>${_escHtml(gname)}</b> · <span class="mode-tag">fit used by trade #${_escHtml(trade.id)}</span> · ` +
-        `ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
-        `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
-        `fitted ${fmtTime(fit.fitted_at)}${back}`;
+      meta.innerHTML = t("plot.trade.fit.meta", {
+        name: _escHtml(gname),
+        id: _escHtml(trade.id),
+        adf: fmtNum(fit.adf_pvalue, 3),
+        kpss: fmtNum(fit.kpss_pvalue, 3),
+        flag: `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? t("plot.stationary") : t("plot.rejected")}</span>`,
+        fitted: fmtTime(fit.fitted_at),
+      }) + back;
     }
     _wireBackToLive(groupId);
   };
 
   window.deleteGroupFromTable = async function (groupId, name) {
-    if (!confirm(`Permanently delete group "${name}"?`)) return;
+    if (!confirm(t("confirm.delete.group.perm", { name }))) return;
     try {
       await API.deleteGroup(groupId);
     } catch (e) {
-      alert("Delete failed: " + (e.message || e));
+      alert(t("alert.delete.failed", { error: e.message || e }));
       return;
     }
     if (state.selectedGroupId === groupId) {
       state.selectedGroupId = null;
-      document.getElementById("plot-title").textContent = "Residual / Z-Score";
+      document.getElementById("plot-title").textContent = t("plot.title");
       document.getElementById("plot-meta").textContent = "";
       const eqTitle = document.getElementById("equity-title");
-      if (eqTitle) eqTitle.textContent = "Equity Curve";
+      if (eqTitle) eqTitle.textContent = t("equity.title");
       const bd = document.getElementById("beta-diagram");
       if (bd) {
         bd.innerHTML =
-          `<div class="detail-empty" style="padding:12px">Select a group in the performance table to view betas.</div>`;
+          `<div class="detail-empty" style="padding:12px">${t("beta.empty")}</div>`;
       }
     }
     await loadGroupList();
@@ -210,7 +216,7 @@
     try {
       await API.setGroupStatus(groupId, nextStatus);
     } catch (e) {
-      alert("Status change failed: " + (e.message || e));
+      alert(t("alert.status.failed", { error: e.message || e }));
       return;
     }
     await loadGroupList();

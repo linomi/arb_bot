@@ -89,7 +89,7 @@ function _redrawPerfTable(onRowClick) {
   sorted.forEach((r) => {
     const gid = r.group_id != null ? r.group_id : r.id;
     const isActive = String(r.status).toLowerCase() === "active";
-    const toggleLabel = isActive ? "Deactivate" : "Activate";
+    const toggleLabel = isActive ? t("perf.deactivate") : t("perf.activate");
     const toggleCls = isActive ? "btn-secondary perf-toggle" : "btn-primary perf-toggle";
     const srcNote = r.pnl_source === "exchange" ? "" : "";
 
@@ -99,7 +99,7 @@ function _redrawPerfTable(onRowClick) {
     }
     tr.innerHTML = `
       <td>${r.name}</td>
-      <td><span class="g-status ${r.status}">${r.status}</span></td>
+      <td><span class="g-status ${r.status}">${t("status." + String(r.status).toLowerCase()) || r.status}</span></td>
       <td>${r.trade_count}</td>
       <td>${fmtPct(r.win_rate)}</td>
       <td class="${pnlClass(r.total_pnl)}">${fmtNum(r.total_pnl)}</td>
@@ -112,7 +112,7 @@ function _redrawPerfTable(onRowClick) {
       <td class="col-actions">
         <div class="perf-actions">
           <button type="button" class="${toggleCls}" data-id="${gid}" data-status="${r.status}">${toggleLabel}</button>
-          <button type="button" class="btn-danger perf-del" data-id="${gid}" title="Delete group permanently">Remove</button>
+          <button type="button" class="btn-danger perf-del" data-id="${gid}" title="${t("perf.remove.title")}">${t("perf.remove")}</button>
         </div>
       </td>
     `;
@@ -210,16 +210,16 @@ function renderTradesTable(trades) {
     const p = displayTradePnl(t);
     let pnlCell;
     if (t.mode === "live" && p == null && t.status === "closed") {
-      pnlCell = `<span title="Waiting for Nobitex position.PNL">pending</span>`;
+      pnlCell = `<span title="${t("trades.pending.title")}">${t("trades.pending")}</span>`;
     } else {
       pnlCell = fmtNum(p);
     }
     const src = t.mode === "live" ? (p != null ? "exch" : "?") : "model";
     tr.innerHTML = `
-      <td class="${dirCls}">${t.direction === "long_residual" ? "LONG" : "SHORT"}</td>
+      <td class="${dirCls}">${t.direction === "long_residual" ? t("trades.long") : t("trades.short")}</td>
       <td>${fmtTime(t.entry_time)}</td>
       <td>${fmtTime(t.close_time)}</td>
-      <td class="${reasonCls}">${t.close_reason || (t.status === "open" ? "open" : "--")}</td>
+      <td class="${reasonCls}">${t.close_reason || (t.status === "open" ? t("trades.open") : "--")}</td>
       <td>${fmtNum(t.entry_z, 2)}</td>
       <td>${fmtNum(t.close_z, 2)}</td>
       <td class="${pnlClass(p)}">${pnlCell}</td>
@@ -236,7 +236,7 @@ function renderCandidatesTable(groups, onActivate, onDeactivate, onDelete) {
   groups.forEach((g) => {
     const m = g.backtest_metrics || {};
     const tr = document.createElement("tr");
-    const actionLabel = g.status === "active" ? "Deactivate" : "Activate";
+    const actionLabel = g.status === "active" ? t("perf.deactivate") : t("perf.activate");
     tr.innerHTML = `
       <td>${g.name}</td>
       <td>${g.source}</td>
@@ -247,10 +247,10 @@ function renderCandidatesTable(groups, onActivate, onDeactivate, onDelete) {
       <td>${fmtNum(m.max_drawdown)}</td>
       <td>${fmtPct(m.win_rate)}</td>
       <td>${m.trade_count ?? "--"}</td>
-      <td class="g-status ${g.status}">${g.status}</td>
+      <td class="g-status ${g.status}">${t("status." + String(g.status).toLowerCase()) || g.status}</td>
       <td class="actions-cell">
         <button class="btn-secondary toggle-btn" data-id="${g.id}">${actionLabel}</button>
-        <button class="btn-danger delete-btn" data-id="${g.id}" title="Delete group permanently">Delete</button>
+        <button class="btn-danger delete-btn" data-id="${g.id}" title="${t("init.cand.delete.title")}">${t("init.cand.delete")}</button>
       </td>
     `;
     tbody.appendChild(tr);

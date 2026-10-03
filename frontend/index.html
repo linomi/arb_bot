@@ -3,15 +3,16 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-<title>Stat-Arb Terminal</title>
+<title data-i18n="app.title">Stat-Arb Terminal</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20261002auth" />
-<link rel="stylesheet" href="/static/css/style_extra.css?v=20261002auth" />
-<link rel="stylesheet" href="/static/css/mobile.css?v=20261002auth" />
-<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20261002auth" />
-<link rel="stylesheet" href="/static/css/auth.css?v=20261002auth" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Vazirmatn:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/style.css?v=20261003i18n" />
+<link rel="stylesheet" href="/static/css/style_extra.css?v=20261003i18n" />
+<link rel="stylesheet" href="/static/css/mobile.css?v=20261003i18n" />
+<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20261003i18n" />
+<link rel="stylesheet" href="/static/css/auth.css?v=20261003i18n" />
+<link rel="stylesheet" href="/static/css/i18n.css?v=20261003i18n" />
 <script src="/static/js/chart.umd.min.js"></script>
 <script src="/static/js/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -20,33 +21,37 @@
 <header class="topbar">
   <div class="brand">
     <span class="brand-mark">&#8862;</span>
-    <span class="brand-name">STAT-ARB TERMINAL</span>
+    <span class="brand-name" data-i18n="brand.name">STAT-ARB TERMINAL</span>
   </div>
 
   <nav class="tabs" id="tabs">
-    <button class="tab-btn active" data-tab="dashboard">Backbone</button>
-    <button class="tab-btn" data-tab="init">Initialization</button>
-    <button class="tab-btn" data-tab="settings">Settings & Credentials</button>
+    <button class="tab-btn active" data-tab="dashboard" data-i18n="tab.backbone">Backbone</button>
+    <button class="tab-btn" data-tab="init" data-i18n="tab.init">Initialization</button>
+    <button class="tab-btn" data-tab="settings" data-i18n="tab.settings">Settings & Credentials</button>
   </nav>
 
   <div class="bot-control">
+    <div class="lang-switch" role="group" aria-label="Language">
+      <button type="button" class="lang-btn" data-lang-btn="en" data-i18n="lang.en">EN</button>
+      <button type="button" class="lang-btn" data-lang-btn="fa" data-i18n="lang.fa">FA</button>
+    </div>
     <div class="mode-select">
-      <label>Exchange</label>
-      <select id="exchange-select" title="Active exchange for market data and live trading">
+      <label data-i18n="label.exchange">Exchange</label>
+      <select id="exchange-select" data-i18n-title="exchange.select.title" title="Active exchange for market data and live trading">
         <option value="nobitex">Nobitex</option>
         <option value="xt">XT.com</option>
       </select>
     </div>
     <div class="mode-select">
-      <label>Mode</label>
+      <label data-i18n="label.mode">Mode</label>
       <select id="trading-mode-select">
-        <option value="paper">Paper</option>
-        <option value="live">Live</option>
+        <option value="paper" data-i18n="mode.paper">Paper</option>
+        <option value="live" data-i18n="mode.live">Live</option>
       </select>
     </div>
-    <button id="bot-toggle" class="bot-toggle idle" title="Click to start/stop the bot">
+    <button id="bot-toggle" class="bot-toggle idle" data-i18n-title="bot.toggle.title" title="Click to start/stop the bot">
       <span class="dot"></span>
-      <span class="label">INACTIVE</span>
+      <span class="label" data-i18n="bot.inactive">INACTIVE</span>
     </button>
   </div>
 </header>
@@ -65,7 +70,7 @@
 
         <div class="panel plot-panel">
           <div class="panel-head">
-            <h2 id="plot-title">Residual / Z-Score</h2>
+            <h2 id="plot-title" data-i18n="plot.title">Residual / Z-Score</h2>
             <div class="plot-meta" id="plot-meta"></div>
           </div>
           <div class="chart-wrap">
@@ -75,35 +80,41 @@
 
         <div class="panel beta-panel">
           <div class="panel-head">
-            <h2>OLS Beta Network</h2>
-            <span class="hint">Symbols → residual · wire glow ∝ |β|</span>
+            <h2 data-i18n="beta.title">OLS Beta Network</h2>
+            <span class="hint" data-i18n="beta.hint">Symbols → residual · wire glow ∝ |β|</span>
           </div>
           <div class="beta-wrap" id="beta-diagram">
-            <div class="detail-empty" style="padding:12px">Select a group in the performance table to view betas.</div>
+            <div class="detail-empty" style="padding:12px" data-i18n="beta.empty">Select a group in the performance table to view betas.</div>
           </div>
         </div>
 
         <div class="panel equity-panel" id="equity-panel-static">
           <div class="panel-head">
-            <h2 id="equity-title">Equity Curve</h2>
-            <span class="hint">Live: starts from wallet balance · Paper: from 0</span>
+            <h2 id="equity-title" data-i18n="equity.title">Equity Curve</h2>
+            <span class="hint" data-i18n="equity.hint">Live: starts from wallet balance · Paper: from 0</span>
           </div>
           <div class="equity-wrap" style="padding:8px 12px 12px;height:200px">
             <canvas id="equity-canvas"></canvas>
           </div>
-          <div class="equity-empty" id="equity-empty" style="padding:0 14px 12px" hidden>No closed trades yet for this group.</div>
+          <div class="equity-empty" id="equity-empty" style="padding:0 14px 12px" hidden data-i18n="equity.empty">No closed trades yet for this group.</div>
         </div>
 
         <div class="panel trades-panel">
           <div class="panel-head">
-            <h2>Trade Log</h2>
+            <h2 data-i18n="trades.title">Trade Log</h2>
           </div>
           <div class="table-scroll">
             <table id="trades-table">
               <thead>
                 <tr>
-                  <th>Dir</th><th>Opened</th><th>Closed</th><th>Reason</th>
-                  <th>Entry Z</th><th>Close Z</th><th>PnL</th><th>Mode</th>
+                  <th data-i18n="trades.th.dir">Dir</th>
+                  <th data-i18n="trades.th.opened">Opened</th>
+                  <th data-i18n="trades.th.closed">Closed</th>
+                  <th data-i18n="trades.th.reason">Reason</th>
+                  <th data-i18n="trades.th.entry_z">Entry Z</th>
+                  <th data-i18n="trades.th.close_z">Close Z</th>
+                  <th data-i18n="trades.th.pnl">PnL</th>
+                  <th data-i18n="trades.th.mode">Mode</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -116,49 +127,49 @@
 
     <div class="panel perf-panel">
       <div class="panel-head">
-        <h2>Performance Comparison</h2>
-        <span class="hint">Click a row to select. Use Actions to Activate / Deactivate or Remove.</span>
+        <h2 data-i18n="perf.title">Performance Comparison</h2>
+        <span class="hint" data-i18n="perf.hint">Click a row to select. Use Actions to Activate / Deactivate or Remove.</span>
       </div>
 
       <div class="perf-filters" id="perf-filters">
         <div class="filter-row">
-          <label>Status
+          <label><span data-i18n="perf.filter.status">Status</span>
             <select id="filter-status">
-              <option value="">Any</option>
-              <option value="active">active</option>
-              <option value="inactive">inactive</option>
+              <option value="" data-i18n="perf.filter.any">Any</option>
+              <option value="active" data-i18n="status.active">active</option>
+              <option value="inactive" data-i18n="status.inactive">inactive</option>
             </select>
           </label>
-          <label>PnL
+          <label><span data-i18n="perf.filter.pnl">PnL</span>
             <select id="filter-pnl-op">
-              <option value=">">></option>
-              <option value=">=">>=</option>
-              <option value="<"><</option>
-              <option value="<="><=</option>
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
               <option value="=">=</option>
             </select>
             <input id="filter-pnl-val" type="number" step="any" placeholder="e.g. 0.1" />
           </label>
-          <label>Sharpe
+          <label><span data-i18n="perf.filter.sharpe">Sharpe</span>
             <select id="filter-sharpe-op">
-              <option value=">">></option>
-              <option value=">=">>=</option>
-              <option value="<"><</option>
-              <option value="<="><=</option>
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
             </select>
             <input id="filter-sharpe-val" type="number" step="any" placeholder="e.g. 1" />
           </label>
-          <label>Trades
+          <label><span data-i18n="perf.filter.trades">Trades</span>
             <select id="filter-trades-op">
-              <option value=">">></option>
-              <option value=">=">>=</option>
-              <option value="<"><</option>
-              <option value="<="><=</option>
+              <option value=">">&gt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<">&lt;</option>
+              <option value="<=">&lt;=</option>
             </select>
             <input id="filter-trades-val" type="number" step="1" placeholder="e.g. 5" />
           </label>
-          <button type="button" id="perf-filter-apply" class="btn-secondary">Apply</button>
-          <button type="button" id="perf-filter-clear" class="btn-secondary">Clear</button>
+          <button type="button" id="perf-filter-apply" class="btn-secondary" data-i18n="perf.filter.apply">Apply</button>
+          <button type="button" id="perf-filter-clear" class="btn-secondary" data-i18n="perf.filter.clear">Clear</button>
         </div>
       </div>
 
@@ -167,25 +178,25 @@
           <table id="perf-table">
             <thead>
               <tr>
-                <th data-key="name">Group</th>
-                <th data-key="status">Status</th>
-                <th data-key="trade_count">Trades</th>
-                <th data-key="win_rate">Win Rate</th>
-                <th data-key="total_pnl">PnL</th>
-                <th data-key="avg_pnl">Avg PnL</th>
-                <th data-key="max_drawdown">Max DD</th>
-                <th data-key="sharpe_ratio">Sharpe</th>
-                <th data-key="sortino_ratio">Sortino</th>
-                <th data-key="profit_factor">Profit Factor</th>
-                <th data-key="avg_holding_hours">Avg Hold (h)</th>
-                <th class="col-actions">Actions</th>
+                <th data-key="name" data-i18n="perf.th.group">Group</th>
+                <th data-key="status" data-i18n="perf.th.status">Status</th>
+                <th data-key="trade_count" data-i18n="perf.th.trades">Trades</th>
+                <th data-key="win_rate" data-i18n="perf.th.win_rate">Win Rate</th>
+                <th data-key="total_pnl" data-i18n="perf.th.pnl">PnL</th>
+                <th data-key="avg_pnl" data-i18n="perf.th.avg_pnl">Avg PnL</th>
+                <th data-key="max_drawdown" data-i18n="perf.th.max_dd">Max DD</th>
+                <th data-key="sharpe_ratio" data-i18n="perf.th.sharpe">Sharpe</th>
+                <th data-key="sortino_ratio" data-i18n="perf.th.sortino">Sortino</th>
+                <th data-key="profit_factor" data-i18n="perf.th.profit_factor">Profit Factor</th>
+                <th data-key="avg_holding_hours" data-i18n="perf.th.avg_hold">Avg Hold (h)</th>
+                <th class="col-actions" data-i18n="perf.th.actions">Actions</th>
               </tr>
             </thead>
             <tbody></tbody>
           </table>
         </div>
         <div class="group-detail" id="group-detail">
-          <div class="detail-empty">Select a group in the table to see its profile.</div>
+          <div class="detail-empty" data-i18n="perf.detail.empty">Select a group in the table to see its profile.</div>
         </div>
       </div>
     </div>
@@ -195,47 +206,47 @@
   <section class="tab-panel" id="tab-init">
     <div class="init-grid">
       <div class="panel">
-        <div class="panel-head"><h2>Backbone Parameters</h2></div>
+        <div class="panel-head"><h2 data-i18n="init.backbone.title">Backbone Parameters</h2></div>
         <form id="backbone-form" class="param-form"></form>
       </div>
       <div class="panel">
-        <div class="panel-head"><h2>Initialization Parameters</h2></div>
+        <div class="panel-head"><h2 data-i18n="init.params.title">Initialization Parameters</h2></div>
         <div class="method-switch">
-          <button type="button" class="method-btn active" data-method="random">Random Groups</button>
-          <button type="button" class="method-btn" data-method="sector">Sector-Based</button>
-          <button type="button" class="method-btn" data-method="manual">Manual Entry</button>
+          <button type="button" class="method-btn active" data-method="random" data-i18n="init.method.random">Random Groups</button>
+          <button type="button" class="method-btn" data-method="sector" data-i18n="init.method.sector">Sector-Based</button>
+          <button type="button" class="method-btn" data-method="manual" data-i18n="init.method.manual">Manual Entry</button>
         </div>
         <form id="init-form" class="param-form"></form>
         <div id="manual-group-panel" class="manual-group-panel" style="display:none">
           <div class="manual-group-inner">
-            <label class="full-row">Group name
-              <input type="text" id="manual-group-name" placeholder="leave blank for a random codename" />
+            <label class="full-row"><span data-i18n="init.manual.name">Group name</span>
+              <input type="text" id="manual-group-name" data-i18n-placeholder="init.manual.name.ph" placeholder="leave blank for a random codename" />
             </label>
-            <label class="full-row">Dependent symbol (y in OLS)
+            <label class="full-row"><span data-i18n="init.manual.dependent">Dependent symbol (y in OLS)</span>
               <select id="manual-dependent"></select>
             </label>
             <div class="symbol-picker">
               <div class="symbol-picker-head">
-                <span>Select symbols (min 2)</span>
-                <input type="text" id="symbol-search" placeholder="Search symbols…" />
+                <span data-i18n="init.manual.select">Select symbols (min 2)</span>
+                <input type="text" id="symbol-search" data-i18n-placeholder="init.manual.search.ph" placeholder="Search symbols…" />
               </div>
               <div id="symbol-checklist" class="symbol-checklist"></div>
               <div class="selected-symbols-bar">
-                Selected: <span id="selected-symbols-label">none</span>
+                <span data-i18n="init.manual.selected">Selected:</span> <span id="selected-symbols-label" data-i18n="init.manual.none">none</span>
               </div>
             </div>
             <div class="init-actions" style="padding: 0 0 8px">
-              <button type="button" id="create-manual-group-btn" class="btn-primary">Create Manual Group</button>
+              <button type="button" id="create-manual-group-btn" class="btn-primary" data-i18n="init.manual.create">Create Manual Group</button>
             </div>
           </div>
         </div>
         <div class="init-actions" id="init-auto-actions">
-          <button id="save-config-btn" class="btn-secondary">Save Parameters</button>
-          <button id="run-init-btn" class="btn-primary">Run Initialization</button>
+          <button id="save-config-btn" class="btn-secondary" data-i18n="init.save">Save Parameters</button>
+          <button id="run-init-btn" class="btn-primary" data-i18n="init.run">Run Initialization</button>
         </div>
         <div class="init-progress-wrap" id="init-progress-wrap" hidden>
           <div class="init-progress-meta">
-            <span id="init-progress-phase">Idle</span>
+            <span id="init-progress-phase" data-i18n="init.phase.idle">Idle</span>
             <span id="init-progress-pct">0%</span>
           </div>
           <div class="init-progress-track">
@@ -248,15 +259,24 @@
     </div>
     <div class="panel">
       <div class="panel-head">
-        <h2>Candidate / Active Groups</h2>
-        <span class="hint">Newly discovered groups appear here after running initialization.</span>
+        <h2 data-i18n="init.candidates.title">Candidate / Active Groups</h2>
+        <span class="hint" data-i18n="init.candidates.hint">Newly discovered groups appear here after running initialization.</span>
       </div>
       <div class="table-scroll">
         <table id="candidates-table">
           <thead>
             <tr>
-              <th>Name</th><th>Source</th><th>Sector</th><th>Symbols</th>
-              <th>Sharpe</th><th>PnL</th><th>Max DD</th><th>Win Rate</th><th>Trades</th><th>Status</th><th></th>
+              <th data-i18n="init.cand.th.name">Name</th>
+              <th data-i18n="init.cand.th.source">Source</th>
+              <th data-i18n="init.cand.th.sector">Sector</th>
+              <th data-i18n="init.cand.th.symbols">Symbols</th>
+              <th data-i18n="init.cand.th.sharpe">Sharpe</th>
+              <th data-i18n="init.cand.th.pnl">PnL</th>
+              <th data-i18n="init.cand.th.max_dd">Max DD</th>
+              <th data-i18n="init.cand.th.win_rate">Win Rate</th>
+              <th data-i18n="init.cand.th.trades">Trades</th>
+              <th data-i18n="init.cand.th.status">Status</th>
+              <th></th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -268,50 +288,50 @@
   <section class="tab-panel" id="tab-settings">
     <div class="init-grid">
       <div class="panel">
-        <div class="panel-head"><h2>Exchange Credentials (Live Trading)</h2></div>
-        <p class="warn-note">
+        <div class="panel-head"><h2 data-i18n="settings.cred.title">Exchange Credentials (Live Trading)</h2></div>
+        <p class="warn-note" data-i18n="settings.cred.warn" data-i18n-html="1">
           Credentials are encrypted at rest and are only used when Mode is switched to
           <strong>Live</strong> in the top bar. Paper mode never touches these.
           Select the exchange below, then save credentials for that exchange.
         </p>
         <div id="cred-status" class="cred-status"></div>
         <form id="cred-form" class="param-form">
-          <label>Exchange
+          <label><span data-i18n="settings.cred.exchange">Exchange</span>
             <select name="exchange" id="cred-exchange-select">
-              <option value="nobitex">Nobitex (IRT margin)</option>
-              <option value="xt">XT.com (USDT-M linear perps)</option>
+              <option value="nobitex" data-i18n="settings.ex.nobitex">Nobitex (IRT margin)</option>
+              <option value="xt" data-i18n="settings.ex.xt">XT.com (USDT-M linear perps)</option>
             </select>
           </label>
-          <label>Auth Method
+          <label><span data-i18n="settings.cred.auth">Auth Method</span>
             <select name="auth_method" id="auth-method-select">
-              <option value="token">API Token</option>
-              <option value="key_signature">API Key + Ed25519 Secret</option>
+              <option value="token" data-i18n="settings.auth.token">API Token</option>
+              <option value="key_signature" data-i18n="settings.auth.key">API Key + Ed25519 Secret</option>
             </select>
           </label>
           <div id="cred-fields-token">
-            <label>API Token
-              <input type="password" name="token" placeholder="Token from Nobitex API panel" />
+            <label><span data-i18n="settings.cred.token">API Token</span>
+              <input type="password" name="token" data-i18n-placeholder="settings.cred.token.ph" placeholder="Token from Nobitex API panel" />
             </label>
           </div>
           <div id="cred-fields-key" style="display:none">
-            <label>API Key
-              <input type="text" name="api_key" placeholder="Public key (apiKey)" />
+            <label><span data-i18n="settings.cred.api_key">API Key</span>
+              <input type="text" name="api_key" data-i18n-placeholder="settings.cred.api_key.ph" placeholder="Public key (apiKey)" />
             </label>
-            <label><span id="cred-secret-hint">Private Key / secretKey</span>
-              <textarea name="api_secret_pem" rows="3" placeholder="Nobitex: secretKey base64 or PEM · XT: plain HMAC secret"></textarea>
+            <label><span id="cred-secret-hint" data-i18n="settings.cred.secret">Private Key / secretKey</span>
+              <textarea name="api_secret_pem" rows="3" data-i18n-placeholder="settings.cred.secret.ph" placeholder="Nobitex: secretKey base64 or PEM · XT: plain HMAC secret"></textarea>
             </label>
           </div>
           <div class="init-actions">
-            <button type="submit" class="btn-primary">Save Credentials</button>
-            <button type="button" id="delete-cred-btn" class="btn-danger">Remove Credentials</button>
+            <button type="submit" class="btn-primary" data-i18n="settings.cred.save">Save Credentials</button>
+            <button type="button" id="delete-cred-btn" class="btn-danger" data-i18n="settings.cred.remove">Remove Credentials</button>
           </div>
         </form>
       </div>
       <div class="panel">
-        <div class="panel-head"><h2>System</h2></div>
+        <div class="panel-head"><h2 data-i18n="settings.system.title">System</h2></div>
         <form id="system-form" class="param-form"></form>
         <div class="init-actions">
-          <button id="save-system-btn" class="btn-secondary">Save</button>
+          <button id="save-system-btn" class="btn-secondary" data-i18n="settings.system.save">Save</button>
         </div>
       </div>
     </div>
@@ -319,15 +339,16 @@
 
 </main>
 
-<script src="/static/js/time.js?v=20261002auth"></script>
-<script src="/static/js/api.js?v=20261002auth"></script>
-<script src="/static/js/auth.js?v=20261002auth"></script>
-<script src="/static/js/charts.js?v=20261002auth"></script>
-<script src="/static/js/charts_equity.js?v=20261002auth"></script>
-<script src="/static/js/tables.js?v=20261002auth"></script>
-<script src="/static/js/beta_diagram.js?v=20261002auth"></script>
-<script src="/static/js/main.js?v=20261002auth"></script>
-<script src="/static/js/ui_fixes.js?v=20261002auth"></script>
-<script src="/static/js/backbone_overrides.js?v=20261002auth"></script>
+<script src="/static/js/i18n.js?v=20261003i18n"></script>
+<script src="/static/js/time.js?v=20261003i18n"></script>
+<script src="/static/js/api.js?v=20261003i18n"></script>
+<script src="/static/js/auth.js?v=20261003i18n"></script>
+<script src="/static/js/charts.js?v=20261003i18n"></script>
+<script src="/static/js/charts_equity.js?v=20261003i18n"></script>
+<script src="/static/js/tables.js?v=20261003i18n"></script>
+<script src="/static/js/beta_diagram.js?v=20261003i18n"></script>
+<script src="/static/js/main.js?v=20261003i18n"></script>
+<script src="/static/js/ui_fixes.js?v=20261003i18n"></script>
+<script src="/static/js/backbone_overrides.js?v=20261003i18n"></script>
 </body>
 </html>
