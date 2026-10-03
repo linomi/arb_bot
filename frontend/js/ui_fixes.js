@@ -8,13 +8,13 @@
     panel.className = "panel equity-panel";
     panel.innerHTML = `
       <div class="panel-head">
-        <h2 id="equity-title">Equity Curve</h2>
-        <span class="hint">Cumulative realized cash PnL</span>
+        <h2 id="equity-title">${typeof t==="function"?t("equity.title"):"Equity Curve"}</h2>
+        <span class="hint">${typeof t==="function"?t("equity.hint.cum"):"Cumulative realized cash PnL"}</span>
       </div>
       <div class="equity-wrap" style="padding:8px 12px 12px;height:200px">
         <canvas id="equity-canvas"></canvas>
       </div>
-      <div class="equity-empty" id="equity-empty" style="padding:0 14px 12px" hidden>No closed trades yet for this group.</div>
+      <div class="equity-empty" id="equity-empty" style="padding:0 14px 12px" hidden>${typeof t==="function"?t("equity.empty"):"No closed trades yet for this group."}</div>
     `;
     tradesPanel.parentNode.insertBefore(panel, tradesPanel);
   }
@@ -68,7 +68,7 @@
         const g = (typeof state !== "undefined" && state.groups)
           ? state.groups.find((x) => x.id === id) : null;
         const title = document.getElementById("equity-title");
-        if (title && g) title.textContent = "Equity Curve — " + g.name;
+        if (title && g) title.textContent = (typeof t==="function"?t("equity.title.group",{name:g.name}):("Equity Curve — "+g.name));
       } catch (e) {
         console.warn("equity patch", e);
       }
