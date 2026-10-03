@@ -49,10 +49,12 @@ function stopFitPoll() {
   }
 }
 
-const FIELD_HINTS = {
-  target_profit_rate: "0.01 = 1% of total position notional, net of fees; 0 disables",
-  max_entry_scale: "Cap on leg_orders inflation to meet exchange min; large values mean the natural position was too small (thin book). 0 disables.",
-};
+function FIELD_HINTS() {
+  return {
+    target_profit_rate: t("hint.target_profit_rate"),
+    max_entry_scale: t("hint.max_entry_scale"),
+  };
+}
 
 function renderParamForm(formEl, data) {
   if (!formEl) return;
@@ -76,10 +78,11 @@ function renderParamForm(formEl, data) {
     }
     input.name = key;
     label.appendChild(input);
-    if (FIELD_HINTS[key]) {
+    const _hints = FIELD_HINTS();
+    if (_hints[key]) {
       const hint = document.createElement("span");
       hint.className = "field-hint";
-      hint.textContent = FIELD_HINTS[key];
+      hint.textContent = _hints[key];
       label.appendChild(hint);
     }
     formEl.appendChild(label);
@@ -101,6 +104,11 @@ function collectFormData(formEl) {
 }
 
 function _prettyLabel(key) {
+  const pk = "param." + key;
+  if (typeof t === "function") {
+    const tr = t(pk);
+    if (tr && tr !== pk) return tr;
+  }
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -111,7 +119,7 @@ async function refreshBotState() {
   btn.classList.toggle("running", s.is_running);
   btn.classList.toggle("idle", !s.is_running);
   const label = btn.querySelector(".label");
-  if (label) label.textContent = s.is_running ? "ACTIVE" : "INACTIVE";
+  if (label) label.textContent = s.is_running ? t("bot.active") : t("bot.inactive");
   const modeSel = document.getElementById("trading-mode-select");
   if (modeSel) modeSel.value = s.trading_mode;
   const exSel = document.getElementById("exchange-select");
@@ -135,11 +143,11 @@ document.getElementById("trading-mode-select").addEventListener("change", async 
   if (mode === "live") {
     const status = await API.credStatus(state.activeExchange || "nobitex");
     if (!status.configured) {
-      alert("No live credentials saved for " + (state.activeExchange || "nobitex") + ". Add them under Settings & Credentials first.");
+      alert(t("confirm.live.no.cred", { ex: state.activeExchange || "nobitex" }));
       e.target.value = "paper";
       return;
     }
-    if (!confirm("Switching to LIVE mode will place real orders on your exchange account. Continue?")) {
+    if (!confirm(t("confirm.live"))) {
       e.target.value = "paper";
       return;
     }
@@ -151,7 +159,7 @@ document.getElementById("trading-mode-select").addEventListener("change", async 
 const exchangeSel = document.getElementById("exchange-select");
 if (exchangeSel) exchangeSel.addEventListener("change", async (e) => {
   const ex = e.target.value;
-  if (!confirm("Switch active exchange to " + ex + "? Market data and live trading will use this exchange.")) {
+  if (!confirm(t("confirm.exchange", { ex }))) {
     e.target.value = state.activeExchange || "nobitex";
     return;
   }
@@ -208,9 +216,9 @@ async function selectGroup(groupId, force = true) {
   if (!group) return;
 
   const plotTitle = document.getElementById("plot-title");
-  if (plotTitle) plotTitle.textContent = `Residual / Z-Score — ${group.name}`;
+  if (plotTitle) plotTitle.textContent = t("plot.title.group", { name: group.name });
   const plotMeta = document.getElementById("plot-meta");
-  if (plotMeta) plotMeta.textContent = "Fitting OLS on the latest window…";
+  if (plotMeta) plotMeta.textContent = t("plot.fitting");
 
   const backboneCfg = state.backboneCfg || (await API.getConfigSection("backbone"));
   state.backboneCfg = backboneCfg;
@@ -226,7 +234,7 @@ async function selectGroup(groupId, force = true) {
       state.lastFitAt[groupId] = Date.now();
       state.lastFitData[groupId] = fit;
     } catch (e) {
-      if (plotMeta) plotMeta.textContent = "Could not fit residual: " + (e.message || e);
+      if (plotMeta) plotMeta.textContent = t("plot.fit.failed", { error: e.message || e });
       return;
     }
   }
@@ -259,10 +267,12 @@ async function selectGroup(groupId, force = true) {
   const bars = fit.bars_used != null ? fit.bars_used : "?";
   const res = fit.resolution || "?";
   if (plotMeta) {
-    plotMeta.innerHTML =
-      `Live window OLS · ADF p=${fmtNum(fit.adf_pvalue, 3)} · KPSS p=${fmtNum(fit.kpss_pvalue, 3)} · ` +
-      `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? "STATIONARY" : "REJECTED"}</span> · ` +
-      `${bars} bars @ ${res} · fitted ${fmtTime(fit.fitted_at)}`;
+    plotMeta.innerHTML = t("plot.meta.live", {
+      adf: fmtNum(fit.adf_pvalue, 3),
+      kpss: fmtNum(fit.kpss_pvalue, 3),
+      flag: `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? t("plot.stationary") : t("plot.rejected")}</span>`,
+      bars, res, fitted: fmtTime(fit.fitted_at),
+    });
   }
 }
 
@@ -279,10 +289,10 @@ async function showGroupDetail(row) {
     <div class="detail-title">${row.name}</div>
     <div class="detail-sub">${(row.symbols || []).join(" / ")}</div>
     <div class="detail-metrics">
-      Trades: <b>${row.trade_count}</b><br/>
-      Win rate: <b>${fmtPct(row.win_rate)}</b><br/>
-      Total PnL: <b>${fmtNum(row.total_pnl)}</b><br/>
-      Sharpe: <b>${fmtNum(row.sharpe_ratio, 2)}</b>
+      ${t("perf.detail.trades")}: <b>${row.trade_count}</b><br/>
+      ${t("perf.detail.win_rate")}: <b>${fmtPct(row.win_rate)}</b><br/>
+      ${t("perf.detail.total_pnl")}: <b>${fmtNum(row.total_pnl)}</b><br/>
+      ${t("perf.detail.sharpe")}: <b>${fmtNum(row.sharpe_ratio, 2)}</b>
     </div>
   `;
   if (row.group_id) {
@@ -373,7 +383,7 @@ async function loadCandidatesTable() {
     async (id) => { await API.setGroupStatus(id, "active"); await loadCandidatesTable(); await loadPerfTable(); },
     async (id) => { await API.setGroupStatus(id, "inactive"); await loadCandidatesTable(); await loadPerfTable(); },
     async (id, name) => {
-      if (!confirm("Delete " + name + "?")) return;
+      if (!confirm(t("confirm.delete.group", { name }))) return;
       await API.deleteGroup(id);
       await loadCandidatesTable();
       await loadPerfTable();
@@ -401,14 +411,14 @@ function updateInitProgressUI(p) {
   const msg = document.getElementById("init-progress-msg");
 
   const phaseLabels = {
-    idle: "Idle",
-    starting: "Starting",
-    fetch_symbols: "Markets",
-    fetch_ohlc: "Downloading",
-    backtest: "Backtesting",
-    persist: "Saving",
-    done: "Done",
-    error: "Error",
+    idle: t("init.phase.idle"),
+    starting: t("init.phase.starting"),
+    fetch_symbols: t("init.phase.fetch_symbols"),
+    fetch_ohlc: t("init.phase.fetch_ohlc"),
+    backtest: t("init.phase.backtest"),
+    persist: t("init.phase.persist"),
+    done: t("init.phase.done"),
+    error: t("init.phase.error"),
   };
   if (phaseEl) phaseEl.textContent = phaseLabels[p.phase] || p.phase || "…";
   const pct = Math.round(Number(p.percent) || 0);
@@ -417,7 +427,7 @@ function updateInitProgressUI(p) {
   if (msg) {
     let line = p.message || "";
     if (p.total && p.current != null && p.phase === "backtest") {
-      line = p.message || `Backtesting ${p.current}/${p.total}`;
+      line = p.message || t("init.backtest.progress", { current: p.current, total: p.total });
     }
     if (p.error) line = p.error;
     msg.textContent = line;
@@ -437,26 +447,26 @@ if (saveCfg) saveCfg.addEventListener("click", async () => {
   await API.updateConfigSection("backbone", backboneData);
   await API.updateConfigSection("init", initData);
   state.backboneCfg = backboneData;
-  setInitStatus("Parameters saved.");
+  setInitStatus(t("init.saved"));
 });
 
 const runInit = document.getElementById("run-init-btn");
 if (runInit) runInit.addEventListener("click", async () => {
   if (state.initMethod === "manual") {
-    setInitStatus("Use 'Create Manual Group' for the manual method.");
+    setInitStatus(t("init.use.manual"));
     return;
   }
   runInit.disabled = true;
   showInitProgress(true);
   setInitStatus("");
-  updateInitProgressUI({ phase: "starting", message: "Starting…", percent: 0, running: true });
+  updateInitProgressUI({ phase: "starting", message: t("init.starting"), percent: 0, running: true });
 
   try {
     await API.runInit(state.initMethod || "random", true);
   } catch (e) {
     runInit.disabled = false;
     updateInitProgressUI({ phase: "error", message: e.message, percent: 0, running: false, error: e.message });
-    setInitStatus("Error: " + e.message);
+    setInitStatus(t("init.error", { error: e.message }));
     return;
   }
 
@@ -470,18 +480,20 @@ if (runInit) runInit.addEventListener("click", async () => {
       }
       runInit.disabled = false;
       if (p.phase === "error" || p.error) {
-        setInitStatus("Error: " + (p.error || p.message || "unknown"));
+        setInitStatus(t("init.error", { error: p.error || p.message || "unknown" }));
         return;
       }
       const r = p.result || {};
-      setInitStatus(
-        `Done. Method=${r.method || state.initMethod} · liquid symbols=${r.liquid_symbols_considered ?? "?"} · ` +
-        `candidates kept=${r.candidates_evaluated ?? "?"} · groups created=${(r.groups_created || []).length}`
-      );
+      setInitStatus(t("init.done", {
+        method: r.method || state.initMethod,
+        symbols: r.liquid_symbols_considered ?? "?",
+        candidates: r.candidates_evaluated ?? "?",
+        groups: (r.groups_created || []).length,
+      }));
       await loadCandidatesTable();
     } catch (e) {
       runInit.disabled = false;
-      setInitStatus("Error polling progress: " + e.message);
+      setInitStatus(t("init.error.poll", { error: e.message }));
       updateInitProgressUI({ phase: "error", message: e.message, percent: 0, running: false, error: e.message });
     }
   };
@@ -491,7 +503,7 @@ if (runInit) runInit.addEventListener("click", async () => {
 // -------------------- manual group entry --------------------
 async function loadLiquidSymbols() {
   const box = document.getElementById("symbol-checklist");
-  if (box) box.innerHTML = "<div class=\"sym-loading\">Loading liquid symbols…</div>";
+  if (box) box.innerHTML = "<div class=\"sym-loading\">" + t("init.loading.symbols") + "</div>";
   try {
     const data = await API.listLiquidSymbols(null, state.activeExchange || "nobitex");
     // API returns { symbols: [...], quote, top_n } — not a bare array
@@ -500,15 +512,15 @@ async function loadLiquidSymbols() {
       ? raw.map((s) => (typeof s === "string" ? s : (s && (s.symbol || s.name)) || "")).filter(Boolean)
       : [];
     if (!state.liquidSymbols.length) {
-      setInitStatus("No liquid symbols returned. Check exchange connectivity / quote_currency in init config.");
+      setInitStatus(t("init.no.symbols"));
     } else {
-      setInitStatus(`Loaded ${state.liquidSymbols.length} liquid symbols.`);
+      setInitStatus(t("init.loaded.symbols", { n: state.liquidSymbols.length }));
     }
     renderSymbolChecklist();
   } catch (e) {
     console.warn("loadLiquidSymbols", e);
-    if (box) box.innerHTML = "<div class=\"sym-loading\">Failed to load symbols.</div>";
-    setInitStatus("Could not load symbols: " + (e.message || e));
+    if (box) box.innerHTML = "<div class=\"sym-loading\">" + t("init.fail.symbols") + "</div>";
+    setInitStatus(t("init.could.not.symbols", { error: e.message || e }));
   }
 }
 
@@ -633,8 +645,8 @@ async function refreshSettingsTab() {
     const el = document.getElementById("cred-status");
     if (el) {
       el.textContent = status.configured
-        ? `Credentials configured for ${ex} (${status.auth_method || "?"}).`
-        : `No credentials saved for ${ex}.`;
+        ? t("settings.cred.ok", { ex, method: status.auth_method || "?" })
+        : t("settings.cred.none", { ex });
     }
   } catch (e) {}
   try {
@@ -659,14 +671,14 @@ if (credForm) credForm.addEventListener("submit", async (e) => {
   if (exSel) payload.exchange = exSel.value;
   await API.saveCred(payload);
   refreshSettingsTab();
-  alert("Credentials saved for " + (payload.exchange || "nobitex") + ".");
+  alert(t("settings.cred.saved", { ex: payload.exchange || "nobitex" }));
 });
 
 const delCred = document.getElementById("delete-cred-btn");
 if (delCred) delCred.addEventListener("click", async () => {
   const exSel = document.getElementById("cred-exchange-select");
   const ex = (exSel && exSel.value) || "nobitex";
-  if (!confirm("Remove credentials for " + ex + "?")) return;
+  if (!confirm(t("settings.cred.remove.confirm", { ex }))) return;
   await API.deleteCred(ex);
   refreshSettingsTab();
 });
@@ -678,8 +690,18 @@ const saveSys = document.getElementById("save-system-btn");
 if (saveSys) saveSys.addEventListener("click", async () => {
   const data = collectFormData(document.getElementById("system-form"));
   await API.updateConfigSection("system", data);
-  alert("System saved.");
+  alert(t("settings.system.saved"));
 });
+
+window.__onLanguageChange = async function () {
+  try {
+    if (typeof i18n !== "undefined") i18n.applyStatic();
+    await refreshBotState();
+    if (state.activeTab === "dashboard") await refreshDashboard();
+    if (state.activeTab === "init") await refreshInitTab();
+    if (state.activeTab === "settings") await refreshSettingsTab();
+  } catch (e) { console.warn("lang change", e); }
+};
 
 (async function boot() {
   await refreshBotState();
