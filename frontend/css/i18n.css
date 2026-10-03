@@ -1,0 +1,63 @@
+/* Language switch + RTL (Persian) */
+.lang-switch {
+  display: inline-flex;
+  border: 1px solid #2a3344;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-inline-end: 8px;
+}
+.lang-btn {
+  background: transparent;
+  border: none;
+  color: #8b9bb4;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.lang-btn:hover { color: #e6ebf2; background: #1a2030; }
+.lang-btn.active {
+  background: #3d7eff;
+  color: #fff;
+}
+
+body.lang-fa {
+  font-family: "Vazirmatn", "IBM Plex Sans", system-ui, sans-serif;
+}
+body.lang-fa .brand-name,
+body.lang-fa .tab-btn,
+body.lang-fa .panel-head h2,
+body.lang-fa label,
+body.lang-fa .hint,
+body.lang-fa button {
+  font-family: "Vazirmatn", "IBM Plex Sans", system-ui, sans-serif;
+}
+
+/* RTL layout tweaks */
+html[dir="rtl"] .topbar {
+  flex-direction: row;
+}
+html[dir="rtl"] .bot-control {
+  flex-direction: row-reverse;
+}
+html[dir="rtl"] .filter-row {
+  flex-direction: row-reverse;
+}
+html[dir="rtl"] .table-scroll {
+  direction: rtl;
+}
+html[dir="rtl"] #perf-table th,
+html[dir="rtl"] #trades-table th,
+html[dir="rtl"] #candidates-table th {
+  text-align: right;
+}
+html[dir="rtl"] .perf-actions {
+  flex-direction: row-reverse;
+}
+html[dir="rtl"] .auth-card {
+  text-align: right;
+}
+html[dir="rtl"] .auth-brand {
+  flex-direction: row-reverse;
+}
