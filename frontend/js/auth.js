@@ -15,19 +15,19 @@
       <div class="auth-card">
         <div class="auth-brand">
           <span class="brand-mark">&#8862;</span>
-          <span>STAT-ARB TERMINAL</span>
+          <span>${typeof t === "function" ? t("brand.name") : "STAT-ARB TERMINAL"}</span>
         </div>
-        <h2>Sign in</h2>
-        <p class="auth-hint">Session stays valid for 5 days.</p>
+        <h2>${typeof t === "function" ? t("auth.signin") : "Sign in"}</h2>
+        <p class="auth-hint">${typeof t === "function" ? t("auth.hint") : "Session stays valid for 5 days."}</p>
         <form id="auth-form">
-          <label>Username
+          <label>${typeof t === "function" ? t("auth.username") : "Username"}
             <input type="text" name="username" autocomplete="username" required autofocus />
           </label>
-          <label>Password
+          <label>${typeof t === "function" ? t("auth.password") : "Password"}
             <input type="password" name="password" autocomplete="current-password" required />
           </label>
           <div class="auth-error" id="auth-error" hidden></div>
-          <button type="submit" class="btn-primary auth-submit">Sign in</button>
+          <button type="submit" class="btn-primary auth-submit">${typeof t === "function" ? t("auth.submit") : "Sign in"}</button>
         </form>
       </div>
     `;
@@ -43,14 +43,13 @@
       try {
         await API.login(username, password);
         hideLogin();
-        // Reload app state after successful login
         if (typeof window.__onAuthSuccess === "function") {
           window.__onAuthSuccess();
         } else {
           location.reload();
         }
       } catch (err) {
-        errEl.textContent = err.message || "Login failed";
+        errEl.textContent = err.message || (typeof t === "function" ? t("auth.failed") : "Login failed");
         errEl.hidden = false;
       }
     });
@@ -76,7 +75,6 @@
   window.__showLogin = showLogin;
   window.__hideLogin = hideLogin;
 
-  // On load: check session status
   async function bootstrapAuth() {
     try {
       const s = await API.authStatus();
@@ -84,7 +82,6 @@
         showLogin();
       }
     } catch (e) {
-      // Network or other error — if we got 401 the handler already showed login
       console.warn("auth status check", e);
     }
   }
