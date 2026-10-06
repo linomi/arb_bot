@@ -1,4 +1,6 @@
 """Small shared helpers."""
+import asyncio
+
 import pandas as pd
 
 _SUPPORTED_MINUTE_RESOLUTIONS = [1, 5, 15, 30, 60, 180, 240, 360, 720]
@@ -30,9 +32,14 @@ def align_price_series(series: dict[str, pd.Series], max_ffill_bars: int = 2) ->
 
 
 async def fetch_price_df(client, symbols: list[str], resolution: str, bars: int) -> pd.DataFrame:
+    # Symbols are fetched concurrently (the exchange clients rate-limit
+    # themselves); sequential fetching made every cycle / UI click wait for the
+    # sum of all round-trips.
+    results = await asyncio.gather(
+        *(client.get_ohlc(sym, resolution, bars) for sym in symbols)
+    )
     series = {}
-    for sym in symbols:
-        ohlc = await client.get_ohlc(sym, resolution, bars)
+    for sym, ohlc in zip(symbols, results):
         if not ohlc.get("t"):
             continue
         idx = pd.to_datetime(ohlc["t"], unit="s")
