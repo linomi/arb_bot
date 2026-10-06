@@ -36,6 +36,7 @@ from backend.utils import seconds_to_resolution, fetch_price_df
 from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
 from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
+from backend.strategy.half_life import half_life_ok
 from backend.strategy.sizing import (
     leg_orders,
     close_legs_from_entry,
@@ -133,6 +134,8 @@ class BotEngine:
         self._pause_until: str | None = None  # ISO timestamp; XT rate-limit lockout
         self._entry_cooldown_until: dict[int, float] = {}   # group_id -> monotonic deadline
         self._last_fit_logged: dict[int, float] = {}        # group_id -> monotonic time
+        self._orphan_positions: list[dict] = []             # exchange positions without open trade
+        self._last_orphan_check: float = 0.0
 
     def start_background_loop(self):
         if self._task is None or self._task.done():
@@ -192,6 +195,14 @@ class BotEngine:
             return
 
         resolution = seconds_to_resolution(backbone["sampling_time"])
+
+        # Orphan position reconcile on start and every ~N cycles (default 10 * sampling)
+        try:
+            interval = float(backbone.get("orphan_reconcile_interval_sec", 600) or 600)
+            if time.monotonic() - self._last_orphan_check >= interval:
+                await self.reconcile_orphans(db, trading_client, trading_mode, exchange)
+        except Exception as e:
+            log.warning("orphan reconcile error: %s", e)
 
         try:
             for group in groups:
@@ -274,10 +285,170 @@ class BotEngine:
                 exchange=group_ex,
             )
         elif is_running and allow_new_entries:
+            if self._data_is_stale(price_df, backbone_local):
+                msg = "data stale (latest bar older than staleness threshold)"
+                self._group_errors[group.id] = msg
+                log.warning("group %s: %s", group.id, msg)
+                return
+            cap_msg = self._portfolio_caps_exceeded(db, backbone_local, trading_mode)
+            if cap_msg:
+                self._group_errors[group.id] = cap_msg
+                log.info("group %s skip entry: %s", group.id, cap_msg)
+                return
+            blocked = self.symbols_blocked_by_orphans() & set(group.symbols or [])
+            if blocked:
+                msg = f"orphan positions block symbols {sorted(blocked)}"
+                self._group_errors[group.id] = msg
+                log.error("group %s: %s", group.id, msg)
+                return
             await self._check_entry(
                 db, group, price_df, latest_prices, backbone_local, trading_client, trading_mode,
                 exchange=group_ex,
             )
+
+
+    def _data_is_stale(self, price_df, backbone: dict) -> bool:
+        """True if latest bar older than data_staleness_mult * sampling_time."""
+        mult = float(backbone.get("data_staleness_mult", 3.0) or 0)
+        if mult <= 0 or price_df is None or price_df.empty:
+            return False
+        st = float(backbone.get("sampling_time", 60) or 60)
+        try:
+            last = price_df.index[-1]
+            import pandas as pd
+            if not isinstance(last, pd.Timestamp):
+                last = pd.Timestamp(last)
+            # assume index is UTC-ish; compare to utcnow
+            age = (pd.Timestamp.utcnow().tz_localize(None) - last.tz_localize(None) if last.tzinfo else
+                   pd.Timestamp.utcnow().tz_localize(None) - last)
+            age_sec = float(age.total_seconds())
+            return age_sec > mult * st
+        except Exception:
+            return False
+
+    def _portfolio_caps_exceeded(self, db, backbone: dict, trading_mode: str) -> str | None:
+        max_trades = int(backbone.get("max_open_trades", 0) or 0)
+        max_notional = float(backbone.get("max_total_gross_notional", 0) or 0)
+        if max_trades <= 0 and max_notional <= 0:
+            return None
+        opens = db.query(Trade).filter(Trade.status == "open", Trade.mode == trading_mode).all()
+        if max_trades > 0 and len(opens) >= max_trades:
+            return f"max_open_trades={max_trades} reached ({len(opens)} open)"
+        if max_notional > 0:
+            total = 0.0
+            for tr in opens:
+                for leg in (tr.legs_entry or []):
+                    q = float(leg.get("filled_qty") or leg.get("qty") or 0)
+                    px = float(leg.get("price") or 0)
+                    total += abs(q * px)
+            if total >= max_notional:
+                return f"max_total_gross_notional={max_notional} reached (gross≈{total:.0f})"
+        return None
+
+
+    async def reconcile_orphans(self, db, trading_client, trading_mode: str, exchange: str) -> list[dict]:
+        """Compare exchange open positions with DB open trades; record orphans.
+        Orphans block new entries for groups that share those symbols.
+        """
+        orphans: list[dict] = []
+        try:
+            positions = await trading_client.list_positions()
+        except Exception as e:
+            log.warning("orphan reconcile list_positions failed: %s", e)
+            return self._orphan_positions
+
+        # Collect position ids / symbols covered by open trades (and failed_partial / rollback_failed)
+        covered_ids: set[str] = set()
+        covered_syms: set[str] = set()
+        trades = db.query(Trade).filter(
+            Trade.mode == trading_mode,
+            Trade.status.in_(("open", "failed_partial")),
+        ).all()
+        for tr in trades:
+            for leg in (tr.legs_entry or []):
+                if leg.get("position_id") is not None:
+                    covered_ids.add(str(leg["position_id"]))
+                if leg.get("symbol"):
+                    covered_syms.add(str(leg["symbol"]))
+                if leg.get("rollback_failed"):
+                    # still count as known, but log
+                    log.error("trade %s leg %s has rollback_failed=true", tr.id, leg.get("symbol"))
+
+        for pos in positions or []:
+            pid = str(pos.get("id") or "")
+            sym = str(pos.get("symbol") or "")
+            liab = float(pos.get("liability") or 0)
+            if liab <= 0:
+                continue
+            if pid and pid in covered_ids:
+                continue
+            if sym and sym in covered_syms:
+                continue
+            orphan = {
+                "id": pid,
+                "symbol": sym,
+                "side": pos.get("side"),
+                "liability": liab,
+                "exchange": exchange,
+            }
+            orphans.append(orphan)
+            log.error("ORPHAN POSITION on %s: %s", exchange, orphan)
+
+        self._orphan_positions = orphans
+        self._last_orphan_check = time.monotonic()
+        if orphans:
+            self._last_error = f"{len(orphans)} orphan position(s) on {exchange}"
+        return orphans
+
+    def symbols_blocked_by_orphans(self) -> set[str]:
+        return {str(o.get("symbol")) for o in self._orphan_positions if o.get("symbol")}
+
+
+    async def _risk_exit_if_near_liquidation(
+        self, open_trade, trading_client, backbone: dict,
+    ) -> bool:
+        """If any leg mark is within 20% of liquidation, return True to force close."""
+        threshold = float(backbone.get("liquidation_proximity_fraction", 0.20) or 0)
+        if threshold <= 0 or not open_trade:
+            return False
+        for leg in (open_trade.legs_entry or []):
+            pid = leg.get("position_id")
+            if not pid:
+                continue
+            try:
+                pos = await trading_client.get_position(_pos_id(pid))
+            except Exception:
+                continue
+            if not pos:
+                continue
+            mark = _parse_money(pos.get("markPrice"))
+            # common field names for liquidation
+            liq = None
+            for k in ("liquidationPrice", "liqPrice", "liquidation_price", "bustPrice"):
+                liq = _parse_money(pos.get(k))
+                if liq is not None and liq > 0:
+                    break
+            # margin ratio alternative
+            ratio = pos.get("marginRatio") or pos.get("margin_ratio") or (pos.get("_raw") or {}).get("marginRatio")
+            try:
+                ratio = float(ratio) if ratio is not None else None
+            except (TypeError, ValueError):
+                ratio = None
+            near = False
+            if mark is not None and liq is not None and liq > 0 and mark > 0:
+                # distance as fraction of mark
+                dist = abs(mark - liq) / mark
+                if dist <= threshold:
+                    near = True
+            if ratio is not None and ratio >= (1.0 - threshold):
+                near = True
+            if near:
+                log.error(
+                    "RISK EXIT trade #%s leg %s mark=%s liq=%s ratio=%s",
+                    open_trade.id, leg.get("symbol"), mark, liq, ratio,
+                )
+                return True
+        return False
 
     def _start_cooldown(self, group_id: int, backbone: dict) -> None:
         sec = float(backbone.get("entry_retry_cooldown_sec", 600) or 0)
@@ -405,6 +576,45 @@ class BotEngine:
                 notional, need, free, usable,
             )
         return legs, notional, msg
+
+
+    async def _preflight_legs(self, trading_client, legs: list[dict], exchange: str) -> list[dict]:
+        """Validate min notional / precision for every leg BEFORE the first order.
+        Returns legs ordered so the highest rejection risk is placed first.
+        Raises PartialLegsError-compatible ValueError on hard fails.
+        """
+        from backend.strategy.sizing import MIN_ORDER_VALUE_IRT
+        risks: list[tuple[float, dict]] = []
+        for leg in legs:
+            symbol = leg["symbol"]
+            qty = float(leg.get("qty") or 0)
+            px = float(leg.get("price") or 0)
+            notional = qty * px if px > 0 else 0.0
+            min_val = float(MIN_ORDER_VALUE_IRT)
+            if exchange == "nobitex" and hasattr(trading_client, "min_order_value_irt"):
+                try:
+                    await trading_client.get_margin_markets(details=True)
+                    min_val = float(trading_client.min_order_value_irt(symbol))
+                except Exception as e:
+                    log.debug("preflight min lookup failed for %s: %s", symbol, e)
+            elif exchange == "xt" and hasattr(trading_client, "get_min_notional"):
+                try:
+                    mn = await trading_client.get_min_notional(symbol)
+                    if mn is not None:
+                        min_val = float(mn)
+                except Exception as e:
+                    log.debug("preflight XT min failed for %s: %s", symbol, e)
+            if notional > 0 and notional < min_val:
+                raise ValueError(
+                    f"preflight: leg {symbol} notional {notional:.4g} < min {min_val:.4g}"
+                )
+            if qty <= 0:
+                raise ValueError(f"preflight: leg {symbol} qty <= 0")
+            # Risk score: closer to min = higher risk of rejection
+            ratio = (notional / min_val) if min_val > 0 else 999.0
+            risks.append((ratio, leg))
+        risks.sort(key=lambda x: x[0])  # smallest ratio first
+        return [leg for _, leg in risks]
 
     async def _place_legs(
         self,
@@ -671,6 +881,31 @@ class BotEngine:
                 log.exception("FAILED to roll back leg %s: %s", leg.get("symbol"), e)
                 legs[idx] = {**leg, "rollback_failed": True, "rollback_error": str(e)}
 
+
+    @staticmethod
+    def _pnl_from_leg_fills(legs_entry: list[dict], legs_close: list[dict]) -> float | None:
+        """Approximate realized cash PnL from entry/exit fill prices and qty."""
+        if not legs_entry:
+            return None
+        close_by_sym = {l.get("symbol"): l for l in (legs_close or [])}
+        total = 0.0
+        any_fill = False
+        for leg in legs_entry:
+            sym = leg.get("symbol")
+            qty = float(leg.get("filled_qty") or leg.get("qty") or 0)
+            entry_px = float(leg.get("fill_price") or leg.get("price") or 0)
+            cl = close_by_sym.get(sym) or {}
+            exit_px = float(cl.get("fill_price") or cl.get("price") or 0)
+            if qty <= 0 or entry_px <= 0 or exit_px <= 0:
+                continue
+            any_fill = True
+            side = str(leg.get("side") or "").lower()
+            if side in ("buy", "long"):
+                total += (exit_px - entry_px) * qty
+            else:
+                total += (entry_px - exit_px) * qty
+        return float(total) if any_fill else None
+
     async def _realized_pnl_from_exchange(
         self,
         trading_client: NobitexClient,
@@ -831,18 +1066,35 @@ class BotEngine:
             except Exception:
                 log.exception("failed to read exchange PnL for trade #%s", open_trade.id)
 
+        if realized is None:
+            # Fallback: reconstruct from entry/exit fills (XT often lacks position PNL)
+            realized = self._pnl_from_leg_fills(legs_entry, legs_close)
+            if realized is not None:
+                log.info("group %s trade #%s PnL from fills=%.6g", group.id, open_trade.id, realized)
+
         if realized is not None:
             reported_pnl = float(realized)
             open_trade.realized_pnl = float(realized)
             open_trade.pnl = float(realized)
+            open_trade.pnl_source = "exchange"
             log.info(
                 "group %s trade #%s LIVE PnL=%.6g (model %.6g)",
                 group.id, open_trade.id, realized, model_pnl,
             )
+            # Flag large divergence between exchange and model
+            if model_pnl is not None and abs(model_pnl) > 1e-12:
+                rel = abs(float(realized) - float(model_pnl)) / max(abs(float(model_pnl)), 1e-12)
+                if rel > 0.20:
+                    open_trade.pnl_divergence = True
+                    log.warning(
+                        "group %s trade #%s PnL divergence >20%%: exchange=%.6g model=%.6g (rel=%.1f%%)",
+                        group.id, open_trade.id, realized, model_pnl, 100 * rel,
+                    )
         else:
             reported_pnl = float(model_pnl)
             open_trade.pnl = float(model_pnl)
             open_trade.realized_pnl = None
+            open_trade.pnl_source = "model"
 
         open_trade.status = "closed"
         open_trade.close_time = dt.datetime.utcnow()
@@ -889,7 +1141,13 @@ class BotEngine:
             resid_now, fit_res.resid_mean, fit_res.resid_std, backbone["z_entry"],
             z_stop=float(backbone["z_stop_loss"]),
         )
-        candidate = bool(stat.passed and fit_res.resid_std != 0 and entry_dec.should_enter)
+        hl_frac = float(backbone.get("half_life_max_fraction", 1.0 / 3.0) or 0)
+        hl_ok = True
+        if hl_frac > 0 and fit_res.resid_std != 0:
+            hl_ok, _ = half_life_ok(
+                fit_res.residual, int(backbone["window_size"]), max_fraction=hl_frac,
+            )
+        candidate = bool(stat.passed and fit_res.resid_std != 0 and entry_dec.should_enter and hl_ok)
 
         # Persist the fit only when it can become a trade, or at most every
         # fit_log_interval_sec (was: one row + residual_series JSON every cycle).
@@ -1030,10 +1288,18 @@ class BotEngine:
             log.info("group %s: %s", group.id, bal_msg)
 
         try:
+            group_ex = (getattr(group, "exchange", None) or exchange or "nobitex").lower()
+            legs = await self._preflight_legs(trading_client, legs, group_ex)
             legs = await self._place_legs(
                 trading_client, legs, is_close=False,
                 attempt_id=f"e{group.id}",
             )
+        except ValueError as e:
+            self._last_error = str(e)
+            self._group_errors[group.id] = str(e)
+            log.error("group %s entry preflight failed: %s", group.id, e)
+            self._start_cooldown(group.id, backbone)
+            return
         except PartialLegsError as e:
             self._last_error = str(e)
             self._group_errors[group.id] = str(e)

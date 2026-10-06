@@ -11,6 +11,7 @@ import pandas as pd
 from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
 from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
+from backend.strategy.half_life import half_life_ok
 from backend.strategy.metrics import compute_group_performance, GroupPerformance
 from backend.strategy.pnl import residual_cash_pnl, gross_per_unit_y, entry_target_check
 
@@ -67,6 +68,7 @@ def backtest_group(
     max_holding_bars: int | None = None,
     stationarity_method: str = "engle_granger",
     mark_open_at_end: bool = True,
+    half_life_max_fraction: float = 1.0 / 3.0,
 ) -> BacktestResult:
     symbols = list(price_df.columns)
     n = len(price_df)
@@ -140,6 +142,13 @@ def backtest_group(
             if not stat.passed:
                 i += 1
                 continue
+            if half_life_max_fraction and half_life_max_fraction > 0:
+                ok_hl, _hl = half_life_ok(
+                    fit.residual, window_size, max_fraction=float(half_life_max_fraction),
+                )
+                if not ok_hl:
+                    i += 1
+                    continue
             G_unit = gross_per_unit_y(prices_now, dependent_symbol, fit.betas)
             ok, _det = entry_target_check(
                 z_now=entry_dec.z,

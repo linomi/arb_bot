@@ -55,10 +55,14 @@ def _worker_eval(job: tuple) -> dict | None:
     # of always taking the alphabetically-first symbol.
     candidates = list(symbols) if backbone_params.get("try_all_dependents", True) else [symbols[0]]
     best = None
+    n = len(sub_df)
+    split = max(int(n * 0.7), int(backbone_params["window_size"]) + 10)
+    is_df = sub_df.iloc[:split]
+    oos_df = sub_df.iloc[split - int(backbone_params["window_size"]):]  # overlap window for continuity
     for dependent in candidates:
         try:
             bt = backtest_group(
-                price_df=sub_df,
+                price_df=is_df,
                 dependent_symbol=dependent,
                 window_size=int(backbone_params["window_size"]),
                 adf_alpha=float(backbone_params["adf_alpha"]),
@@ -72,15 +76,44 @@ def _worker_eval(job: tuple) -> dict | None:
                 trade_notional=float(backbone_params.get("trade_notional", 100.0) or 100.0),
                 max_holding_bars=backbone_params.get("max_holding_bars"),
                 stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
+                half_life_max_fraction=float(backbone_params.get("half_life_max_fraction", 1.0/3.0) or 0),
             )
         except Exception:
             continue
         sc = _score_group(bt.performance)
+        oos_perf = None
+        oos_score = None
+        if len(oos_df) > int(backbone_params["window_size"]) + 5:
+            try:
+                bt_oos = backtest_group(
+                    price_df=oos_df,
+                    dependent_symbol=dependent,
+                    window_size=int(backbone_params["window_size"]),
+                    adf_alpha=float(backbone_params["adf_alpha"]),
+                    kpss_alpha=float(backbone_params["kpss_alpha"]),
+                    z_entry=float(backbone_params["z_entry"]),
+                    z_close=float(backbone_params["z_close"]),
+                    z_stop_loss=float(backbone_params["z_stop_loss"]),
+                    transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
+                    target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
+                    max_entry_scale=backbone_params.get("max_entry_scale"),
+                    trade_notional=float(backbone_params.get("trade_notional", 100.0) or 100.0),
+                    max_holding_bars=backbone_params.get("max_holding_bars"),
+                    stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
+                    half_life_max_fraction=float(backbone_params.get("half_life_max_fraction", 1.0/3.0) or 0),
+                )
+                oos_perf = bt_oos.performance.as_dict()
+                oos_score = _score_group(bt_oos.performance)
+            except Exception:
+                pass
         if best is None or sc > best[2]:
-            best = (dependent, bt, sc)
+            best = (dependent, bt, sc, oos_perf, oos_score)
     if best is None:
         return None
-    dependent, bt, _sc = best
+    dependent, bt, _sc, oos_perf, oos_score = best
+    if backbone_params.get("require_oos_positive") and oos_perf is not None:
+        if float(oos_perf.get("total_pnl") or 0) <= 0:
+            return None
 
     return {
         "symbols": list(symbols),
@@ -89,6 +122,8 @@ def _worker_eval(job: tuple) -> dict | None:
         "sector": sector,
         "backtest_metrics": bt.performance.as_dict(),
         "score": _score_group(bt.performance),
+        "oos_metrics": oos_perf,
+        "oos_score": oos_score,
     }
 
 

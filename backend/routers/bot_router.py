@@ -22,6 +22,7 @@ def get_state(db: Session = Depends(get_db)):
         "group_errors": dict(getattr(bot_engine, "_group_errors", {}) or {}),
         "pause_until": getattr(bot_engine, "_pause_until", None),
         "credentials_configured": credentials_configured(db, exchange),
+        "orphan_positions": list(getattr(bot_engine, "_orphan_positions", []) or []),
         "note": "is_running=False only blocks new entries; open positions are still managed",
     }
 

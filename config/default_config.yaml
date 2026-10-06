@@ -36,6 +36,16 @@ backbone:
   # Min seconds between stored OLS-fit rows per group while no entry signal
   # (0 = store every cycle, the old behaviour).
   fit_log_interval_sec: 900
+  # Reject groups whose residual AR(1) half-life is > window_size * this
+  # fraction (or < 2 bars). 0 disables the filter.
+  half_life_max_fraction: 0.333
+  # Portfolio caps (0 = off). Entries skipped when exceeded.
+  max_total_gross_notional: 0
+  max_open_trades: 0
+  # Skip entry if any symbol's latest bar is older than this * sampling_time.
+  data_staleness_mult: 3.0
+  # Force close when mark is within this fraction of liquidation price (0=off).
+  liquidation_proximity_fraction: 0.20
   # XT-only: leverage applied once per symbol before first order (default 2).
   xt_leverage: 2
   # XT-only: "isolated" | "cross" (default isolated).
@@ -55,6 +65,8 @@ init:
   num_candidate_groups: 200 # only used by "random" method
   max_combos_per_sector: 200  # only used by "sector" method
   keep_top_n: 10
+  # Out-of-sample: rank on first 70% of history; keep only if held-out PnL > 0 when true.
+  require_oos_positive: false
   backtest_days: 30
   quote_currency: IRT
 

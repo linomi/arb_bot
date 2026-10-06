@@ -199,5 +199,15 @@
   "hint.try_all_dependents": "Init: test every symbol as the dependent one",
   "param.try_all_dependents": "Try All Dependents",
   "hint.fit_log_interval_sec": "Min seconds between stored OLS fits while no entry signal; 0 = every cycle",
-  "param.fit_log_interval_sec": "Fit Log Interval (s)"
+  "param.fit_log_interval_sec": "Fit Log Interval (s)",
+  "hint.half_life_max_fraction": "Reject residual AR(1) half-life > window*fraction or < 2 bars; 0 disables",
+  "param.half_life_max_fraction": "Half-life Max Fraction",
+  "hint.data_staleness_mult": "Skip entry if latest bar older than this × sampling_time",
+  "param.data_staleness_mult": "Data Staleness Multiple",
+  "hint.max_total_gross_notional": "Max sum of open gross notionals across groups; 0 = off",
+  "param.max_total_gross_notional": "Max Total Gross Notional",
+  "hint.max_open_trades": "Max concurrent open trades; 0 = off",
+  "param.max_open_trades": "Max Open Trades",
+  "hint.require_oos_positive": "Init: keep only groups with positive held-out (30%) PnL",
+  "param.require_oos_positive": "Require OOS Positive"
 }

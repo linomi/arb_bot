@@ -213,6 +213,7 @@ def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
         ),
         "stationarity_method": str(backbone_cfg.get("stationarity_method", "engle_granger")),
         "try_all_dependents": bool(backbone_cfg.get("try_all_dependents", True)),
+        "half_life_max_fraction": float(backbone_cfg.get("half_life_max_fraction", 1.0/3.0) or 0),
         "window_size": int(backbone_cfg["window_size"]),
         "adf_alpha": float(backbone_cfg["adf_alpha"]),
         "kpss_alpha": float(backbone_cfg["kpss_alpha"]),

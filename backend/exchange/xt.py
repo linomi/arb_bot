@@ -266,6 +266,30 @@ class XTClient(ExchangeClient):
             log.warning("set_leverage %s %s: %s", self._leverage, symbol, e)
         self._configured_symbols.add(symbol)
 
+
+    def _contract_size(self, unified: str) -> float:
+        """Base units per contract from market meta (defaults to 1)."""
+        try:
+            m = self._ex.market(unified)
+            cs = m.get("contractSize")
+            if cs is None and isinstance(m.get("info"), dict):
+                cs = m["info"].get("contractSize") or m["info"].get("contract_size")
+            v = float(cs) if cs is not None else 1.0
+            return v if v > 0 else 1.0
+        except Exception:
+            return 1.0
+
+    def _base_to_contracts(self, unified: str, base_qty: float) -> float:
+        """Convert base-asset quantity to exchange contracts; round to amount precision."""
+        cs = self._contract_size(unified)
+        raw = float(base_qty) / cs
+        amount_str = self._ex.amount_to_precision(unified, raw)
+        return float(amount_str)
+
+    def _contracts_to_base(self, unified: str, contracts: float, contract_size: float | None = None) -> float:
+        cs = float(contract_size) if contract_size is not None else self._contract_size(unified)
+        return float(contracts) * cs
+
     async def place_order(
         self,
         symbol: str,
@@ -295,11 +319,14 @@ class XTClient(ExchangeClient):
         if side_l not in ("buy", "sell"):
             raise XTError(f"invalid side: {side}")
 
-        # Round amount to exchange precision — XT rejects bad step sizes
-        amount_str = self._ex.amount_to_precision(unified, amount)
-        amount_f = float(amount_str)
+        # Sizing works in base units; XT create_order expects contracts.
+        # convert base -> contracts using market contractSize, then precision.
+        amount_f = self._base_to_contracts(unified, amount)
         if amount_f <= 0:
-            raise XTError(f"amount rounds to zero for {unified} (raw={amount})")
+            raise XTError(
+                f"amount rounds to zero for {unified} "
+                f"(base={amount}, contractSize={self._contract_size(unified)})"
+            )
 
         params: dict[str, Any] = {}
         if reduce_only:
@@ -341,8 +368,10 @@ class XTClient(ExchangeClient):
         """
         contracts = float(pos.get("contracts") or 0)
         contract_size = float(pos.get("contractSize") or 1)
-        # liability ≈ absolute position size in base contracts (what we close)
-        liability = abs(contracts)
+        if contract_size <= 0:
+            contract_size = 1.0
+        # liability in BASE units so bot_engine close qty matches sizing qty
+        liability = abs(contracts) * contract_size
         side_raw = (pos.get("side") or "").lower()
         if side_raw in ("long", "buy"):
             side = "buy"
@@ -528,9 +557,10 @@ class XTClient(ExchangeClient):
         amount_min = (limits.get("amount") or {}).get("min")
         if amount_min is not None:
             try:
-                # approximate notional from last price
+                # amount min is in contracts; notional = contracts * contractSize * price
+                cs = self._contract_size(unified)
                 px = await self.get_last_price(unified)
-                return float(amount_min) * float(px)
+                return float(amount_min) * cs * float(px)
             except Exception:
                 return None
         return None
