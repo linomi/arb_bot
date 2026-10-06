@@ -57,6 +57,11 @@ function FIELD_HINTS() {
     max_holding_hours: t("hint.max_holding_hours"),
     try_all_dependents: t("hint.try_all_dependents"),
     fit_log_interval_sec: t("hint.fit_log_interval_sec"),
+    half_life_max_fraction: t("hint.half_life_max_fraction"),
+    require_oos_positive: t("hint.require_oos_positive"),
+    max_open_trades: t("hint.max_open_trades"),
+    max_total_gross_notional: t("hint.max_total_gross_notional"),
+    data_staleness_mult: t("hint.data_staleness_mult"),
     max_entry_scale: t("hint.max_entry_scale"),
   };
 }

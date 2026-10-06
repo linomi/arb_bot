@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, Depends
@@ -44,7 +45,7 @@ app.add_middleware(
     session_cookie=auth.COOKIE_NAME,
     max_age=auth.SESSION_MAX_AGE,
     same_site="lax",
-    https_only=False,
+    https_only=(os.environ.get("SESSION_HTTPS_ONLY", "0").strip().lower() in ("1", "true", "yes")),
 )
 
 # Auth is optional: if AUTH_USERNAME+AUTH_PASSWORD are set, protect API routes.

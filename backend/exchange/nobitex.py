@@ -210,6 +210,44 @@ class NobitexClient:
         self._margin_markets_cache_ts = now
         return normalized
 
+
+    def min_order_value_irt(self, symbol: str) -> float:
+        """Per-market minimum order notional in IRT from cached margin markets.
+        Falls back to global MIN_ORDER_VALUE_IRT when unknown."""
+        from backend.strategy.sizing import MIN_ORDER_VALUE_IRT
+        cache = self._margin_markets_cache or {}
+        # try several key forms
+        candidates = [symbol, symbol.upper(), symbol.replace("IRT", "RLS"), symbol.replace("RLS", "IRT")]
+        meta = None
+        for k in candidates:
+            if k in cache:
+                meta = cache[k]
+                break
+        if not meta:
+            for k, v in cache.items():
+                if str(k).upper().replace("RLS", "IRT") == symbol.upper().replace("RLS", "IRT"):
+                    meta = v
+                    break
+        if not meta:
+            return float(MIN_ORDER_VALUE_IRT)
+        for key in (
+            "minOrderValue", "min_order_value", "minNotional", "min_notional",
+            "minQuote", "min_quote", "minAmountQuote", "minimumOrderValue",
+        ):
+            if key in meta and meta[key] is not None:
+                try:
+                    v = float(meta[key])
+                    # Toman-scale sources: if value looks like Toman and market is RLS, *10
+                    # Nobitex often reports Toman; bot works in Rial (IRT unit = Rial after conversion).
+                    # If value is small (< 1e5) and looks like Toman min, convert to Rial *10.
+                    if 0 < v < 20_000:
+                        v = v * 10.0  # Toman -> Rial
+                    return max(v, float(MIN_ORDER_VALUE_IRT) * 0.1)  # never below tiny floor
+                except (TypeError, ValueError):
+                    pass
+        # amount min * price not available here; fall back
+        return float(MIN_ORDER_VALUE_IRT)
+
     @staticmethod
     def _margin_key_to_symbol(key: str, meta: dict | None) -> str:
         k = (key or "").upper().replace("-", "").replace("_", "")
@@ -511,7 +549,7 @@ class NobitexClient:
         src, dst = self._split_symbol(symbol)
         exec_type = execution or ("market" if price is None else "limit")
 
-        # Min order value for IRT — always check, including market orders.
+        # Min order value for IRT — per-market from margin/markets/list when cached.
         if dst == "rls":
             px = price if price is not None else ref_price
             if px is None:
@@ -521,10 +559,15 @@ class NobitexClient:
                     px = None
             if px is not None:
                 notional = float(amount) * float(px)
-                if notional < MIN_ORDER_VALUE_IRT:
+                try:
+                    await self.get_margin_markets(details=True)
+                except Exception:
+                    pass
+                min_val = self.min_order_value_irt(symbol)
+                if notional < min_val:
                     raise NobitexError(
                         f"Order notional {notional:.0f} IRT for {symbol} is below "
-                        f"minimum {MIN_ORDER_VALUE_IRT:.0f} IRT",
+                        f"minimum {min_val:.0f} IRT",
                         code="SmallOrder",
                     )
 

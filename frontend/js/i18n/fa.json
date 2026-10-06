@@ -199,5 +199,15 @@
   "hint.try_all_dependents": "مقداردهی اولیه: هر نماد به‌عنوان وابسته آزموده شود",
   "param.try_all_dependents": "آزمون همه نمادهای وابسته",
   "hint.fit_log_interval_sec": "حداقل فاصله ذخیره برازش OLS بدون سیگنال ورود؛ ۰ = هر چرخه",
-  "param.fit_log_interval_sec": "فاصله ثبت برازش (ثانیه)"
+  "param.fit_log_interval_sec": "فاصله ثبت برازش (ثانیه)",
+  "hint.half_life_max_fraction": "رد نیمه عمر AR(1) باقیمانده > پنجره×کسر یا < ۲ میله؛ ۰ غیرفعال",
+  "param.half_life_max_fraction": "حداکثر کسر نیمه عمر",
+  "hint.data_staleness_mult": "رد ورود اگر آخرین میله قدیمی‌تر از این × زمان نمونه‌برداری باشد",
+  "param.data_staleness_mult": "ضریب کهنگی داده",
+  "hint.max_total_gross_notional": "حداکثر مجموع ارزش ناخالص باز؛ ۰ = خاموش",
+  "param.max_total_gross_notional": "حداکثر ارزش ناخالص کل",
+  "hint.max_open_trades": "حداکثر معاملات باز همزمان؛ ۰ = خاموش",
+  "param.max_open_trades": "حداکثر معاملات باز",
+  "hint.require_oos_positive": "مقداردهی: فقط گروه‌های با سود خارج از نمونه (۳۰٪) نگه داشته شوند",
+  "param.require_oos_positive": "الزام سود خارج از نمونه"
 }

@@ -15,6 +15,20 @@ def seconds_to_resolution(sampling_seconds: int) -> str:
     return str(best)
 
 
+def align_price_series(series: dict[str, pd.Series], max_ffill_bars: int = 2) -> pd.DataFrame:
+    """Outer-join symbol series, forward-fill up to max_ffill_bars, then dropna.
+
+    One illiquid symbol with occasional missing bars should not delete the
+    entire row for the group (limited ffill before the hard dropna).
+    """
+    if not series:
+        return pd.DataFrame()
+    df = pd.DataFrame(series).sort_index()
+    if max_ffill_bars and max_ffill_bars > 0:
+        df = df.ffill(limit=int(max_ffill_bars))
+    return df.dropna(how="any")
+
+
 async def fetch_price_df(client, symbols: list[str], resolution: str, bars: int) -> pd.DataFrame:
     series = {}
     for sym in symbols:
@@ -23,7 +37,4 @@ async def fetch_price_df(client, symbols: list[str], resolution: str, bars: int)
             continue
         idx = pd.to_datetime(ohlc["t"], unit="s")
         series[sym] = pd.Series(ohlc["c"], index=idx)
-    if not series:
-        return pd.DataFrame()
-    df = pd.DataFrame(series).dropna(how="any").sort_index()
-    return df
+    return align_price_series(series, max_ffill_bars=2)

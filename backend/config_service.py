@@ -83,7 +83,8 @@ def _validate_backbone(data: dict):
     sm = str(data.get("stationarity_method", "engle_granger"))
     if sm not in ("engle_granger", "adf_kpss"):
         raise ValueError("stationarity_method must be 'engle_granger' or 'adf_kpss'")
-    for k in ("entry_retry_cooldown_sec", "max_holding_hours", "fit_log_interval_sec"):
+    for k in ("entry_retry_cooldown_sec", "max_holding_hours", "fit_log_interval_sec", "half_life_max_fraction",
+              "data_staleness_mult", "max_total_gross_notional", "max_open_trades"):
         if float(data.get(k, 0) or 0) < 0:
             raise ValueError(f"{k} must be >= 0")
     mes = data.get("max_entry_scale", 3.0)

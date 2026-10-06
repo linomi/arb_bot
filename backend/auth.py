@@ -53,13 +53,24 @@ def get_session_secret() -> str:
     return secret
 
 
+def _password_matches(plain: str, expected: str) -> bool:
+    """Compare plain password to env value; if expected looks like bcrypt hash, use bcrypt."""
+    exp = (expected or "").strip()
+    if exp.startswith("$2a$") or exp.startswith("$2b$") or exp.startswith("$2y$"):
+        try:
+            import bcrypt
+            return bcrypt.checkpw(plain.encode("utf-8"), exp.encode("utf-8"))
+        except Exception:
+            return False
+    return secrets.compare_digest(plain, exp)
+
+
 def verify_password(username: str, password: str) -> bool:
     if not auth_enabled():
         return True
     expected_user, expected_pwd = get_auth_credentials()
-    # Constant-time comparison
     user_ok = secrets.compare_digest(username, expected_user)
-    pwd_ok = secrets.compare_digest(password, expected_pwd)
+    pwd_ok = _password_matches(password, expected_pwd)
     return user_ok and pwd_ok
 
 
