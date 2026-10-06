@@ -1,9 +1,9 @@
 /* Sort icons, filters, equity chart, manual group picker */
-#perf-table thead th.sortable{cursor:pointer;user-select:none;position:relative;padding-right:18px}
-#perf-table thead th.sortable:hover{color:var(--accent-hi)}
-#perf-table thead th.sortable::after{content:"\21C5";position:absolute;right:4px;top:50%;transform:translateY(-50%);font-size:10px;opacity:.35;color:var(--text-lo)}
-#perf-table thead th.sort-asc::after{content:"\25B2";opacity:1;color:var(--accent-hi)}
-#perf-table thead th.sort-desc::after{content:"\25BC";opacity:1;color:var(--accent-hi)}
+.sortable-table thead th.sortable{cursor:pointer;user-select:none;position:relative;padding-right:18px}
+.sortable-table thead th.sortable:hover{color:var(--accent-hi)}
+.sortable-table thead th.sortable::after{content:"\21C5";position:absolute;right:4px;top:50%;transform:translateY(-50%);font-size:10px;opacity:.35;color:var(--text-lo)}
+.sortable-table thead th.sort-asc::after{content:"\25B2";opacity:1;color:var(--accent-hi)}
+.sortable-table thead th.sort-desc::after{content:"\25BC";opacity:1;color:var(--accent-hi)}
 .perf-filters{padding:10px 14px;border-bottom:1px solid var(--line-soft);background:var(--bg-2)}
 .perf-filters .filter-row{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center}
 .perf-filters label{display:flex;flex-direction:row;align-items:center;gap:6px;font-size:11px;color:var(--text-mid)}
@@ -35,3 +35,17 @@
 table th{text-align:left;padding:8px 10px;background:var(--bg-2);color:var(--text-mid);font-weight:500;font-size:11px;letter-spacing:.03em;border-bottom:1px solid var(--line);white-space:nowrap}
 table td{padding:7px 10px;border-bottom:1px solid var(--line-soft);font-family:var(--font-mono);font-size:11.5px;color:var(--text-hi)}
 table tr:hover td{background:var(--bg-2)}.dir-long{color:var(--long);font-weight:600}.dir-short{color:var(--short);font-weight:600}
+
+/* status pill (used in both tables) */
+td .g-status,.g-status.pill{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:3px;font-family:var(--font-mono)}
+/* filter bar shared by performance + candidates tables */
+.perf-filters .filter-count{margin-inline-start:auto;font-family:var(--font-mono);font-size:11px;color:var(--text-lo)}
+.perf-filters input[type=search],.perf-filters input[type=text]{background:var(--bg-1);border:1px solid var(--line);border-radius:4px;color:var(--text-hi);padding:5px 8px;font-family:var(--font-mono);font-size:12px;min-width:150px}
+.perf-filters input:focus,.perf-filters select:focus{outline:1px solid var(--accent);border-color:var(--accent)}
+.table-empty{padding:18px 14px;color:var(--text-lo);font-size:12px;text-align:center}
+/* parameter form sections */
+.param-form .form-section{grid-column:1/-1;margin-top:6px;padding-bottom:4px;border-bottom:1px solid var(--line-soft);font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-hi)}
+.param-form .form-section:first-child{margin-top:0}
+.param-form .field-hint{font-size:10.5px;color:var(--text-lo);line-height:1.35}
+/* consistent focus ring */
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
