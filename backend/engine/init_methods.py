@@ -50,22 +50,37 @@ def _worker_eval(job: tuple) -> dict | None:
     if len(sub_df) < int(backbone_params["window_size"]) + 5:
         return None
 
-    dependent = symbols[0]
-    try:
-        bt = backtest_group(
-            price_df=sub_df,
-            dependent_symbol=dependent,
-            window_size=int(backbone_params["window_size"]),
-            adf_alpha=float(backbone_params["adf_alpha"]),
-            kpss_alpha=float(backbone_params["kpss_alpha"]),
-            z_entry=float(backbone_params["z_entry"]),
-            z_close=float(backbone_params["z_close"]),
-            z_stop_loss=float(backbone_params["z_stop_loss"]),
-            transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
-            target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
-        )
-    except Exception:
+    # The residual (and therefore the whole strategy) depends on which symbol is
+    # regressed on the others; try each and keep the best-scoring choice instead
+    # of always taking the alphabetically-first symbol.
+    candidates = list(symbols) if backbone_params.get("try_all_dependents", True) else [symbols[0]]
+    best = None
+    for dependent in candidates:
+        try:
+            bt = backtest_group(
+                price_df=sub_df,
+                dependent_symbol=dependent,
+                window_size=int(backbone_params["window_size"]),
+                adf_alpha=float(backbone_params["adf_alpha"]),
+                kpss_alpha=float(backbone_params["kpss_alpha"]),
+                z_entry=float(backbone_params["z_entry"]),
+                z_close=float(backbone_params["z_close"]),
+                z_stop_loss=float(backbone_params["z_stop_loss"]),
+                transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
+                target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
+                max_entry_scale=backbone_params.get("max_entry_scale"),
+                trade_notional=float(backbone_params.get("trade_notional", 100.0) or 100.0),
+                max_holding_bars=backbone_params.get("max_holding_bars"),
+                stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
+            )
+        except Exception:
+            continue
+        sc = _score_group(bt.performance)
+        if best is None or sc > best[2]:
+            best = (dependent, bt, sc)
+    if best is None:
         return None
+    dependent, bt, _sc = best
 
     return {
         "symbols": list(symbols),

@@ -52,6 +52,11 @@ function stopFitPoll() {
 function FIELD_HINTS() {
   return {
     target_profit_rate: t("hint.target_profit_rate"),
+    stationarity_method: t("hint.stationarity_method"),
+    entry_retry_cooldown_sec: t("hint.entry_retry_cooldown_sec"),
+    max_holding_hours: t("hint.max_holding_hours"),
+    try_all_dependents: t("hint.try_all_dependents"),
+    fit_log_interval_sec: t("hint.fit_log_interval_sec"),
     max_entry_scale: t("hint.max_entry_scale"),
   };
 }

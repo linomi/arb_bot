@@ -276,7 +276,12 @@ async def live_fit(group_id: int, persist: bool = True, db: Session = Depends(ge
 
     adf_alpha = float(backbone.get("adf_alpha", 0.05))
     kpss_alpha = float(backbone.get("kpss_alpha", 0.05))
-    stat = test_stationarity(fit_res.residual, adf_alpha, kpss_alpha)
+    stat = test_stationarity(
+        fit_res.residual, adf_alpha, kpss_alpha,
+        y=price_matrix[dependent],
+        x_cols=[price_matrix[s] for s in price_matrix if s != dependent],
+        method=str(backbone.get("stationarity_method", "engle_granger")),
+    )
 
     residual_series = [[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)]
     fitted_at = dt.datetime.utcnow()

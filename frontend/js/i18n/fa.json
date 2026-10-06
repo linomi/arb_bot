@@ -189,5 +189,15 @@
   "param.top_n_groups": "تعداد گروه‌های برتر",
   "param.quote_currency": "ارز پایه",
   "param.base_url": "آدرس پایه",
-  "param.poll_interval": "بازه نظرسنجی"
+  "param.poll_interval": "بازه نظرسنجی",
+  "hint.stationarity_method": "engle_granger = آزمون هم‌انباشتگی معتبر (پیشنهادی)؛ adf_kpss = قدیمی و بسیار ملایم",
+  "param.stationarity_method": "روش آزمون مانایی",
+  "hint.entry_retry_cooldown_sec": "ثانیه انتظار پس از ورود ناموفق قبل از تلاش مجدد",
+  "param.entry_retry_cooldown_sec": "مکث تلاش مجدد ورود (ثانیه)",
+  "hint.max_holding_hours": "بستن اجباری موقعیت بازتر از این تعداد ساعت؛ ۰ غیرفعال",
+  "param.max_holding_hours": "حداکثر زمان نگهداری (ساعت)",
+  "hint.try_all_dependents": "مقداردهی اولیه: هر نماد به‌عنوان وابسته آزموده شود",
+  "param.try_all_dependents": "آزمون همه نمادهای وابسته",
+  "hint.fit_log_interval_sec": "حداقل فاصله ذخیره برازش OLS بدون سیگنال ورود؛ ۰ = هر چرخه",
+  "param.fit_log_interval_sec": "فاصله ثبت برازش (ثانیه)"
 }
