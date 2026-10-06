@@ -1,5 +1,7 @@
+import asyncio
 import datetime as dt
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -237,8 +239,38 @@ def delete_group(group_id: int, db: Session = Depends(get_db)):
     return {"deleted": group_id}
 
 
+# One live fit per (group, candle). The OLS only changes when a new candle opens,
+# so every viewer/poll inside the same candle is served from memory and no
+# exchange request is made. The per-group lock lets concurrent callers share one fit.
+_LIVE_FIT_CACHE: dict[int, tuple[tuple, dict]] = {}
+_LIVE_FIT_LOCKS: dict[int, asyncio.Lock] = {}
+
+
 @router.get("/{group_id}/live-fit")
-async def live_fit(group_id: int, persist: bool = True, db: Session = Depends(get_db)):
+async def live_fit(group_id: int, persist: bool = False, db: Session = Depends(get_db)):
+    g = db.get(Group, group_id)
+    if not g:
+        raise HTTPException(404, "group not found")
+    backbone = config_service.get_section(db, "backbone")
+    sampling_time = max(1, int(backbone.get("sampling_time", 60)))
+    key = (
+        int(time.time() // sampling_time),
+        tuple(g.symbols or ()), g.dependent_symbol,
+        int(backbone.get("window_size", 100)),
+        str(backbone.get("stationarity_method", "engle_granger")),
+        float(backbone.get("adf_alpha", 0.05)), float(backbone.get("kpss_alpha", 0.05)),
+    )
+    lock = _LIVE_FIT_LOCKS.setdefault(group_id, asyncio.Lock())
+    async with lock:
+        hit = _LIVE_FIT_CACHE.get(group_id)
+        if hit and hit[0] == key and not persist:
+            return {**hit[1], "cached": True}
+        payload = await _compute_live_fit(group_id, persist, db)
+        _LIVE_FIT_CACHE[group_id] = (key, payload)
+        return {**payload, "cached": False}
+
+
+async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
     g = db.get(Group, group_id)
     if not g:
         raise HTTPException(404, "group not found")
@@ -452,10 +484,14 @@ async def equity_curve(
         source = "exchange_realized"
         try:
             client = factory.build_trading_client(db)
-            if isinstance(client, NobitexClient):
-                account_balance = await client.get_margin_active_balance_irt()
-            if not isinstance(client, PaperExchangeClient):
-                await client.aclose()
+            try:
+                if not isinstance(client, PaperExchangeClient):
+                    from backend.engine import xt_hooks
+                    ex_name = (getattr(g, "exchange", None) or "nobitex").lower()
+                    account_balance = await xt_hooks.read_free_balance(client, exchange=ex_name)
+            finally:
+                if not isinstance(client, PaperExchangeClient):
+                    await client.aclose()
         except Exception as e:
             log.warning("equity_curve: could not read balance: %s", e)
             account_balance = None

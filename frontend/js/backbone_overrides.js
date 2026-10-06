@@ -60,25 +60,43 @@
     if (!g) return;
 
     const gname = g.name || `group-${groupId}`;
-    document.getElementById("plot-title").textContent = t("plot.title.group", { name: gname });
-    const eqTitle = document.getElementById("equity-title");
-    if (eqTitle) eqTitle.textContent = t("equity.title.group", { name: gname });
-    document.getElementById("plot-meta").textContent = t("plot.fitting");
-
     const backboneCfg = state.backboneCfg || (await API.getConfigSection("backbone"));
     state.backboneCfg = backboneCfg;
     const samplingMs = Math.max(5, Number(backboneCfg.sampling_time) || 60) * 1000;
 
-    const lastAt = state.lastFitAt[groupId] || 0;
-    const age = Date.now() - lastAt;
+    // The OLS only changes when a new candle opens, so refit once per candle
+    // bucket (not on a timer). The 5 s poll just checks for new candles / trades.
+    const bucket = Math.floor(Date.now() / samplingMs);
+    state.fitBucket = state.fitBucket || {};
+    state.tradeSig = state.tradeSig || {};
     let fit = state.lastFitData[groupId];
+    const needFit = !fit || state.fitBucket[groupId] !== bucket;
 
-    if (force || !fit || age >= samplingMs) {
+    // Do not overlap polls with an in-flight selection of the same group.
+    if (force === false && state.selBusy === groupId) return;
+    const mySeq = (state.selSeq = (state.selSeq || 0) + 1);
+    state.selBusy = groupId;
+    const stale = () => state.selSeq !== mySeq || state.selectedGroupId !== groupId;
+
+    try {
+      if (force !== false) {
+        document.getElementById("plot-title").textContent = t("plot.title.group", { name: gname });
+        const eqTitle = document.getElementById("equity-title");
+        if (eqTitle) eqTitle.textContent = t("equity.title.group", { name: gname });
+      }
+
+      const fitPromise = needFit
+        ? (async () => {
+            document.getElementById("plot-meta").textContent = t("plot.fitting");
+            return API.liveFit(groupId);
+          })()
+        : Promise.resolve(fit);
+      const tradesPromise = API.listTrades(groupId);
+
       try {
-        fit = await API.liveFit(groupId);
-        state.lastFitAt[groupId] = Date.now();
-        state.lastFitData[groupId] = fit;
+        fit = await fitPromise;
       } catch (e) {
+        if (stale()) return;
         if (typeof residualChart !== "undefined" && residualChart) {
           residualChart.destroy();
           residualChart = null;
@@ -95,35 +113,48 @@
         }
         return;
       }
+      if (needFit) {
+        state.fitBucket[groupId] = bucket;
+        state.lastFitAt[groupId] = Date.now();
+        state.lastFitData[groupId] = fit;
+      }
+      const trades = await tradesPromise;
+      if (stale()) return;
+
+      // Nothing new (same candle, same trades, same selection): leave the DOM alone.
+      const sig = JSON.stringify((trades || []).map((x) => [x.id, x.status, x.close_time, x.pnl]));
+      if (!needFit && force === false && state.tradeSig[groupId] === sig) return;
+      state.tradeSig[groupId] = sig;
+
+      if (fit && !fit.group_name) fit.group_name = gname;
+      state.selectedFit = fit;
+      renderTradesTable(trades);
+      renderResidualChart("residual-chart", fit, backboneCfg, trades, (trade) => {
+        _showFitForTrade(groupId, trade, trades);
+      });
+
+      const modeLabel = (trades && trades[0] && trades[0].mode) || state.tradingMode || "";
+      const bars = fit.bars_used != null ? fit.bars_used : "?";
+      const res = fit.resolution || "?";
+      document.getElementById("plot-meta").innerHTML = t("plot.meta.live.named", {
+        name: gname,
+        mode: modeLabel || "mode?",
+        adf: fmtNum(fit.adf_pvalue, 3),
+        kpss: fmtNum(fit.kpss_pvalue, 3),
+        flag: `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? t("plot.stationary") : t("plot.rejected")}</span>`,
+        bars, res, fitted: fmtTime(fit.fitted_at),
+      });
+
+      // Secondary panels load after the chart is visible, in parallel.
+      await Promise.all([
+        loadEquityForGroup(groupId),
+        (async () => {
+          if (typeof renderBetaDiagram === "function") renderBetaDiagram("beta-diagram", g, fit);
+        })(),
+      ]);
+    } finally {
+      if (state.selBusy === groupId) state.selBusy = null;
     }
-
-    if (fit && !fit.group_name) fit.group_name = gname;
-
-    state.selectedFit = fit;
-    const trades = await API.listTrades(groupId);
-    renderTradesTable(trades);
-    renderResidualChart("residual-chart", fit, backboneCfg, trades, (trade) => {
-      _showFitForTrade(groupId, trade, trades);
-    });
-
-    // Live: start from account balance via dedicated API (not from zero)
-    await loadEquityForGroup(groupId);
-
-    if (typeof renderBetaDiagram === "function") {
-      renderBetaDiagram("beta-diagram", g, fit);
-    }
-
-    const modeLabel = (trades && trades[0] && trades[0].mode) || state.tradingMode || "";
-    const bars = fit.bars_used != null ? fit.bars_used : "?";
-    const res = fit.resolution || "?";
-    document.getElementById("plot-meta").innerHTML = t("plot.meta.live.named", {
-      name: gname,
-      mode: modeLabel || "mode?",
-      adf: fmtNum(fit.adf_pvalue, 3),
-      kpss: fmtNum(fit.kpss_pvalue, 3),
-      flag: `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? t("plot.stationary") : t("plot.rejected")}</span>`,
-      bars, res, fitted: fmtTime(fit.fitted_at),
-    });
   };
 
   function _escHtml(x) {

@@ -60,6 +60,13 @@ class XTError(RuntimeError):
         self.payload = payload or {}
 
 
+# Process-wide cache of XT market specs. Clients are created per bot cycle and
+# per UI request; without this each one downloaded the full futures market list
+# (slow, and a needless hit on XT's rate limit).
+_MARKETS_CACHE: dict[str, Any] = {"ts": 0.0, "markets": None, "currencies": None}
+_MARKETS_TTL_SEC = 3600.0
+
+
 class XTClient(ExchangeClient):
     def __init__(
         self,
@@ -109,6 +116,11 @@ class XTClient(ExchangeClient):
     async def _ensure_markets(self) -> None:
         if self._markets_loaded:
             return
+        cached = _MARKETS_CACHE.get("markets")
+        if cached and (time.time() - float(_MARKETS_CACHE.get("ts") or 0)) < _MARKETS_TTL_SEC:
+            self._ex.set_markets(cached, _MARKETS_CACHE.get("currencies"))
+            self._markets_loaded = True
+            return
         try:
             await self._ex.load_markets()
         except Exception as e:
@@ -119,6 +131,13 @@ class XTClient(ExchangeClient):
                 "by XT's infrastructure independent of anything in this client.",
                 code="load_markets_failed",
             ) from e
+        mk, cur = self._ex.markets, self._ex.currencies
+        if isinstance(mk, dict) and mk:
+            _MARKETS_CACHE.update(
+                ts=time.time(),
+                markets=dict(mk),
+                currencies=dict(cur) if isinstance(cur, dict) and cur else None,
+            )
         self._markets_loaded = True
 
     def _assert_linear_usdt_swap(self, symbol: str) -> dict:
