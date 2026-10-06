@@ -66,10 +66,26 @@ function FIELD_HINTS() {
   };
 }
 
+// Section layout for the (long) backbone form. Keys not listed fall into "other".
+const BACKBONE_SECTIONS = [
+  ["signal", ["window_size", "sampling_time", "z_entry", "z_close", "z_stop_loss", "max_holding_hours"]],
+  ["stats", ["stationarity_method", "adf_alpha", "kpss_alpha", "half_life_max_fraction"]],
+  ["costs", ["fee_rate", "slippage_rate", "target_profit_rate", "funding_rate_estimate", "expected_holding_funding_intervals"]],
+  ["sizing", ["trade_notional", "max_entry_scale", "max_open_trades", "max_total_gross_notional",
+              "liquidation_proximity_fraction", "entry_retry_cooldown_sec", "data_staleness_mult"]],
+  ["xt", ["xt_leverage", "xt_margin_mode"]],
+  ["init_opts", ["try_all_dependents", "fit_log_interval_sec"]],
+];
+// Keys never shown as a generic field (they have their own control).
+const HIDDEN_FORM_KEYS = { "init-form": ["method"] };
+
 function renderParamForm(formEl, data) {
   if (!formEl) return;
   formEl.innerHTML = "";
-  Object.entries(data || {}).forEach(([key, value]) => {
+  const hidden = HIDDEN_FORM_KEYS[formEl.id] || [];
+  const entries = Object.entries(data || {}).filter(([k]) => !hidden.includes(k));
+
+  const buildField = (key, value) => {
     const label = document.createElement("label");
     const isNumber = typeof value === "number";
     label.dataset.type = isNumber ? "number" : "string";
@@ -77,7 +93,7 @@ function renderParamForm(formEl, data) {
     let input;
     if (typeof value === "boolean") {
       input = document.createElement("select");
-      input.innerHTML = `<option value="true">true</option><option value="false">false</option>`;
+      input.innerHTML = `<option value="true">${t("bool.true")}</option><option value="false">${t("bool.false")}</option>`;
       input.value = String(value);
       label.dataset.type = "boolean";
     } else {
@@ -95,8 +111,26 @@ function renderParamForm(formEl, data) {
       hint.textContent = _hints[key];
       label.appendChild(hint);
     }
-    formEl.appendChild(label);
-  });
+    return label;
+  };
+
+  if (formEl.id === "backbone-form") {
+    const byKey = Object.fromEntries(entries);
+    const used = new Set();
+    const addSection = (sec, keys) => {
+      const present = keys.filter((k) => k in byKey);
+      if (!present.length) return;
+      const h = document.createElement("div");
+      h.className = "form-section";
+      h.textContent = t("form.sec." + sec);
+      formEl.appendChild(h);
+      present.forEach((k) => { used.add(k); formEl.appendChild(buildField(k, byKey[k])); });
+    };
+    BACKBONE_SECTIONS.forEach(([sec, keys]) => addSection(sec, keys));
+    addSection("other", entries.map(([k]) => k).filter((k) => !used.has(k)));
+    return;
+  }
+  entries.forEach(([key, value]) => formEl.appendChild(buildField(key, value)));
 }
 
 function collectFormData(formEl) {
@@ -312,6 +346,8 @@ async function showGroupDetail(row) {
 
 function _collectPerfFiltersFromUI() {
   clearPerfFilters();
+  const searchEl = document.getElementById("filter-search");
+  if (searchEl && searchEl.value.trim()) setPerfFilter("_search", "contains", searchEl.value.trim());
   const statusEl = document.getElementById("filter-status");
   if (statusEl && statusEl.value) setPerfFilter("status", "=", statusEl.value);
   const pnlVal = document.getElementById("filter-pnl-val");
@@ -328,16 +364,25 @@ function _collectPerfFiltersFromUI() {
   }
 }
 
-const applyBtn = document.getElementById("perf-filter-apply");
-if (applyBtn) applyBtn.addEventListener("click", () => {
-  _collectPerfFiltersFromUI();
-  applyPerfFiltersAndRedraw(showGroupDetail);
+// Filters apply as you type / change (no Apply button) and survive the 15 s refresh.
+const _PERF_FILTER_IDS = [
+  "filter-search", "filter-status", "filter-pnl-op", "filter-pnl-val",
+  "filter-sharpe-op", "filter-sharpe-val", "filter-trades-op", "filter-trades-val",
+];
+_PERF_FILTER_IDS.forEach((id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener(el.tagName === "SELECT" ? "change" : "input", () => {
+    _collectPerfFiltersFromUI();
+    applyPerfFiltersAndRedraw(showGroupDetail);
+  });
 });
 const clearBtn = document.getElementById("perf-filter-clear");
 if (clearBtn) clearBtn.addEventListener("click", () => {
-  ["filter-status", "filter-pnl-val", "filter-sharpe-val", "filter-trades-val"].forEach((id) => {
+  _PERF_FILTER_IDS.forEach((id) => {
     const el = document.getElementById(id);
-    if (el) el.value = "";
+    if (el && el.tagName !== "SELECT") el.value = "";
+    else if (el && id === "filter-status") el.value = "";
   });
   clearPerfFilters();
   applyPerfFiltersAndRedraw(showGroupDetail);
@@ -449,15 +494,23 @@ function setInitStatus(text) {
   if (el) el.textContent = text || "";
 }
 
-const saveCfg = document.getElementById("save-config-btn");
-if (saveCfg) saveCfg.addEventListener("click", async () => {
+async function saveInitConfig() {
   const backboneData = collectFormData(document.getElementById("backbone-form"));
   const initData = collectFormData(document.getElementById("init-form"));
   initData.method = state.initMethod === "manual" ? "random" : state.initMethod;
   await API.updateConfigSection("backbone", backboneData);
   await API.updateConfigSection("init", initData);
   state.backboneCfg = backboneData;
-  setInitStatus(t("init.saved"));
+}
+
+const saveCfg = document.getElementById("save-config-btn");
+if (saveCfg) saveCfg.addEventListener("click", async () => {
+  try {
+    await saveInitConfig();
+    setInitStatus(t("init.saved"));
+  } catch (e) {
+    setInitStatus(t("init.error", { error: e.message || e }));
+  }
 });
 
 const runInit = document.getElementById("run-init-btn");
@@ -467,6 +520,15 @@ if (runInit) runInit.addEventListener("click", async () => {
     return;
   }
   runInit.disabled = true;
+  // The run uses the SAVED config on the server, so save what is on screen first
+  // (previously edited-but-unsaved values were silently ignored).
+  try {
+    await saveInitConfig();
+  } catch (e) {
+    runInit.disabled = false;
+    setInitStatus(t("init.error", { error: e.message || e }));
+    return;
+  }
   showInitProgress(true);
   setInitStatus("");
   updateInitProgressUI({ phase: "starting", message: t("init.starting"), percent: 0, running: true });

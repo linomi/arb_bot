@@ -48,7 +48,7 @@ function renderBetaDiagram(containerId, group, fit) {
 
   nodes.forEach((n, i) => {
     const y = 32 + i * rowH + rowH / 2;
-    const short = String(n.symbol).replace(/IRT$|USDT$|RLS$/i, "");
+    const short = String(n.symbol).replace(/[_-]?(IRT|USDT|RLS)$/i, "");
     const role = n.isDep ? "y" : "x";
     const pathId = `beta-path-${i}`;
     // Cubic bezier: leave symbol → soft mid → residual

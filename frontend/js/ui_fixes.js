@@ -40,47 +40,9 @@
     });
   }
 
-  async function refreshEquity(groupId, trades) {
-    ensureEquityPanel();
-    try {
-      if (API.equityCurve) {
-        const points = await API.equityCurve(groupId);
-        if (typeof renderEquityCurvePoints === "function") {
-          renderEquityCurvePoints("equity-canvas", points);
-          return;
-        }
-      }
-    } catch (e) {
-      console.warn("equity_curve endpoint", e);
-    }
-    if (typeof renderEquityChart === "function") {
-      renderEquityChart("equity-canvas", trades);
-    }
-  }
-
-  function patchSelectGroup() {
-    if (!window.API || API._equityPatched) return;
-    const orig = API.listTrades.bind(API);
-    API.listTrades = async function (id) {
-      const trades = await orig(id);
-      try {
-        await refreshEquity(id, trades);
-        const g = (typeof state !== "undefined" && state.groups)
-          ? state.groups.find((x) => x.id === id) : null;
-        const title = document.getElementById("equity-title");
-        if (title && g) title.textContent = (typeof t==="function"?t("equity.title.group",{name:g.name}):("Equity Curve — "+g.name));
-      } catch (e) {
-        console.warn("equity patch", e);
-      }
-      return trades;
-    };
-    API._equityPatched = true;
-  }
-
   function boot() {
     ensureEquityPanel();
     wireManualButtons();
-    patchSelectGroup();
   }
 
   if (document.readyState === "loading") {
@@ -88,6 +50,4 @@
   } else {
     boot();
   }
-  setTimeout(patchSelectGroup, 500);
-  setTimeout(patchSelectGroup, 2000);
 })();
