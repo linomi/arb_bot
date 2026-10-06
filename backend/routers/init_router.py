@@ -203,15 +203,23 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
         db.close()
 
 
-def _backbone_params(backbone_cfg: dict) -> dict:
+def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
+    from backend.engine import xt_hooks
+    mhb = backbone_cfg.get("max_holding_hours")
+    st = float(backbone_cfg.get("sampling_time", 60) or 60)
     return {
+        "max_holding_bars": (
+            int(float(mhb) * 3600.0 / st) if mhb not in (None, 0, 0.0, "") else None
+        ),
+        "stationarity_method": str(backbone_cfg.get("stationarity_method", "engle_granger")),
+        "try_all_dependents": bool(backbone_cfg.get("try_all_dependents", True)),
         "window_size": int(backbone_cfg["window_size"]),
         "adf_alpha": float(backbone_cfg["adf_alpha"]),
         "kpss_alpha": float(backbone_cfg["kpss_alpha"]),
         "z_entry": float(backbone_cfg["z_entry"]),
         "z_close": float(backbone_cfg["z_close"]),
         "z_stop_loss": float(backbone_cfg["z_stop_loss"]),
-        "transaction_fee_rate": float(backbone_cfg["fee_rate"]) + float(backbone_cfg["slippage_rate"]),
+        "transaction_fee_rate": xt_hooks.effective_cost_rate(backbone_cfg, exchange=exchange),
         "target_profit_rate": float(backbone_cfg.get("target_profit_rate", 0.0) or 0.0),
         "max_entry_scale": (
             None

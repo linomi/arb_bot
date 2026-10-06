@@ -60,7 +60,10 @@ def compute_group_performance(closed_trades: list[dict]) -> GroupPerformance:
     std = np.std(pnls, ddof=1) if trade_count > 1 else 0.0
     sharpe = float(np.mean(pnls) / std) if std > 0 else 0.0
 
-    downside_std = np.std(losses, ddof=1) if len(losses) > 1 else 0.0
+    # Standard downside deviation (target 0): sqrt(mean(min(pnl, 0)^2)) over ALL
+    # trades. The old std-of-losses was ~0 for consistent small losses and
+    # inflated Sortino for exactly the groups that lose steadily.
+    downside_std = float(np.sqrt(np.mean(np.minimum(pnls, 0.0) ** 2)))
     sortino = float(np.mean(pnls) / downside_std) if downside_std > 0 else 0.0
 
     gross_profit = float(np.sum(wins)) if len(wins) else 0.0

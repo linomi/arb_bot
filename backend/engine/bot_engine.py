@@ -19,6 +19,7 @@ import asyncio
 import datetime as dt
 import logging
 import re
+import time
 import traceback
 import uuid
 
@@ -34,7 +35,7 @@ from backend.exchange.nobitex import NobitexClient, NobitexError
 from backend.utils import seconds_to_resolution, fetch_price_df
 from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
-from backend.strategy.zscore import decide_entry, decide_exit
+from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
 from backend.strategy.sizing import (
     leg_orders,
     close_legs_from_entry,
@@ -115,7 +116,9 @@ def _fill_price_from_position(pos: dict | None, *, is_close: bool = False) -> fl
     if not pos:
         return None
     key = "exitPrice" if is_close else "entryPrice"
-    for k in ((key, "markPrice", "entryPrice") if is_close else (key, "markPrice")):
+    # For closes never fall back to entryPrice: it would report the OPEN price as
+    # the exit fill. markPrice is only an estimate; callers flag it as such.
+    for k in ((key, "markPrice") if is_close else (key, "markPrice")):
         v = _parse_money(pos.get(k))
         if v is not None and v > 0:
             return float(v)
@@ -128,6 +131,8 @@ class BotEngine:
         self._last_error: str | None = None
         self._group_errors: dict[int, str] = {}
         self._pause_until: str | None = None  # ISO timestamp; XT rate-limit lockout
+        self._entry_cooldown_until: dict[int, float] = {}   # group_id -> monotonic deadline
+        self._last_fit_logged: dict[int, float] = {}        # group_id -> monotonic time
 
     def start_background_loop(self):
         if self._task is None or self._task.done():
@@ -273,6 +278,26 @@ class BotEngine:
                 db, group, price_df, latest_prices, backbone_local, trading_client, trading_mode,
                 exchange=group_ex,
             )
+
+    def _start_cooldown(self, group_id: int, backbone: dict) -> None:
+        sec = float(backbone.get("entry_retry_cooldown_sec", 600) or 0)
+        if sec > 0:
+            self._entry_cooldown_until[group_id] = time.monotonic() + sec
+
+    def _in_cooldown(self, group_id: int) -> bool:
+        return time.monotonic() < self._entry_cooldown_until.get(group_id, 0.0)
+
+    @staticmethod
+    def _symbols_in_use(db, trading_mode: str, exclude_group_id: int) -> set[str]:
+        used: set[str] = set()
+        for t in db.query(Trade).filter(
+            Trade.status.in_(("open",)), Trade.mode == trading_mode,
+            Trade.group_id != exclude_group_id,
+        ).all():
+            for leg in (t.legs_entry or []):
+                if leg.get("symbol"):
+                    used.add(leg["symbol"])
+        return used
 
     async def _read_free_balance_irt(self, trading_client, exchange: str = "nobitex") -> float | None:
         """Legacy name; quote is IRT for nobitex, USDT for xt."""
@@ -551,7 +576,7 @@ class BotEngine:
                         fill = None
                         for attempt in range(3):
                             try:
-                                pos = await trading_client.get_position(int(pid))
+                                pos = await trading_client.get_position(_pos_id(pid))
                                 fill = _fill_price_from_position(pos, is_close=False)
                                 if fill is not None:
                                     break
@@ -657,7 +682,7 @@ class BotEngine:
         found = 0
 
         close_by_pid = {
-            int(l["position_id"]): l
+            _pos_id(l["position_id"]): l
             for l in (legs_close or [])
             if l.get("position_id") is not None
         }
@@ -667,7 +692,7 @@ class BotEngine:
             if pid is None:
                 details.append({"symbol": leg.get("symbol"), "error": "no position_id"})
                 continue
-            pid = int(pid)
+            pid = _pos_id(pid)
             pos = None
             for attempt in range(8):
                 await asyncio.sleep(0.7 if attempt else 0.3)
@@ -685,7 +710,7 @@ class BotEngine:
             if not pos:
                 try:
                     past = await trading_client.list_positions(status="past", page_size=50)
-                    pos = next((p for p in past if int(p.get("id", -1)) == pid), None)
+                    pos = next((p for p in past if str(p.get("id", -1)) == str(pid)), None)
                 except Exception as e:
                     log.debug("past positions lookup failed: %s", e)
 
@@ -728,6 +753,16 @@ class BotEngine:
             resid_now, open_trade.direction, fit.resid_mean, fit.resid_std,
             backbone["z_close"], backbone["z_stop_loss"],
         )
+        if not exit_dec.should_exit:
+            max_hold_h = float(backbone.get("max_holding_hours", 0) or 0)
+            if max_hold_h > 0 and open_trade.entry_time is not None:
+                age_h = (dt.datetime.utcnow() - open_trade.entry_time).total_seconds() / 3600.0
+                if age_h >= max_hold_h:
+                    log.warning(
+                        "group %s trade #%s time stop after %.1fh (z=%.2f)",
+                        group.id, open_trade.id, age_h, exit_dec.z,
+                    )
+                    exit_dec = ExitDecision(True, "time_stop", exit_dec.z)
         if not exit_dec.should_exit:
             return
 
@@ -839,41 +874,69 @@ class BotEngine:
         except Exception:
             return
 
-        stat = test_stationarity(fit_res.residual, backbone["adf_alpha"], backbone["kpss_alpha"])
-        ols_row = OLSFit(
-            group_id=group.id,
-            fitted_at=dt.datetime.utcnow(),
-            window_start=window.index[0].to_pydatetime(),
-            window_end=window.index[-1].to_pydatetime(),
-            betas=fit_res.betas,
-            intercept=fit_res.intercept,
-            resid_mean=fit_res.resid_mean,
-            resid_std=fit_res.resid_std,
-            adf_stat=stat.adf_stat, adf_pvalue=stat.adf_pvalue,
-            kpss_stat=stat.kpss_stat, kpss_pvalue=stat.kpss_pvalue,
-            passed=stat.passed,
-            residual_series=[[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)],
-        )
-        db.add(ols_row)
-        db.commit()
-        db.refresh(ols_row)
-
-        if not stat.passed or fit_res.resid_std == 0:
+        if self._in_cooldown(group.id):
             return
 
+        dep = group.dependent_symbol
+        stat = test_stationarity(
+            fit_res.residual, backbone["adf_alpha"], backbone["kpss_alpha"],
+            y=price_matrix[dep],
+            x_cols=[price_matrix[s] for s in price_matrix if s != dep],
+            method=str(backbone.get("stationarity_method", "engle_granger")),
+        )
         resid_now = float(fit_res.residual[-1])
-        entry_dec = decide_entry(resid_now, fit_res.resid_mean, fit_res.resid_std, backbone["z_entry"])
-        if not entry_dec.should_enter:
+        entry_dec = decide_entry(
+            resid_now, fit_res.resid_mean, fit_res.resid_std, backbone["z_entry"],
+            z_stop=float(backbone["z_stop_loss"]),
+        )
+        candidate = bool(stat.passed and fit_res.resid_std != 0 and entry_dec.should_enter)
+
+        # Persist the fit only when it can become a trade, or at most every
+        # fit_log_interval_sec (was: one row + residual_series JSON every cycle).
+        interval = float(backbone.get("fit_log_interval_sec", 900) or 0)
+        now_m = time.monotonic()
+        due = interval <= 0 or (now_m - self._last_fit_logged.get(group.id, -1e18)) >= interval
+        ols_row = None
+        if candidate or due:
+            ols_row = OLSFit(
+                group_id=group.id,
+                fitted_at=dt.datetime.utcnow(),
+                window_start=window.index[0].to_pydatetime(),
+                window_end=window.index[-1].to_pydatetime(),
+                betas=fit_res.betas,
+                intercept=fit_res.intercept,
+                resid_mean=fit_res.resid_mean,
+                resid_std=fit_res.resid_std,
+                adf_stat=stat.adf_stat, adf_pvalue=stat.adf_pvalue,
+                kpss_stat=stat.kpss_stat, kpss_pvalue=stat.kpss_pvalue,
+                passed=stat.passed,
+                residual_series=[[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)],
+            )
+            db.add(ols_row)
+            db.commit()
+            db.refresh(ols_row)
+            self._last_fit_logged[group.id] = now_m
+
+        if not candidate:
             return
 
         notional = float(backbone.get("trade_notional", 100) or 100)
         if notional <= 0:
             log.error("group %s: trade_notional <= 0 — skip entry", group.id)
             return
-        dep = group.dependent_symbol
         group_ex = (getattr(group, "exchange", None) or exchange or "nobitex").lower()
         if group_ex == "nobitex" and str(dep).upper().endswith(("IRT", "RLS")):
             notional = max(notional, MIN_ORDER_VALUE_IRT)
+
+        if group_ex == "xt" and trading_mode == "live":
+            # XT runs in one-way (net) position mode: a second group touching the
+            # same symbol would merge into / net against the first group's
+            # position (position id == symbol), corrupting both groups' PnL and
+            # making one group's close flatten the other's hedge.
+            clash = self._symbols_in_use(db, trading_mode, group.id) & set(group.symbols or [])
+            if clash:
+                log.info("group %s skip entry: XT symbol(s) %s already used by another open trade", group.id, sorted(clash))
+                return
 
         # Profit-target entry gate (pure sizing, no I/O): skip if a perfect
         # close at z_close would not clear target_profit_rate of G after costs.
@@ -916,7 +979,8 @@ class BotEngine:
                 )
                 return
         except Exception as e:
-            log.warning("group %s profit gate error (allowing entry): %s", group.id, e)
+            log.warning("group %s profit gate error (skipping entry, fail-closed): %s", group.id, e)
+            return
 
         max_entry_scale = backbone.get("max_entry_scale")
         if max_entry_scale is not None:
@@ -960,6 +1024,7 @@ class BotEngine:
             self._last_error = bal_msg
             self._group_errors[group.id] = bal_msg
             log.error("group %s entry blocked: %s", group.id, bal_msg)
+            self._start_cooldown(group.id, backbone)
             return
         if bal_msg:
             log.info("group %s: %s", group.id, bal_msg)
@@ -973,6 +1038,7 @@ class BotEngine:
             self._last_error = str(e)
             self._group_errors[group.id] = str(e)
             log.error("group %s partial entry (rolled back if possible): %s", group.id, e)
+            self._start_cooldown(group.id, backbone)
             trade = Trade(
                 group_id=group.id,
                 ols_fit_id=ols_row.id,
@@ -995,6 +1061,7 @@ class BotEngine:
             self._last_error = str(e)
             self._group_errors[group.id] = str(e)
             log.error("group %s entry order failed: %s", group.id, e)
+            self._start_cooldown(group.id, backbone)
             return
 
         trade = Trade(

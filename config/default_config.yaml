@@ -22,6 +22,20 @@ backbone:
   # the worst historical thin-cap trades while allowing moderate majors (~1.3x).
   # Set to 0 to disable.
   max_entry_scale: 3.0
+  # Stationarity test on the OLS residual. "engle_granger" (recommended) uses
+  # MacKinnon cointegration critical values; "adf_kpss" is the legacy ADF test on
+  # the fitted residual, which is far too lenient (14-45% false passes at 5%).
+  # adf_alpha is the p-value threshold for either; KPSS stays as extra filter.
+  stationarity_method: engle_granger
+  # Seconds to wait before re-trying a group after a failed/rolled-back entry.
+  entry_retry_cooldown_sec: 600
+  # Close a position that has not reverted after this many hours (0 = off).
+  max_holding_hours: 0
+  # Init/backtest: try every symbol of a group as the dependent one.
+  try_all_dependents: true
+  # Min seconds between stored OLS-fit rows per group while no entry signal
+  # (0 = store every cycle, the old behaviour).
+  fit_log_interval_sec: 900
   # XT-only: leverage applied once per symbol before first order (default 2).
   xt_leverage: 2
   # XT-only: "isolated" | "cross" (default isolated).

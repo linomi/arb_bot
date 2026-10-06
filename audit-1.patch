@@ -1,0 +1,808 @@
+From 46734d73360985385faf9c2c8e7f40487a5672ac Mon Sep 17 00:00:00 2001
+From: Mohammad Reza <hoznaghashi@gmail.com>
+Date: Mon, 5 Oct 2026 18:20:40 +0000
+Subject: [PATCH] Audit fixes: Engle-Granger stationarity, entry cooldown, time
+ stop, Sortino, fit log throttle
+
+- Stationarity: default engle_granger (MacKinnon) instead of invalid ADF-on-residual
+- Entry: refuse beyond z_stop; cooldown after failed entry; XT one-way symbol clash guard
+- Exit: max_holding_hours time_stop; close fill never uses entryPrice
+- Backtest: signal-first stationarity; try_all_dependents; open_mtm mark; max_holding_bars
+- Metrics: proper downside deviation for Sortino
+- Persist OLS fits only on candidate or fit_log_interval_sec
+- Profit gate fails closed on error
+---
+ backend/config_service.py        |   6 ++
+ backend/engine/backtester.py     |  48 +++++++++++-
+ backend/engine/bot_engine.py     | 127 +++++++++++++++++++++++--------
+ backend/engine/init_methods.py   |  45 +++++++----
+ backend/routers/groups_router.py |   7 +-
+ backend/routers/init_router.py   |  12 ++-
+ backend/strategy/metrics.py      |   5 +-
+ backend/strategy/stats_tests.py  |  44 ++++++++++-
+ backend/strategy/zscore.py       |  10 ++-
+ config/default_config.yaml       |  14 ++++
+ frontend/js/i18n/en.json         |  14 +++-
+ frontend/js/i18n/fa.json         |  14 +++-
+ frontend/js/main.js              |   5 ++
+ tests/test_audit_fixes.py        | 106 ++++++++++++++++++++++++++
+ 14 files changed, 396 insertions(+), 61 deletions(-)
+ create mode 100644 tests/test_audit_fixes.py
+
+diff --git a/backend/config_service.py b/backend/config_service.py
+index c995063..4bba6f8 100644
+--- a/backend/config_service.py
++++ b/backend/config_service.py
+@@ -80,6 +80,12 @@ def _validate_backbone(data: dict):
+     tpr = float(data.get("target_profit_rate", 0.0))
+     if tpr < 0 or tpr >= 1:
+         raise ValueError("target_profit_rate must be in [0, 1)")
++    sm = str(data.get("stationarity_method", "engle_granger"))
++    if sm not in ("engle_granger", "adf_kpss"):
++        raise ValueError("stationarity_method must be 'engle_granger' or 'adf_kpss'")
++    for k in ("entry_retry_cooldown_sec", "max_holding_hours", "fit_log_interval_sec"):
++        if float(data.get(k, 0) or 0) < 0:
++            raise ValueError(f"{k} must be >= 0")
+     mes = data.get("max_entry_scale", 3.0)
+     if mes is not None and mes != "":
+         mes_f = float(mes)
+diff --git a/backend/engine/backtester.py b/backend/engine/backtester.py
+index 2095b8a..bd39ef5 100644
+--- a/backend/engine/backtester.py
++++ b/backend/engine/backtester.py
+@@ -10,7 +10,7 @@ import pandas as pd
+ 
+ from backend.strategy.ols import fit_ols, residual_from_frozen_fit
+ from backend.strategy.stats_tests import test_stationarity
+-from backend.strategy.zscore import decide_entry, decide_exit
++from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
+ from backend.strategy.metrics import compute_group_performance, GroupPerformance
+ from backend.strategy.pnl import residual_cash_pnl, gross_per_unit_y, entry_target_check
+ 
+@@ -64,6 +64,9 @@ def backtest_group(
+     target_profit_rate: float = 0.0,
+     max_entry_scale: float | None = None,
+     trade_notional: float = 100.0,
++    max_holding_bars: int | None = None,
++    stationarity_method: str = "engle_granger",
++    mark_open_at_end: bool = True,
+ ) -> BacktestResult:
+     symbols = list(price_df.columns)
+     n = len(price_df)
+@@ -82,6 +85,13 @@ def backtest_group(
+                 resid_now, position["direction"], position["mean"], position["std"],
+                 z_close, z_stop_loss,
+             )
++            time_stop = (
++                not exit_dec.should_exit
++                and max_holding_bars
++                and (i - position["entry_idx"]) >= int(max_holding_bars)
++            )
++            if time_stop:
++                exit_dec = ExitDecision(True, "time_stop", exit_dec.z)
+             if exit_dec.should_exit:
+                 gross = gross_per_unit_y(
+                     position["entry_prices"], dependent_symbol, position["betas"],
+@@ -110,14 +120,26 @@ def backtest_group(
+             i += 1
+             continue
+ 
+-        stat = test_stationarity(fit.residual, adf_alpha, kpss_alpha)
+-        if not stat.passed or fit.resid_std == 0:
++        if fit.resid_std == 0:
+             i += 1
+             continue
+ 
+         resid_now = float(fit.residual[-1])
+-        entry_dec = decide_entry(resid_now, fit.resid_mean, fit.resid_std, z_entry)
++        entry_dec = decide_entry(
++            resid_now, fit.resid_mean, fit.resid_std, z_entry, z_stop=z_stop_loss,
++        )
+         if entry_dec.should_enter:
++            # Signal first, expensive stationarity test only when a signal exists
++            # (identical result, ~50x fewer ADF/EG runs).
++            stat = test_stationarity(
++                fit.residual, adf_alpha, kpss_alpha,
++                y=price_matrix[dependent_symbol],
++                x_cols=[price_matrix[s] for s in symbols if s != dependent_symbol],
++                method=stationarity_method,
++            )
++            if not stat.passed:
++                i += 1
++                continue
+             G_unit = gross_per_unit_y(prices_now, dependent_symbol, fit.betas)
+             ok, _det = entry_target_check(
+                 z_now=entry_dec.z,
+@@ -161,6 +183,24 @@ def backtest_group(
+             }
+         i += 1
+ 
++    if position is not None and mark_open_at_end and n > 0:
++        last_prices = price_df.iloc[-1].to_dict()
++        resid_last = residual_from_frozen_fit(
++            dependent_symbol, last_prices, position["betas"], position["intercept"],
++        )
++        gross = gross_per_unit_y(position["entry_prices"], dependent_symbol, position["betas"])
++        pnl = residual_cash_pnl(
++            position["entry_residual"], resid_last, position["direction"],
++            qty_dependent=1.0, cost_rate=transaction_cost_rate, gross_notional=gross,
++        )
++        trades.append(BacktestTrade(
++            entry_idx=position["entry_idx"], exit_idx=n - 1,
++            entry_time=position["entry_time"], close_time=price_df.index[-1],
++            direction=position["direction"], entry_z=position["entry_z"],
++            close_z=(resid_last - position["mean"]) / position["std"] if position["std"] else 0.0,
++            close_reason="open_mtm", pnl=pnl,
++        ))
++
+     closed = [{"pnl": t.pnl, "entry_time": t.entry_time, "close_time": t.close_time} for t in trades]
+     perf = compute_group_performance(closed)
+     return BacktestResult(trades=trades, performance=perf)
+diff --git a/backend/engine/bot_engine.py b/backend/engine/bot_engine.py
+index 57d92af..1638ed0 100644
+--- a/backend/engine/bot_engine.py
++++ b/backend/engine/bot_engine.py
+@@ -19,6 +19,7 @@ import asyncio
+ import datetime as dt
+ import logging
+ import re
++import time
+ import traceback
+ import uuid
+ 
+@@ -34,7 +35,7 @@ from backend.exchange.nobitex import NobitexClient, NobitexError
+ from backend.utils import seconds_to_resolution, fetch_price_df
+ from backend.strategy.ols import fit_ols, residual_from_frozen_fit
+ from backend.strategy.stats_tests import test_stationarity
+-from backend.strategy.zscore import decide_entry, decide_exit
++from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
+ from backend.strategy.sizing import (
+     leg_orders,
+     close_legs_from_entry,
+@@ -115,7 +116,9 @@ def _fill_price_from_position(pos: dict | None, *, is_close: bool = False) -> fl
+     if not pos:
+         return None
+     key = "exitPrice" if is_close else "entryPrice"
+-    for k in ((key, "markPrice", "entryPrice") if is_close else (key, "markPrice")):
++    # For closes never fall back to entryPrice: it would report the OPEN price as
++    # the exit fill. markPrice is only an estimate; callers flag it as such.
++    for k in ((key, "markPrice") if is_close else (key, "markPrice")):
+         v = _parse_money(pos.get(k))
+         if v is not None and v > 0:
+             return float(v)
+@@ -128,6 +131,8 @@ class BotEngine:
+         self._last_error: str | None = None
+         self._group_errors: dict[int, str] = {}
+         self._pause_until: str | None = None  # ISO timestamp; XT rate-limit lockout
++        self._entry_cooldown_until: dict[int, float] = {}   # group_id -> monotonic deadline
++        self._last_fit_logged: dict[int, float] = {}        # group_id -> monotonic time
+ 
+     def start_background_loop(self):
+         if self._task is None or self._task.done():
+@@ -274,6 +279,26 @@ class BotEngine:
+                 exchange=group_ex,
+             )
+ 
++    def _start_cooldown(self, group_id: int, backbone: dict) -> None:
++        sec = float(backbone.get("entry_retry_cooldown_sec", 600) or 0)
++        if sec > 0:
++            self._entry_cooldown_until[group_id] = time.monotonic() + sec
++
++    def _in_cooldown(self, group_id: int) -> bool:
++        return time.monotonic() < self._entry_cooldown_until.get(group_id, 0.0)
++
++    @staticmethod
++    def _symbols_in_use(db, trading_mode: str, exclude_group_id: int) -> set[str]:
++        used: set[str] = set()
++        for t in db.query(Trade).filter(
++            Trade.status.in_(("open",)), Trade.mode == trading_mode,
++            Trade.group_id != exclude_group_id,
++        ).all():
++            for leg in (t.legs_entry or []):
++                if leg.get("symbol"):
++                    used.add(leg["symbol"])
++        return used
++
+     async def _read_free_balance_irt(self, trading_client, exchange: str = "nobitex") -> float | None:
+         """Legacy name; quote is IRT for nobitex, USDT for xt."""
+         return await xt_hooks.read_free_balance(trading_client, exchange=exchange)
+@@ -551,7 +576,7 @@ class BotEngine:
+                         fill = None
+                         for attempt in range(3):
+                             try:
+-                                pos = await trading_client.get_position(int(pid))
++                                pos = await trading_client.get_position(_pos_id(pid))
+                                 fill = _fill_price_from_position(pos, is_close=False)
+                                 if fill is not None:
+                                     break
+@@ -657,7 +682,7 @@ class BotEngine:
+         found = 0
+ 
+         close_by_pid = {
+-            int(l["position_id"]): l
++            _pos_id(l["position_id"]): l
+             for l in (legs_close or [])
+             if l.get("position_id") is not None
+         }
+@@ -667,7 +692,7 @@ class BotEngine:
+             if pid is None:
+                 details.append({"symbol": leg.get("symbol"), "error": "no position_id"})
+                 continue
+-            pid = int(pid)
++            pid = _pos_id(pid)
+             pos = None
+             for attempt in range(8):
+                 await asyncio.sleep(0.7 if attempt else 0.3)
+@@ -685,7 +710,7 @@ class BotEngine:
+             if not pos:
+                 try:
+                     past = await trading_client.list_positions(status="past", page_size=50)
+-                    pos = next((p for p in past if int(p.get("id", -1)) == pid), None)
++                    pos = next((p for p in past if str(p.get("id", -1)) == str(pid)), None)
+                 except Exception as e:
+                     log.debug("past positions lookup failed: %s", e)
+ 
+@@ -728,6 +753,16 @@ class BotEngine:
+             resid_now, open_trade.direction, fit.resid_mean, fit.resid_std,
+             backbone["z_close"], backbone["z_stop_loss"],
+         )
++        if not exit_dec.should_exit:
++            max_hold_h = float(backbone.get("max_holding_hours", 0) or 0)
++            if max_hold_h > 0 and open_trade.entry_time is not None:
++                age_h = (dt.datetime.utcnow() - open_trade.entry_time).total_seconds() / 3600.0
++                if age_h >= max_hold_h:
++                    log.warning(
++                        "group %s trade #%s time stop after %.1fh (z=%.2f)",
++                        group.id, open_trade.id, age_h, exit_dec.z,
++                    )
++                    exit_dec = ExitDecision(True, "time_stop", exit_dec.z)
+         if not exit_dec.should_exit:
+             return
+ 
+@@ -839,42 +874,70 @@ class BotEngine:
+         except Exception:
+             return
+ 
+-        stat = test_stationarity(fit_res.residual, backbone["adf_alpha"], backbone["kpss_alpha"])
+-        ols_row = OLSFit(
+-            group_id=group.id,
+-            fitted_at=dt.datetime.utcnow(),
+-            window_start=window.index[0].to_pydatetime(),
+-            window_end=window.index[-1].to_pydatetime(),
+-            betas=fit_res.betas,
+-            intercept=fit_res.intercept,
+-            resid_mean=fit_res.resid_mean,
+-            resid_std=fit_res.resid_std,
+-            adf_stat=stat.adf_stat, adf_pvalue=stat.adf_pvalue,
+-            kpss_stat=stat.kpss_stat, kpss_pvalue=stat.kpss_pvalue,
+-            passed=stat.passed,
+-            residual_series=[[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)],
+-        )
+-        db.add(ols_row)
+-        db.commit()
+-        db.refresh(ols_row)
+-
+-        if not stat.passed or fit_res.resid_std == 0:
++        if self._in_cooldown(group.id):
+             return
+ 
++        dep = group.dependent_symbol
++        stat = test_stationarity(
++            fit_res.residual, backbone["adf_alpha"], backbone["kpss_alpha"],
++            y=price_matrix[dep],
++            x_cols=[price_matrix[s] for s in price_matrix if s != dep],
++            method=str(backbone.get("stationarity_method", "engle_granger")),
++        )
+         resid_now = float(fit_res.residual[-1])
+-        entry_dec = decide_entry(resid_now, fit_res.resid_mean, fit_res.resid_std, backbone["z_entry"])
+-        if not entry_dec.should_enter:
++        entry_dec = decide_entry(
++            resid_now, fit_res.resid_mean, fit_res.resid_std, backbone["z_entry"],
++            z_stop=float(backbone["z_stop_loss"]),
++        )
++        candidate = bool(stat.passed and fit_res.resid_std != 0 and entry_dec.should_enter)
++
++        # Persist the fit only when it can become a trade, or at most every
++        # fit_log_interval_sec (was: one row + residual_series JSON every cycle).
++        interval = float(backbone.get("fit_log_interval_sec", 900) or 0)
++        now_m = time.monotonic()
++        due = interval <= 0 or (now_m - self._last_fit_logged.get(group.id, -1e18)) >= interval
++        ols_row = None
++        if candidate or due:
++            ols_row = OLSFit(
++                group_id=group.id,
++                fitted_at=dt.datetime.utcnow(),
++                window_start=window.index[0].to_pydatetime(),
++                window_end=window.index[-1].to_pydatetime(),
++                betas=fit_res.betas,
++                intercept=fit_res.intercept,
++                resid_mean=fit_res.resid_mean,
++                resid_std=fit_res.resid_std,
++                adf_stat=stat.adf_stat, adf_pvalue=stat.adf_pvalue,
++                kpss_stat=stat.kpss_stat, kpss_pvalue=stat.kpss_pvalue,
++                passed=stat.passed,
++                residual_series=[[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)],
++            )
++            db.add(ols_row)
++            db.commit()
++            db.refresh(ols_row)
++            self._last_fit_logged[group.id] = now_m
++
++        if not candidate:
+             return
+ 
+         notional = float(backbone.get("trade_notional", 100) or 100)
+         if notional <= 0:
+             log.error("group %s: trade_notional <= 0 — skip entry", group.id)
+             return
+-        dep = group.dependent_symbol
+         group_ex = (getattr(group, "exchange", None) or exchange or "nobitex").lower()
+         if group_ex == "nobitex" and str(dep).upper().endswith(("IRT", "RLS")):
+             notional = max(notional, MIN_ORDER_VALUE_IRT)
+ 
++        if group_ex == "xt" and trading_mode == "live":
++            # XT runs in one-way (net) position mode: a second group touching the
++            # same symbol would merge into / net against the first group's
++            # position (position id == symbol), corrupting both groups' PnL and
++            # making one group's close flatten the other's hedge.
++            clash = self._symbols_in_use(db, trading_mode, group.id) & set(group.symbols or [])
++            if clash:
++                log.info("group %s skip entry: XT symbol(s) %s already used by another open trade", group.id, sorted(clash))
++                return
++
+         # Profit-target entry gate (pure sizing, no I/O): skip if a perfect
+         # close at z_close would not clear target_profit_rate of G after costs.
+         try:
+@@ -916,7 +979,8 @@ class BotEngine:
+                 )
+                 return
+         except Exception as e:
+-            log.warning("group %s profit gate error (allowing entry): %s", group.id, e)
++            log.warning("group %s profit gate error (skipping entry, fail-closed): %s", group.id, e)
++            return
+ 
+         max_entry_scale = backbone.get("max_entry_scale")
+         if max_entry_scale is not None:
+@@ -960,6 +1024,7 @@ class BotEngine:
+             self._last_error = bal_msg
+             self._group_errors[group.id] = bal_msg
+             log.error("group %s entry blocked: %s", group.id, bal_msg)
++            self._start_cooldown(group.id, backbone)
+             return
+         if bal_msg:
+             log.info("group %s: %s", group.id, bal_msg)
+@@ -973,6 +1038,7 @@ class BotEngine:
+             self._last_error = str(e)
+             self._group_errors[group.id] = str(e)
+             log.error("group %s partial entry (rolled back if possible): %s", group.id, e)
++            self._start_cooldown(group.id, backbone)
+             trade = Trade(
+                 group_id=group.id,
+                 ols_fit_id=ols_row.id,
+@@ -995,6 +1061,7 @@ class BotEngine:
+             self._last_error = str(e)
+             self._group_errors[group.id] = str(e)
+             log.error("group %s entry order failed: %s", group.id, e)
++            self._start_cooldown(group.id, backbone)
+             return
+ 
+         trade = Trade(
+diff --git a/backend/engine/init_methods.py b/backend/engine/init_methods.py
+index 041ec5d..5b11c91 100644
+--- a/backend/engine/init_methods.py
++++ b/backend/engine/init_methods.py
+@@ -50,22 +50,37 @@ def _worker_eval(job: tuple) -> dict | None:
+     if len(sub_df) < int(backbone_params["window_size"]) + 5:
+         return None
+ 
+-    dependent = symbols[0]
+-    try:
+-        bt = backtest_group(
+-            price_df=sub_df,
+-            dependent_symbol=dependent,
+-            window_size=int(backbone_params["window_size"]),
+-            adf_alpha=float(backbone_params["adf_alpha"]),
+-            kpss_alpha=float(backbone_params["kpss_alpha"]),
+-            z_entry=float(backbone_params["z_entry"]),
+-            z_close=float(backbone_params["z_close"]),
+-            z_stop_loss=float(backbone_params["z_stop_loss"]),
+-            transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
+-            target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
+-        )
+-    except Exception:
++    # The residual (and therefore the whole strategy) depends on which symbol is
++    # regressed on the others; try each and keep the best-scoring choice instead
++    # of always taking the alphabetically-first symbol.
++    candidates = list(symbols) if backbone_params.get("try_all_dependents", True) else [symbols[0]]
++    best = None
++    for dependent in candidates:
++        try:
++            bt = backtest_group(
++                price_df=sub_df,
++                dependent_symbol=dependent,
++                window_size=int(backbone_params["window_size"]),
++                adf_alpha=float(backbone_params["adf_alpha"]),
++                kpss_alpha=float(backbone_params["kpss_alpha"]),
++                z_entry=float(backbone_params["z_entry"]),
++                z_close=float(backbone_params["z_close"]),
++                z_stop_loss=float(backbone_params["z_stop_loss"]),
++                transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
++                target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
++                max_entry_scale=backbone_params.get("max_entry_scale"),
++                trade_notional=float(backbone_params.get("trade_notional", 100.0) or 100.0),
++                max_holding_bars=backbone_params.get("max_holding_bars"),
++                stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
++            )
++        except Exception:
++            continue
++        sc = _score_group(bt.performance)
++        if best is None or sc > best[2]:
++            best = (dependent, bt, sc)
++    if best is None:
+         return None
++    dependent, bt, _sc = best
+ 
+     return {
+         "symbols": list(symbols),
+diff --git a/backend/routers/groups_router.py b/backend/routers/groups_router.py
+index 41aafec..88b8e69 100644
+--- a/backend/routers/groups_router.py
++++ b/backend/routers/groups_router.py
+@@ -276,7 +276,12 @@ async def live_fit(group_id: int, persist: bool = True, db: Session = Depends(ge
+ 
+     adf_alpha = float(backbone.get("adf_alpha", 0.05))
+     kpss_alpha = float(backbone.get("kpss_alpha", 0.05))
+-    stat = test_stationarity(fit_res.residual, adf_alpha, kpss_alpha)
++    stat = test_stationarity(
++        fit_res.residual, adf_alpha, kpss_alpha,
++        y=price_matrix[dependent],
++        x_cols=[price_matrix[s] for s in price_matrix if s != dependent],
++        method=str(backbone.get("stationarity_method", "engle_granger")),
++    )
+ 
+     residual_series = [[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)]
+     fitted_at = dt.datetime.utcnow()
+diff --git a/backend/routers/init_router.py b/backend/routers/init_router.py
+index a3a7555..491ac94 100644
+--- a/backend/routers/init_router.py
++++ b/backend/routers/init_router.py
+@@ -203,15 +203,23 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
+         db.close()
+ 
+ 
+-def _backbone_params(backbone_cfg: dict) -> dict:
++def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
++    from backend.engine import xt_hooks
++    mhb = backbone_cfg.get("max_holding_hours")
++    st = float(backbone_cfg.get("sampling_time", 60) or 60)
+     return {
++        "max_holding_bars": (
++            int(float(mhb) * 3600.0 / st) if mhb not in (None, 0, 0.0, "") else None
++        ),
++        "stationarity_method": str(backbone_cfg.get("stationarity_method", "engle_granger")),
++        "try_all_dependents": bool(backbone_cfg.get("try_all_dependents", True)),
+         "window_size": int(backbone_cfg["window_size"]),
+         "adf_alpha": float(backbone_cfg["adf_alpha"]),
+         "kpss_alpha": float(backbone_cfg["kpss_alpha"]),
+         "z_entry": float(backbone_cfg["z_entry"]),
+         "z_close": float(backbone_cfg["z_close"]),
+         "z_stop_loss": float(backbone_cfg["z_stop_loss"]),
+-        "transaction_fee_rate": float(backbone_cfg["fee_rate"]) + float(backbone_cfg["slippage_rate"]),
++        "transaction_fee_rate": xt_hooks.effective_cost_rate(backbone_cfg, exchange=exchange),
+         "target_profit_rate": float(backbone_cfg.get("target_profit_rate", 0.0) or 0.0),
+         "max_entry_scale": (
+             None
+diff --git a/backend/strategy/metrics.py b/backend/strategy/metrics.py
+index 28c00a0..63ebb73 100644
+--- a/backend/strategy/metrics.py
++++ b/backend/strategy/metrics.py
+@@ -60,7 +60,10 @@ def compute_group_performance(closed_trades: list[dict]) -> GroupPerformance:
+     std = np.std(pnls, ddof=1) if trade_count > 1 else 0.0
+     sharpe = float(np.mean(pnls) / std) if std > 0 else 0.0
+ 
+-    downside_std = np.std(losses, ddof=1) if len(losses) > 1 else 0.0
++    # Standard downside deviation (target 0): sqrt(mean(min(pnl, 0)^2)) over ALL
++    # trades. The old std-of-losses was ~0 for consistent small losses and
++    # inflated Sortino for exactly the groups that lose steadily.
++    downside_std = float(np.sqrt(np.mean(np.minimum(pnls, 0.0) ** 2)))
+     sortino = float(np.mean(pnls) / downside_std) if downside_std > 0 else 0.0
+ 
+     gross_profit = float(np.sum(wins)) if len(wins) else 0.0
+diff --git a/backend/strategy/stats_tests.py b/backend/strategy/stats_tests.py
+index 0dbc44a..ed3e80f 100644
+--- a/backend/strategy/stats_tests.py
++++ b/backend/strategy/stats_tests.py
+@@ -9,7 +9,7 @@ A group "passes" only when both agree the residual is stationary.
+ from dataclasses import dataclass
+ import warnings
+ import numpy as np
+-from statsmodels.tsa.stattools import adfuller, kpss
++from statsmodels.tsa.stattools import adfuller, kpss, coint
+ 
+ 
+ @dataclass
+@@ -21,14 +21,49 @@ class StationarityResult:
+     passed: bool
+ 
+ 
+-def test_stationarity(residual: np.ndarray, adf_alpha: float, kpss_alpha: float) -> StationarityResult:
++def engle_granger_pvalue(y: np.ndarray, x_cols: list[np.ndarray]) -> tuple[float, float]:
++    """
++    Engle-Granger cointegration test with MacKinnon critical values.
++
++    Running plain ADF on a *fitted* OLS residual is invalid: the regression
++    already minimised the residual variance, so ADF's Dickey-Fuller table is far
++    too lenient (simulation on independent random walks: ~14-45% false passes at
++    a nominal 5% depending on the number of regressors). statsmodels' `coint`
++    uses the correct tables, which depend on the number of regressors.
++    """
++    X = np.column_stack([np.asarray(c, dtype=float) for c in x_cols])
++    stat, p, _crit = coint(np.asarray(y, dtype=float), X, trend="c", autolag="aic")
++    return float(stat), float(p)
++
++
++def test_stationarity(
++    residual: np.ndarray,
++    adf_alpha: float,
++    kpss_alpha: float,
++    *,
++    y: np.ndarray | None = None,
++    x_cols: list[np.ndarray] | None = None,
++    method: str = "engle_granger",
++) -> StationarityResult:
++    """
++    method="engle_granger" (default, needs y and x_cols): EG p-value replaces the
++    ADF p-value (still reported in the adf_* fields so the DB/UI are unchanged).
++    method="adf_kpss": legacy behaviour (ADF on the residual).
++    KPSS is kept as an additional filter in both modes.
++    """
+     if len(residual) < 10:
+         # Not enough data to test meaningfully -- fail closed.
+         return StationarityResult(float("nan"), 1.0, float("nan"), 0.0, False)
+ 
+     with warnings.catch_warnings():
+         warnings.simplefilter("ignore")  # statsmodels warns on interpolated p-values near table bounds
+-        adf_stat, adf_p, *_ = adfuller(residual, autolag="AIC")
++        if method == "engle_granger" and y is not None and x_cols:
++            try:
++                adf_stat, adf_p = engle_granger_pvalue(y, x_cols)
++            except Exception:
++                adf_stat, adf_p = float("nan"), 1.0  # fail closed
++        else:
++            adf_stat, adf_p, *_ = adfuller(residual, autolag="AIC")
+         try:
+             kpss_stat, kpss_p, *_ = kpss(residual, regression="c", nlags="auto")
+         except Exception:
+@@ -38,3 +73,6 @@ def test_stationarity(residual: np.ndarray, adf_alpha: float, kpss_alpha: float)
+     return StationarityResult(
+         float(adf_stat), float(adf_p), float(kpss_stat), float(kpss_p), passed,
+     )
++
++
++test_stationarity.__test__ = False  # not a pytest test, despite the name
+diff --git a/backend/strategy/zscore.py b/backend/strategy/zscore.py
+index 8a423f4..d8f77ac 100644
+--- a/backend/strategy/zscore.py
++++ b/backend/strategy/zscore.py
+@@ -16,10 +16,18 @@ class EntryDecision:
+     should_enter: bool
+     direction: str | None  # "long_residual" | "short_residual" | None
+     z: float
++    reason: str | None = None
+ 
+ 
+-def decide_entry(residual_value: float, mean: float, std: float, z_entry: float) -> EntryDecision:
++def decide_entry(
++    residual_value: float, mean: float, std: float, z_entry: float,
++    z_stop: float | None = None,
++) -> EntryDecision:
+     z = zscore(residual_value, mean, std)
++    # Never enter at/after the stop level: the position would be stopped out on
++    # the very next check (a residual jump / structural break, not a reversion).
++    if z_stop is not None and z_stop > 0 and abs(z) >= z_stop:
++        return EntryDecision(False, None, z, "beyond_stop")
+     if z >= z_entry:
+         # Residual abnormally high -> expect it to fall -> short the residual
+         # (short dependent symbol, long the beta-weighted basket of independents).
+diff --git a/config/default_config.yaml b/config/default_config.yaml
+index f80b6e7..fe3a193 100644
+--- a/config/default_config.yaml
++++ b/config/default_config.yaml
+@@ -22,6 +22,20 @@ backbone:
+   # the worst historical thin-cap trades while allowing moderate majors (~1.3x).
+   # Set to 0 to disable.
+   max_entry_scale: 3.0
++  # Stationarity test on the OLS residual. "engle_granger" (recommended) uses
++  # MacKinnon cointegration critical values; "adf_kpss" is the legacy ADF test on
++  # the fitted residual, which is far too lenient (14-45% false passes at 5%).
++  # adf_alpha is the p-value threshold for either; KPSS stays as extra filter.
++  stationarity_method: engle_granger
++  # Seconds to wait before re-trying a group after a failed/rolled-back entry.
++  entry_retry_cooldown_sec: 600
++  # Close a position that has not reverted after this many hours (0 = off).
++  max_holding_hours: 0
++  # Init/backtest: try every symbol of a group as the dependent one.
++  try_all_dependents: true
++  # Min seconds between stored OLS-fit rows per group while no entry signal
++  # (0 = store every cycle, the old behaviour).
++  fit_log_interval_sec: 900
+   # XT-only: leverage applied once per symbol before first order (default 2).
+   xt_leverage: 2
+   # XT-only: "isolated" | "cross" (default isolated).
+diff --git a/frontend/js/i18n/en.json b/frontend/js/i18n/en.json
+index 3f970d9..011e7f6 100644
+--- a/frontend/js/i18n/en.json
++++ b/frontend/js/i18n/en.json
+@@ -189,5 +189,15 @@
+   "param.top_n_groups": "Top N Groups",
+   "param.quote_currency": "Quote Currency",
+   "param.base_url": "Base URL",
+-  "param.poll_interval": "Poll Interval"
+-}
+\ No newline at end of file
++  "param.poll_interval": "Poll Interval",
++  "hint.stationarity_method": "engle_granger = valid cointegration test (recommended); adf_kpss = legacy, too lenient",
++  "param.stationarity_method": "Stationarity Method",
++  "hint.entry_retry_cooldown_sec": "Seconds to wait after a failed entry before retrying the group",
++  "param.entry_retry_cooldown_sec": "Entry Retry Cooldown (s)",
++  "hint.max_holding_hours": "Force-close a position open longer than this many hours; 0 disables",
++  "param.max_holding_hours": "Max Holding (hours)",
++  "hint.try_all_dependents": "Init: test every symbol as the dependent one",
++  "param.try_all_dependents": "Try All Dependents",
++  "hint.fit_log_interval_sec": "Min seconds between stored OLS fits while no entry signal; 0 = every cycle",
++  "param.fit_log_interval_sec": "Fit Log Interval (s)"
++}
+diff --git a/frontend/js/i18n/fa.json b/frontend/js/i18n/fa.json
+index 34dc7ab..5472228 100644
+--- a/frontend/js/i18n/fa.json
++++ b/frontend/js/i18n/fa.json
+@@ -189,5 +189,15 @@
+   "param.top_n_groups": "تعداد گروه‌های برتر",
+   "param.quote_currency": "ارز پایه",
+   "param.base_url": "آدرس پایه",
+-  "param.poll_interval": "بازه نظرسنجی"
+-}
+\ No newline at end of file
++  "param.poll_interval": "بازه نظرسنجی",
++  "hint.stationarity_method": "engle_granger = آزمون هم‌انباشتگی معتبر (پیشنهادی)؛ adf_kpss = قدیمی و بسیار ملایم",
++  "param.stationarity_method": "روش آزمون مانایی",
++  "hint.entry_retry_cooldown_sec": "ثانیه انتظار پس از ورود ناموفق قبل از تلاش مجدد",
++  "param.entry_retry_cooldown_sec": "مکث تلاش مجدد ورود (ثانیه)",
++  "hint.max_holding_hours": "بستن اجباری موقعیت بازتر از این تعداد ساعت؛ ۰ غیرفعال",
++  "param.max_holding_hours": "حداکثر زمان نگهداری (ساعت)",
++  "hint.try_all_dependents": "مقداردهی اولیه: هر نماد به‌عنوان وابسته آزموده شود",
++  "param.try_all_dependents": "آزمون همه نمادهای وابسته",
++  "hint.fit_log_interval_sec": "حداقل فاصله ذخیره برازش OLS بدون سیگنال ورود؛ ۰ = هر چرخه",
++  "param.fit_log_interval_sec": "فاصله ثبت برازش (ثانیه)"
++}
+diff --git a/frontend/js/main.js b/frontend/js/main.js
+index bb9cbbd..6f00da0 100644
+--- a/frontend/js/main.js
++++ b/frontend/js/main.js
+@@ -52,6 +52,11 @@ function stopFitPoll() {
+ function FIELD_HINTS() {
+   return {
+     target_profit_rate: t("hint.target_profit_rate"),
++    stationarity_method: t("hint.stationarity_method"),
++    entry_retry_cooldown_sec: t("hint.entry_retry_cooldown_sec"),
++    max_holding_hours: t("hint.max_holding_hours"),
++    try_all_dependents: t("hint.try_all_dependents"),
++    fit_log_interval_sec: t("hint.fit_log_interval_sec"),
+     max_entry_scale: t("hint.max_entry_scale"),
+   };
+ }
+diff --git a/tests/test_audit_fixes.py b/tests/test_audit_fixes.py
+new file mode 100644
+index 0000000..db339a0
+--- /dev/null
++++ b/tests/test_audit_fixes.py
+@@ -0,0 +1,106 @@
++import numpy as np
++import pandas as pd
++import pytest
++
++from backend.strategy.stats_tests import test_stationarity
++from backend.strategy.ols import fit_ols
++from backend.strategy.zscore import decide_entry
++from backend.strategy.metrics import compute_group_performance
++from backend.engine.backtester import backtest_group
++from backend.engine.bot_engine import _fill_price_from_position, BotEngine
++from backend import config_service
++
++
++def _stat(y, x, method):
++    pm = {"Y": y, "X": x}
++    fit = fit_ols("Y", pm)
++    return test_stationarity(fit.residual, 0.05, 0.05, y=y, x_cols=[x], method=method)
++
++
++def test_engle_granger_far_less_lenient_than_adf_on_random_walks():
++    rng = np.random.default_rng(1)
++    eg = adf = 0
++    n = 150
++    for _ in range(n):
++        y = np.cumsum(rng.normal(size=100)) + 100
++        x = np.cumsum(rng.normal(size=100)) + 100
++        eg += _stat(y, x, "engle_granger").passed
++        adf += _stat(y, x, "adf_kpss").passed
++    assert eg / n < 0.12          # near nominal
++    assert adf > eg               # legacy test passes more spurious pairs
++
++
++def test_engle_granger_accepts_true_cointegration():
++    rng = np.random.default_rng(2)
++    x = np.cumsum(rng.normal(size=200)) + 100
++    y = 2 * x + 5 + rng.normal(size=200)
++    assert _stat(y, x, "engle_granger").passed
++
++
++def test_decide_entry_refuses_beyond_stop():
++    d = decide_entry(10.0, 0.0, 1.0, 2.0, z_stop=3.5)
++    assert not d.should_enter and d.reason == "beyond_stop"
++    assert decide_entry(2.5, 0.0, 1.0, 2.0, z_stop=3.5).should_enter
++    assert decide_entry(-2.5, 0.0, 1.0, 2.0, z_stop=3.5).direction == "long_residual"
++
++
++def test_sortino_penalises_steady_small_losses():
++    now = pd.Timestamp("2026-01-01")
++    trades = [{"pnl": p, "entry_time": now, "close_time": now + pd.Timedelta(hours=1)}
++              for p in (-1.0, -1.0, -1.0, 0.5)]
++    perf = compute_group_performance(trades)
++    assert perf.sortino_ratio < 0
++
++
++def test_close_fill_price_never_uses_entry_price():
++    pos = {"entryPrice": "100", "exitPrice": None, "markPrice": None}
++    assert _fill_price_from_position(pos, is_close=True) is None
++    assert _fill_price_from_position({**pos, "markPrice": "90"}, is_close=True) == 90.0
++    assert _fill_price_from_position({**pos, "exitPrice": "95"}, is_close=True) == 95.0
++    assert _fill_price_from_position(pos, is_close=False) == 100.0
++
++
++def _synthetic(n=600, seed=3):
++    rng = np.random.default_rng(seed)
++    x = 100 + np.cumsum(rng.normal(size=n))
++    spread = np.zeros(n)
++    for i in range(1, n):
++        spread[i] = 0.8 * spread[i - 1] + rng.normal()
++    y = 1.5 * x + 20 + spread
++    idx = pd.date_range("2026-01-01", periods=n, freq="min")
++    return pd.DataFrame({"X": x, "Y": y}, index=idx)
++
++
++def test_backtest_runs_and_marks_open_trade_to_market():
++    df = _synthetic()
++    kw = dict(window_size=100, adf_alpha=0.05, kpss_alpha=0.05, z_entry=2.0,
++              z_close=0.5, z_stop_loss=3.5, transaction_cost_rate=0.0001)
++    res = backtest_group(df, "Y", **kw)
++    assert res.performance.trade_count > 0
++    # a time stop of 1 bar must close everything with reason time_stop
++    ts = backtest_group(df, "Y", max_holding_bars=1, **kw)
++    assert any(t.close_reason == "time_stop" for t in ts.trades)
++    # open_mtm only appears when an open trade is left at the end
++    nomtm = backtest_group(df, "Y", mark_open_at_end=False, **kw)
++    assert len(res.trades) - len(nomtm.trades) in (0, 1)
++    assert all(t.close_reason != "open_mtm" for t in nomtm.trades)
++
++
++def test_entry_cooldown():
++    eng = BotEngine()
++    assert not eng._in_cooldown(1)
++    eng._start_cooldown(1, {"entry_retry_cooldown_sec": 600})
++    assert eng._in_cooldown(1) and not eng._in_cooldown(2)
++    eng2 = BotEngine()
++    eng2._start_cooldown(1, {"entry_retry_cooldown_sec": 0})
++    assert not eng2._in_cooldown(1)
++
++
++def test_config_validation_new_keys():
++    base = {"z_entry": 2, "z_close": 0.5, "z_stop_loss": 3.5, "trade_notional": 10,
++            "window_size": 100, "sampling_time": 60}
++    config_service._validate_backbone({**base, "stationarity_method": "engle_granger"})
++    with pytest.raises(ValueError):
++        config_service._validate_backbone({**base, "stationarity_method": "bogus"})
++    with pytest.raises(ValueError):
++        config_service._validate_backbone({**base, "max_holding_hours": -1})
+-- 
+2.43.0
+

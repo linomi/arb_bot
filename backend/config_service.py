@@ -80,6 +80,12 @@ def _validate_backbone(data: dict):
     tpr = float(data.get("target_profit_rate", 0.0))
     if tpr < 0 or tpr >= 1:
         raise ValueError("target_profit_rate must be in [0, 1)")
+    sm = str(data.get("stationarity_method", "engle_granger"))
+    if sm not in ("engle_granger", "adf_kpss"):
+        raise ValueError("stationarity_method must be 'engle_granger' or 'adf_kpss'")
+    for k in ("entry_retry_cooldown_sec", "max_holding_hours", "fit_log_interval_sec"):
+        if float(data.get(k, 0) or 0) < 0:
+            raise ValueError(f"{k} must be >= 0")
     mes = data.get("max_entry_scale", 3.0)
     if mes is not None and mes != "":
         mes_f = float(mes)

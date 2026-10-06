@@ -16,10 +16,18 @@ class EntryDecision:
     should_enter: bool
     direction: str | None  # "long_residual" | "short_residual" | None
     z: float
+    reason: str | None = None
 
 
-def decide_entry(residual_value: float, mean: float, std: float, z_entry: float) -> EntryDecision:
+def decide_entry(
+    residual_value: float, mean: float, std: float, z_entry: float,
+    z_stop: float | None = None,
+) -> EntryDecision:
     z = zscore(residual_value, mean, std)
+    # Never enter at/after the stop level: the position would be stopped out on
+    # the very next check (a residual jump / structural break, not a reversion).
+    if z_stop is not None and z_stop > 0 and abs(z) >= z_stop:
+        return EntryDecision(False, None, z, "beyond_stop")
     if z >= z_entry:
         # Residual abnormally high -> expect it to fall -> short the residual
         # (short dependent symbol, long the beta-weighted basket of independents).

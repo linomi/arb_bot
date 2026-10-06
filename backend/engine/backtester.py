@@ -10,7 +10,7 @@ import pandas as pd
 
 from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
-from backend.strategy.zscore import decide_entry, decide_exit
+from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
 from backend.strategy.metrics import compute_group_performance, GroupPerformance
 from backend.strategy.pnl import residual_cash_pnl, gross_per_unit_y, entry_target_check
 
@@ -64,6 +64,9 @@ def backtest_group(
     target_profit_rate: float = 0.0,
     max_entry_scale: float | None = None,
     trade_notional: float = 100.0,
+    max_holding_bars: int | None = None,
+    stationarity_method: str = "engle_granger",
+    mark_open_at_end: bool = True,
 ) -> BacktestResult:
     symbols = list(price_df.columns)
     n = len(price_df)
@@ -82,6 +85,13 @@ def backtest_group(
                 resid_now, position["direction"], position["mean"], position["std"],
                 z_close, z_stop_loss,
             )
+            time_stop = (
+                not exit_dec.should_exit
+                and max_holding_bars
+                and (i - position["entry_idx"]) >= int(max_holding_bars)
+            )
+            if time_stop:
+                exit_dec = ExitDecision(True, "time_stop", exit_dec.z)
             if exit_dec.should_exit:
                 gross = gross_per_unit_y(
                     position["entry_prices"], dependent_symbol, position["betas"],
@@ -110,14 +120,26 @@ def backtest_group(
             i += 1
             continue
 
-        stat = test_stationarity(fit.residual, adf_alpha, kpss_alpha)
-        if not stat.passed or fit.resid_std == 0:
+        if fit.resid_std == 0:
             i += 1
             continue
 
         resid_now = float(fit.residual[-1])
-        entry_dec = decide_entry(resid_now, fit.resid_mean, fit.resid_std, z_entry)
+        entry_dec = decide_entry(
+            resid_now, fit.resid_mean, fit.resid_std, z_entry, z_stop=z_stop_loss,
+        )
         if entry_dec.should_enter:
+            # Signal first, expensive stationarity test only when a signal exists
+            # (identical result, ~50x fewer ADF/EG runs).
+            stat = test_stationarity(
+                fit.residual, adf_alpha, kpss_alpha,
+                y=price_matrix[dependent_symbol],
+                x_cols=[price_matrix[s] for s in symbols if s != dependent_symbol],
+                method=stationarity_method,
+            )
+            if not stat.passed:
+                i += 1
+                continue
             G_unit = gross_per_unit_y(prices_now, dependent_symbol, fit.betas)
             ok, _det = entry_target_check(
                 z_now=entry_dec.z,
@@ -160,6 +182,24 @@ def backtest_group(
                 "entry_prices": prices_now,
             }
         i += 1
+
+    if position is not None and mark_open_at_end and n > 0:
+        last_prices = price_df.iloc[-1].to_dict()
+        resid_last = residual_from_frozen_fit(
+            dependent_symbol, last_prices, position["betas"], position["intercept"],
+        )
+        gross = gross_per_unit_y(position["entry_prices"], dependent_symbol, position["betas"])
+        pnl = residual_cash_pnl(
+            position["entry_residual"], resid_last, position["direction"],
+            qty_dependent=1.0, cost_rate=transaction_cost_rate, gross_notional=gross,
+        )
+        trades.append(BacktestTrade(
+            entry_idx=position["entry_idx"], exit_idx=n - 1,
+            entry_time=position["entry_time"], close_time=price_df.index[-1],
+            direction=position["direction"], entry_z=position["entry_z"],
+            close_z=(resid_last - position["mean"]) / position["std"] if position["std"] else 0.0,
+            close_reason="open_mtm", pnl=pnl,
+        ))
 
     closed = [{"pnl": t.pnl, "entry_time": t.entry_time, "close_time": t.close_time} for t in trades]
     perf = compute_group_performance(closed)
