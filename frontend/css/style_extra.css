@@ -49,3 +49,10 @@ td .g-status,.g-status.pill{display:inline-block;font-size:10.5px;padding:1px 7p
 .param-form .field-hint{font-size:10.5px;color:var(--text-lo);line-height:1.35}
 /* consistent focus ring */
 button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+/* entry-status badge (performance table) */
+.diag-badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:3px;font-family:var(--font-mono);cursor:help;white-space:nowrap}
+.diag-ok{background:rgba(107,154,107,.2);color:var(--long)}
+.diag-warn{background:rgba(190,150,70,.2);color:var(--text-hi)}
+.diag-bad{background:rgba(180,90,80,.18);color:var(--short)}
+.diag-none{color:var(--text-lo)}

@@ -21,6 +21,57 @@ class StationarityResult:
     passed: bool
 
 
+# statsmodels' coint() has MacKinnon tables for at most 5 regressors; with 6+ it
+# raises IndexError (which used to make every group of 7+ symbols fail closed
+# forever). For larger groups we use a Monte-Carlo null instead.
+_COINT_MAX_REGRESSORS = 5
+_MC_REPS = 1500
+_MC_CACHE: dict[tuple[int, int], np.ndarray] = {}
+
+
+def _df_stat(e: np.ndarray) -> float:
+    """Dickey-Fuller t-stat (1 lagged difference, no constant) on a residual series."""
+    e = np.asarray(e, dtype=float)
+    de = np.diff(e)
+    y = de[1:]
+    X = np.column_stack([e[1:-1], de[:-1]])
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ coef
+    dof = max(1, len(y) - X.shape[1])
+    s2 = float(resid @ resid) / dof
+    xtx_inv = np.linalg.pinv(X.T @ X)
+    se = float(np.sqrt(max(s2 * xtx_inv[0, 0], 1e-300)))
+    return float(coef[0] / se)
+
+
+def _mc_null(k: int, n: int) -> np.ndarray:
+    key = (int(k), int(n))
+    if key not in _MC_CACHE:
+        rng = np.random.default_rng(12345 + 31 * k + n)
+        out = np.empty(_MC_REPS)
+        for r in range(_MC_REPS):
+            walks = np.cumsum(rng.standard_normal((n, k + 1)), axis=0)
+            y, X = walks[:, 0], walks[:, 1:]
+            D = np.column_stack([np.ones(n), X])
+            coef, *_ = np.linalg.lstsq(D, y, rcond=None)
+            out[r] = _df_stat(y - D @ coef)
+        _MC_CACHE[key] = np.sort(out)
+    return _MC_CACHE[key]
+
+
+def engle_granger_mc_pvalue(y: np.ndarray, x_cols: list[np.ndarray]) -> tuple[float, float]:
+    """Engle-Granger p-value from a simulated null (independent random walks, same
+    n and number of regressors). Used when statsmodels has no tables (k > 5)."""
+    y = np.asarray(y, dtype=float)
+    X = np.column_stack([np.asarray(c, dtype=float) for c in x_cols])
+    D = np.column_stack([np.ones(len(y)), X])
+    coef, *_ = np.linalg.lstsq(D, y, rcond=None)
+    stat = _df_stat(y - D @ coef)
+    null = _mc_null(X.shape[1], len(y))
+    p = (int(np.searchsorted(null, stat, side="right")) + 1) / (len(null) + 1)
+    return float(stat), float(p)
+
+
 def engle_granger_pvalue(y: np.ndarray, x_cols: list[np.ndarray]) -> tuple[float, float]:
     """
     Engle-Granger cointegration test with MacKinnon critical values.
@@ -31,6 +82,8 @@ def engle_granger_pvalue(y: np.ndarray, x_cols: list[np.ndarray]) -> tuple[float
     a nominal 5% depending on the number of regressors). statsmodels' `coint`
     uses the correct tables, which depend on the number of regressors.
     """
+    if len(x_cols) > _COINT_MAX_REGRESSORS:
+        return engle_granger_mc_pvalue(y, x_cols)
     X = np.column_stack([np.asarray(c, dtype=float) for c in x_cols])
     stat, p, _crit = coint(np.asarray(y, dtype=float), X, trend="c", autolag="aic")
     return float(stat), float(p)

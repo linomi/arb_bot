@@ -70,6 +70,24 @@ function displayTradePnl(t) {
   return null;
 }
 
+const _DIAG_OK = new Set(["entered", "signal", "position_open"]);
+const _DIAG_WARN = new Set(["waiting_z", "cooldown", "paused", "bot_stopped"]);
+function _esc(x) {
+  return String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function diagBadge(d) {
+  if (!d || !d.stage) return '<span class="diag-badge diag-none">--</span>';
+  const key = "diag.stage." + d.stage;
+  const label = t(key) !== key ? t(key) : d.stage;
+  const cls = _DIAG_OK.has(d.stage) ? "diag-ok" : _DIAG_WARN.has(d.stage) ? "diag-warn" : "diag-bad";
+  const lines = [];
+  if (d.text) lines.push(d.text);
+  (d.blockers || []).forEach((b) => lines.push("• " + b));
+  if (d.z != null) lines.push("z=" + Number(d.z).toFixed(2) + (d.z_entry != null ? " / entry " + d.z_entry : ""));
+  if (d.at) lines.push(fmtTime(d.at));
+  return `<span class="diag-badge ${cls}" title="${_esc(lines.join("\n"))}">${_esc(label)}</span>`;
+}
+
 function renderPerfTable(rows, onRowClick) {
   PerfTableState.rows = rows || [];
   _applyPerfFilters();
@@ -118,7 +136,7 @@ function _redrawPerfTable(onRowClick) {
   if (countEl) countEl.textContent = t("perf.count", { shown: sorted.length, total: PerfTableState.rows.length });
   if (!sorted.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="12" class="table-empty">${t(PerfTableState.rows.length ? "perf.empty.filtered" : "perf.empty")}</td>`;
+    tr.innerHTML = `<td colspan="13" class="table-empty">${t(PerfTableState.rows.length ? "perf.empty.filtered" : "perf.empty")}</td>`;
     tbody.appendChild(tr);
   }
   sorted.forEach((r) => {
@@ -135,6 +153,7 @@ function _redrawPerfTable(onRowClick) {
     tr.innerHTML = `
       <td>${r.name}</td>
       <td><span class="g-status ${r.status}">${statusLabel(r.status)}</span></td>
+      <td>${diagBadge(r.diag)}</td>
       <td>${r.trade_count}</td>
       <td>${fmtPct(r.win_rate)}</td>
       <td class="${pnlClass(r.total_pnl)}">${fmtNum(r.total_pnl)}</td>

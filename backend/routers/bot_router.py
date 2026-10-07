@@ -27,6 +27,12 @@ def get_state(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/diagnostics")
+def get_diagnostics():
+    """Why each group did or did not enter on its latest evaluation."""
+    return {"groups": list((getattr(bot_engine, "_group_diag", {}) or {}).values())}
+
+
 @router.post("/start")
 def start_bot(db: Session = Depends(get_db)):
     state = get_or_create_bot_state(db)

@@ -132,6 +132,8 @@ class BotEngine:
         self._last_error: str | None = None
         self._group_errors: dict[int, str] = {}
         self._pause_until: str | None = None  # ISO timestamp; XT rate-limit lockout
+        # group_id -> latest entry-evaluation result ("why is there no trade?")
+        self._group_diag: dict[int, dict] = {}
         self._entry_cooldown_until: dict[int, float] = {}   # group_id -> monotonic deadline
         self._last_fit_logged: dict[int, float] = {}        # group_id -> monotonic time
         self._orphan_positions: list[dict] = []             # exchange positions without open trade
@@ -233,6 +235,7 @@ class BotEngine:
                     self._last_error = err
                     self._group_errors[gid] = err
                     log.exception("group %s failed this cycle", gid)
+            self._log_scan_summary(groups)
         finally:
             await md_client.aclose()
             if not isinstance(trading_client, PaperExchangeClient):
@@ -250,6 +253,7 @@ class BotEngine:
         except ValueError as e:
             log.error("group %s currency/exchange mismatch: %s", group.id, e)
             self._group_errors[group.id] = str(e)
+            self._diag(group, "config_error", str(e))
             return
 
         configured_window = int(backbone["window_size"])
@@ -262,11 +266,13 @@ class BotEngine:
                 "group %s: insufficient OHLC (got %d bars, need >= %d)",
                 group.id, 0 if price_df.empty else len(price_df), min_bars,
             )
+            self._diag(group, "no_data", f"only {0 if price_df.empty else len(price_df)} bars, need {min_bars}")
             return
 
         effective_window = min(configured_window, len(price_df) - 1)
         if effective_window < min_bars:
             log.warning("group %s: effective window %d too small", group.id, effective_window)
+            self._diag(group, "no_data", f"window {effective_window} < {min_bars}")
             return
 
         backbone_local = dict(backbone)
@@ -280,24 +286,32 @@ class BotEngine:
         )
 
         if open_trade is not None:
+            self._diag(group, "position_open", f"trade #{open_trade.id} open since {open_trade.entry_time}")
             await self._check_exit(
                 db, group, open_trade, latest_prices, backbone_local, trading_client, trading_mode,
                 exchange=group_ex,
             )
+        elif not is_running:
+            self._diag(group, "bot_stopped", "bot is stopped: no new entries")
+        elif not allow_new_entries:
+            self._diag(group, "paused", f"entries paused until {self._pause_until}")
         elif is_running and allow_new_entries:
             if self._data_is_stale(price_df, backbone_local):
                 msg = "data stale (latest bar older than staleness threshold)"
+                self._diag(group, "data_stale", msg)
                 self._group_errors[group.id] = msg
                 log.warning("group %s: %s", group.id, msg)
                 return
             cap_msg = self._portfolio_caps_exceeded(db, backbone_local, trading_mode)
             if cap_msg:
+                self._diag(group, "portfolio_cap", cap_msg)
                 self._group_errors[group.id] = cap_msg
                 log.info("group %s skip entry: %s", group.id, cap_msg)
                 return
             blocked = self.symbols_blocked_by_orphans() & set(group.symbols or [])
             if blocked:
                 msg = f"orphan positions block symbols {sorted(blocked)}"
+                self._diag(group, "orphan_block", msg)
                 self._group_errors[group.id] = msg
                 log.error("group %s: %s", group.id, msg)
                 return
@@ -449,6 +463,41 @@ class BotEngine:
                 )
                 return True
         return False
+
+    def _diag(self, group, stage: str, text: str = "", **fields) -> None:
+        """Record the outcome of this cycle's entry evaluation for a group."""
+        self._group_diag[group.id] = {
+            "group_id": group.id,
+            "name": group.name,
+            "stage": stage,
+            "text": text,
+            "at": dt.datetime.utcnow().isoformat() + "Z",
+            **fields,
+        }
+        log.debug("entry eval group %s (%s): %s %s", group.id, group.name, stage, text)
+
+    def _log_scan_summary(self, groups) -> None:
+        """One INFO line per cycle: how many groups sit at each stage + the nearest miss."""
+        rows = [self._group_diag[g.id] for g in groups if g.id in self._group_diag]
+        if not rows:
+            return
+        counts: dict[str, int] = {}
+        for r in rows:
+            counts[r["stage"]] = counts.get(r["stage"], 0) + 1
+        near = [r for r in rows if r.get("z") is not None and r.get("z_entry")]
+        near.sort(key=lambda r: abs(r["z"]) / max(1e-9, r["z_entry"]), reverse=True)
+        tail = ""
+        if near:
+            n = near[0]
+            tail = (
+                f" | nearest: {n['name']} |z|={abs(n['z']):.2f}/{n['z_entry']:.2f}"
+                f" stationary={'yes' if n.get('stationary') else 'no'}"
+                + (f" (p={n['adf_p']:.3f})" if n.get("adf_p") is not None else "")
+            )
+        log.info(
+            "entry scan: %d group(s) %s%s",
+            len(rows), ", ".join(f"{k}={v}" for k, v in sorted(counts.items())), tail,
+        )
 
     def _start_cooldown(self, group_id: int, backbone: dict) -> None:
         sec = float(backbone.get("entry_retry_cooldown_sec", 600) or 0)
@@ -1123,10 +1172,13 @@ class BotEngine:
         price_matrix = {s: window[s].to_numpy() for s in group.symbols}
         try:
             fit_res = fit_ols(group.dependent_symbol, price_matrix)
-        except Exception:
+        except Exception as e:
+            self._diag(group, "fit_failed", f"OLS failed: {e}")
             return
 
         if self._in_cooldown(group.id):
+            left = max(0.0, self._entry_cooldown_until.get(group.id, 0.0) - time.monotonic())
+            self._diag(group, "cooldown", f"retry cooldown after a failed entry, {left:.0f}s left")
             return
 
         dep = group.dependent_symbol
@@ -1148,6 +1200,46 @@ class BotEngine:
                 fit_res.residual, int(backbone["window_size"]), max_fraction=hl_frac,
             )
         candidate = bool(stat.passed and fit_res.resid_std != 0 and entry_dec.should_enter and hl_ok)
+
+        # --- diagnostics: every reason that currently blocks an entry ---------
+        z_entry_cfg = float(backbone["z_entry"])
+        blockers: list[str] = []
+        if fit_res.resid_std == 0:
+            blockers.append("residual std is 0")
+        if entry_dec.reason == "beyond_stop":
+            blockers.append(f"|z|={abs(entry_dec.z):.2f} is beyond the stop level")
+        elif not entry_dec.should_enter:
+            blockers.append(f"|z|={abs(entry_dec.z):.2f} < entry {z_entry_cfg:g}")
+        if not stat.passed:
+            bits = []
+            if backbone.get("stationarity_method", "engle_granger") == "engle_granger":
+                bits.append(f"cointegration p={stat.adf_pvalue:.3f} (need <= {backbone['adf_alpha']})")
+            else:
+                bits.append(f"ADF p={stat.adf_pvalue:.3f} (need <= {backbone['adf_alpha']})")
+            if not (stat.kpss_pvalue >= backbone["kpss_alpha"]):
+                bits.append(f"KPSS p={stat.kpss_pvalue:.3f} (need >= {backbone['kpss_alpha']})")
+            blockers.append("not stationary: " + ", ".join(bits))
+        if not hl_ok:
+            blockers.append("mean-reversion half-life outside the allowed range")
+        diag_fields = dict(
+            z=float(entry_dec.z), z_entry=z_entry_cfg, stationary=bool(stat.passed),
+            adf_p=float(stat.adf_pvalue), kpss_p=float(stat.kpss_pvalue),
+            half_life_ok=bool(hl_ok), n_symbols=len(group.symbols or []),
+            blockers=blockers,
+        )
+        if blockers:
+            order = ("not stationary", "mean-reversion", "|z|", "residual")
+            first = next((b for b in blockers if b.startswith(order[0])), None) or blockers[0]
+            stage = (
+                "not_stationary" if first.startswith("not stationary")
+                else "half_life" if first.startswith("mean-reversion")
+                else "beyond_stop" if "beyond" in first
+                else "waiting_z" if first.startswith("|z|")
+                else "invalid_fit"
+            )
+            self._diag(group, stage, "; ".join(blockers), **diag_fields)
+        else:
+            self._diag(group, "signal", f"entry signal z={entry_dec.z:.2f}, checking gates", **diag_fields)
 
         # Persist the fit only when it can become a trade, or at most every
         # fit_log_interval_sec (was: one row + residual_series JSON every cycle).
@@ -1194,6 +1286,7 @@ class BotEngine:
             clash = self._symbols_in_use(db, trading_mode, group.id) & set(group.symbols or [])
             if clash:
                 log.info("group %s skip entry: XT symbol(s) %s already used by another open trade", group.id, sorted(clash))
+                self._diag(group, "symbol_clash", f"symbols {sorted(clash)} used by another open trade", **diag_fields)
                 return
 
         # Profit-target entry gate (pure sizing, no I/O): skip if a perfect
@@ -1226,6 +1319,12 @@ class BotEngine:
                 target_rate=target_rate,
             )
             if not ok_gate:
+                self._diag(
+                    group, "profit_gate",
+                    f"net edge too small: {gate_det.get('reject_reason')} "
+                    f"(sigma_rel={gate_det.get('sigma_rel')}, needs z>={gate_det.get('z_min')})",
+                    **diag_fields,
+                )
                 log.info(
                     "group %s skip entry (profit gate): z_now=%.3f z_min=%s sigma_rel=%s G=%.4g reason=%s",
                     group.id,
@@ -1238,6 +1337,7 @@ class BotEngine:
                 return
         except Exception as e:
             log.warning("group %s profit gate error (skipping entry, fail-closed): %s", group.id, e)
+            self._diag(group, "gate_error", str(e), **diag_fields)
             return
 
         max_entry_scale = backbone.get("max_entry_scale")
@@ -1264,6 +1364,7 @@ class BotEngine:
                 "group %s skip entry (max_entry_scale): %s",
                 group.id, e,
             )
+            self._diag(group, "scale_cap", str(e), **diag_fields)
             return
 
         legs, notional, bal_msg = await self._fit_notional_to_balance(
@@ -1281,6 +1382,7 @@ class BotEngine:
         if legs is None:
             self._last_error = bal_msg
             self._group_errors[group.id] = bal_msg
+            self._diag(group, "sizing_blocked", bal_msg, **diag_fields)
             log.error("group %s entry blocked: %s", group.id, bal_msg)
             self._start_cooldown(group.id, backbone)
             return
@@ -1304,6 +1406,7 @@ class BotEngine:
             self._last_error = str(e)
             self._group_errors[group.id] = str(e)
             log.error("group %s partial entry (rolled back if possible): %s", group.id, e)
+            self._diag(group, "order_failed", f"partial entry rolled back: {e}", **diag_fields)
             self._start_cooldown(group.id, backbone)
             trade = Trade(
                 group_id=group.id,
@@ -1327,6 +1430,7 @@ class BotEngine:
             self._last_error = str(e)
             self._group_errors[group.id] = str(e)
             log.error("group %s entry order failed: %s", group.id, e)
+            self._diag(group, "order_failed", str(e), **diag_fields)
             self._start_cooldown(group.id, backbone)
             return
 
@@ -1345,6 +1449,7 @@ class BotEngine:
         )
         db.add(trade)
         db.commit()
+        self._diag(group, "entered", f"opened {entry_dec.direction} at z={entry_dec.z:.2f}", **diag_fields)
         log.info(
             "group %s opened %s mode=%s notional=%.4g legs=%s",
             group.id, entry_dec.direction, trading_mode, notional,

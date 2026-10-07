@@ -83,6 +83,7 @@ const API = {
   },
 
   botState() { return this.get("/api/bot/state"); },
+  botDiagnostics() { return this.get("/api/bot/diagnostics"); },
   botStart() { return this.post("/api/bot/start"); },
   botStop() { return this.post("/api/bot/stop"); },
   botMode(mode) { return this.post("/api/bot/mode", { trading_mode: mode }); },
