@@ -1,9 +1,10 @@
 const PerfTableState = {
   rows: [],
   filtered: [],
-  sortKey: "total_pnl",
+  sortKey: "total_net_profit",
   sortDir: "desc",
   filters: {},
+  expanded: new Set(),
 };
 
 function statusLabel(st) {
@@ -72,9 +73,6 @@ function displayTradePnl(t) {
 
 const _DIAG_OK = new Set(["entered", "signal", "position_open"]);
 const _DIAG_WARN = new Set(["waiting_z", "cooldown", "paused", "bot_stopped"]);
-function _esc(x) {
-  return String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
 function diagBadge(d) {
   if (!d || !d.stage) return '<span class="diag-badge diag-none">--</span>';
   const key = "diag.stage." + d.stage;
@@ -136,7 +134,7 @@ function _redrawPerfTable(onRowClick) {
   if (countEl) countEl.textContent = t("perf.count", { shown: sorted.length, total: PerfTableState.rows.length });
   if (!sorted.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="13" class="table-empty">${t(PerfTableState.rows.length ? "perf.empty.filtered" : "perf.empty")}</td>`;
+    tr.innerHTML = `<td colspan="10" class="table-empty">${t(PerfTableState.rows.length ? "perf.empty.filtered" : "perf.empty")}</td>`;
     tbody.appendChild(tr);
   }
   sorted.forEach((r) => {
@@ -150,19 +148,17 @@ function _redrawPerfTable(onRowClick) {
     if (typeof state !== "undefined" && state.selectedGroupId === gid) {
       tr.classList.add("selected-row");
     }
+    const open = PerfTableState.expanded.has(gid);
     tr.innerHTML = `
-      <td>${r.name}</td>
+      <td class="perf-name"><button type="button" class="perf-expand${open ? " open" : ""}" aria-expanded="${open}" title="${t("perf.expand.title")}">&#9656;</button>${_esc(r.name)}</td>
       <td><span class="g-status ${r.status}">${statusLabel(r.status)}</span></td>
       <td>${diagBadge(r.diag)}</td>
-      <td>${r.trade_count}</td>
+      <td>${r.total_trades ?? 0}</td>
       <td>${fmtPct(r.win_rate)}</td>
-      <td class="${pnlClass(r.total_pnl)}">${fmtNum(r.total_pnl)}</td>
-      <td class="${pnlClass(r.avg_pnl)}">${fmtNum(r.avg_pnl)}</td>
-      <td>${fmtNum(r.max_drawdown)}</td>
-      <td>${fmtNum(r.sharpe_ratio, 2)}</td>
-      <td>${fmtNum(r.sortino_ratio, 2)}</td>
-      <td>${r.profit_factor >= 999 ? "∞" : fmtNum(r.profit_factor, 2)}</td>
-      <td>${fmtNum(r.avg_holding_hours, 1)}</td>
+      <td>${fmtPF(r.profit_factor, r.total_trades)}</td>
+      <td class="${pnlClass(r.total_net_profit)}">${fmtNum(r.total_net_profit)}</td>
+      <td class="${pnlClass(r.expected_payoff)}">${fmtNum(r.expected_payoff)}</td>
+      <td>${fmtNum(r.maximal_drawdown)}</td>
       <td class="col-actions">
         <div class="perf-actions">
           <button type="button" class="${toggleCls}" data-id="${gid}" data-status="${r.status}">${toggleLabel}</button>
@@ -172,7 +168,7 @@ function _redrawPerfTable(onRowClick) {
     `;
 
     tr.addEventListener("click", (e) => {
-      if (e.target.closest(".perf-del, .perf-toggle")) return;
+      if (e.target.closest(".perf-del, .perf-toggle, .perf-expand")) return;
       tbody.querySelectorAll("tr.selected-row").forEach((x) => x.classList.remove("selected-row"));
       tr.classList.add("selected-row");
       if (typeof onRowClick === "function") onRowClick(r);
@@ -206,8 +202,74 @@ function _redrawPerfTable(onRowClick) {
     }
 
     tbody.appendChild(tr);
+
+    const extra = document.createElement("tr");
+    extra.className = "perf-extra";
+    extra.hidden = !open;
+    extra.innerHTML = `<td colspan="10">${perfExtraHtml(r)}</td>`;
+    tbody.appendChild(extra);
+
+    const expBtn = tr.querySelector(".perf-expand");
+    expBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const nowOpen = extra.hidden;
+      extra.hidden = !nowOpen;
+      expBtn.classList.toggle("open", nowOpen);
+      expBtn.setAttribute("aria-expanded", String(nowOpen));
+      if (nowOpen) PerfTableState.expanded.add(gid); else PerfTableState.expanded.delete(gid);
+      _syncExpandAll();
+    });
   });
+  _syncExpandAll();
   _updateSortIcons();
+}
+
+function fmtPF(v, trades) {
+  if (!trades) return "--";
+  if (v === null || v === undefined) return "--";
+  return v >= 999 ? "∞" : fmtNum(v, 2);
+}
+
+/** Extra (collapsed-by-default) metrics for one group. */
+function perfExtraHtml(r) {
+  const n = (v) => (v == null ? "--" : String(v));
+  const pct = (a, b) => (b ? " (" + ((100 * a) / b).toFixed(0) + "%)" : "");
+  const withCount = (amt, cnt) => (cnt ? `${fmtNum(amt)} (${cnt})` : "--");
+  const items = [
+    ["perf.m.gross_profit", fmtNum(r.gross_profit), "num-pos"],
+    ["perf.m.gross_loss", fmtNum(r.gross_loss), "num-neg"],
+    ["perf.m.abs_dd", fmtNum(r.absolute_drawdown), ""],
+    ["perf.m.profit_trades", n(r.profit_trades) + pct(r.profit_trades, r.total_trades), ""],
+    ["perf.m.loss_trades", n(r.loss_trades) + pct(r.loss_trades, r.total_trades), ""],
+    ["perf.m.consec_wins", n(r.consecutive_wins), ""],
+    ["perf.m.consec_losses", n(r.consecutive_losses), ""],
+    ["perf.m.consec_profit", withCount(r.max_consec_profit, r.max_consec_profit_count), "num-pos"],
+    ["perf.m.consec_loss", withCount(r.max_consec_loss, r.max_consec_loss_count), "num-neg"],
+    ["perf.m.long", n(r.long_positions) + (r.long_positions ? ` (${t("perf.m.won")} ${pct(r.long_won, r.long_positions).trim().replace(/[()]/g, "")})` : ""), ""],
+    ["perf.m.short", n(r.short_positions) + (r.short_positions ? ` (${t("perf.m.won")} ${pct(r.short_won, r.short_positions).trim().replace(/[()]/g, "")})` : ""), ""],
+  ];
+  return `<div class="perf-extra-grid">${items
+    .map(([k, v, cls]) => `<div class="pe-item"><span class="pe-label">${t(k)}</span><span class="pe-val ${cls}">${v}</span></div>`)
+    .join("")}</div>`;
+}
+
+function _syncExpandAll() {
+  const btn = document.getElementById("perf-expand-all");
+  if (!btn) return;
+  const total = PerfTableState.filtered.length;
+  const allOpen = total > 0 && PerfTableState.filtered.every((r) => PerfTableState.expanded.has(r.group_id != null ? r.group_id : r.id));
+  btn.textContent = allOpen ? t("perf.collapse.all") : t("perf.expand.all");
+  btn.dataset.state = allOpen ? "open" : "closed";
+}
+
+function togglePerfExpandAll(onRowClick) {
+  const btn = document.getElementById("perf-expand-all");
+  const open = btn && btn.dataset.state !== "open";
+  PerfTableState.filtered.forEach((r) => {
+    const id = r.group_id != null ? r.group_id : r.id;
+    if (open) PerfTableState.expanded.add(id); else PerfTableState.expanded.delete(id);
+  });
+  _redrawPerfTable(onRowClick);
 }
 
 function _updateSortIcons() {

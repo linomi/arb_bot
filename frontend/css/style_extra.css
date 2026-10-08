@@ -56,3 +56,19 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 .diag-warn{background:rgba(190,150,70,.2);color:var(--text-hi)}
 .diag-bad{background:rgba(180,90,80,.18);color:var(--short)}
 .diag-none{color:var(--text-lo)}
+
+/* performance table: expandable extra metrics + radar */
+.perf-expand{background:none;border:0;color:var(--text-mid);cursor:pointer;font-size:12px;padding:0 6px 0 0;transition:transform .15s}
+.perf-expand.open{transform:rotate(90deg);color:var(--text-hi)}
+html[dir="rtl"] .perf-expand{padding:0 0 0 6px;transform:scaleX(-1)}
+html[dir="rtl"] .perf-expand.open{transform:scaleX(-1) rotate(90deg)}
+#perf-table tr.perf-extra[hidden]{display:none}
+#perf-table tr.perf-extra td{background:var(--bg-2, rgba(255,255,255,.02));padding:10px 14px;border-top:0}
+.perf-extra-grid{position:sticky;inset-inline-start:0;width:min(100%,calc(100vw - 64px));box-sizing:border-box;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:6px 18px}
+.pe-item{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;font-family:var(--font-mono)}
+.pe-label{color:var(--text-mid)}
+.pe-val{color:var(--text-hi);white-space:nowrap}
+.perf-radar-wrap{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.perf-radar-title{font-size:12px;font-weight:600;margin-bottom:4px}
+.perf-radar-box{position:relative;height:230px;width:100%}
+.perf-radar-hint{font-size:10.5px;color:var(--text-lo);margin-top:4px;line-height:1.5}

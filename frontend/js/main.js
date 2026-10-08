@@ -340,16 +340,23 @@ async function loadPerfTable() {
 async function showGroupDetail(row) {
   const detail = document.getElementById("group-detail");
   if (!detail) return;
+  if (typeof destroyRadarChart === "function") destroyRadarChart();
   detail.innerHTML = `
-    <div class="detail-title">${row.name}</div>
-    <div class="detail-sub">${(row.symbols || []).join(" / ")}</div>
+    <div class="detail-title">${_esc(row.name)}</div>
+    <div class="detail-sub">${(row.symbols || []).map(_esc).join(" / ")}</div>
     <div class="detail-metrics">
-      ${t("perf.detail.trades")}: <b>${row.trade_count}</b><br/>
-      ${t("perf.detail.win_rate")}: <b>${fmtPct(row.win_rate)}</b><br/>
-      ${t("perf.detail.total_pnl")}: <b>${fmtNum(row.total_pnl)}</b><br/>
-      ${t("perf.detail.sharpe")}: <b>${fmtNum(row.sharpe_ratio, 2)}</b>
+      ${t("perf.th.trades")}: <b>${row.total_trades ?? 0}</b><br/>
+      ${t("perf.th.win_rate")}: <b>${fmtPct(row.win_rate)}</b><br/>
+      ${t("perf.th.net_profit")}: <b>${fmtNum(row.total_net_profit)}</b><br/>
+      ${t("perf.th.profit_factor")}: <b>${fmtPF(row.profit_factor, row.total_trades)}</b>
+    </div>
+    <div class="perf-radar-wrap">
+      <div class="perf-radar-title">${t("perf.radar.title")}</div>
+      <div class="perf-radar-box"><canvas id="perf-radar"></canvas></div>
+      <div class="perf-radar-hint">${t("perf.radar.hint")}</div>
     </div>
   `;
+  if (typeof renderRadarChart === "function") renderRadarChart("perf-radar", row);
   if (row.group_id) {
     selectGroup(row.group_id, true);
   }
@@ -363,22 +370,22 @@ function _collectPerfFiltersFromUI() {
   if (statusEl && statusEl.value) setPerfFilter("status", "=", statusEl.value);
   const pnlVal = document.getElementById("filter-pnl-val");
   if (pnlVal && pnlVal.value !== "") {
-    setPerfFilter("total_pnl", document.getElementById("filter-pnl-op").value, pnlVal.value);
+    setPerfFilter("total_net_profit", document.getElementById("filter-pnl-op").value, pnlVal.value);
   }
-  const sharpeVal = document.getElementById("filter-sharpe-val");
-  if (sharpeVal && sharpeVal.value !== "") {
-    setPerfFilter("sharpe_ratio", document.getElementById("filter-sharpe-op").value, sharpeVal.value);
+  const pfVal = document.getElementById("filter-pf-val");
+  if (pfVal && pfVal.value !== "") {
+    setPerfFilter("profit_factor", document.getElementById("filter-pf-op").value, pfVal.value);
   }
   const tradesVal = document.getElementById("filter-trades-val");
   if (tradesVal && tradesVal.value !== "") {
-    setPerfFilter("trade_count", document.getElementById("filter-trades-op").value, tradesVal.value);
+    setPerfFilter("total_trades", document.getElementById("filter-trades-op").value, tradesVal.value);
   }
 }
 
 // Filters apply as you type / change (no Apply button) and survive the 15 s refresh.
 const _PERF_FILTER_IDS = [
   "filter-search", "filter-status", "filter-pnl-op", "filter-pnl-val",
-  "filter-sharpe-op", "filter-sharpe-val", "filter-trades-op", "filter-trades-val",
+  "filter-pf-op", "filter-pf-val", "filter-trades-op", "filter-trades-val",
 ];
 _PERF_FILTER_IDS.forEach((id) => {
   const el = document.getElementById(id);
@@ -398,6 +405,9 @@ if (clearBtn) clearBtn.addEventListener("click", () => {
   clearPerfFilters();
   applyPerfFiltersAndRedraw(showGroupDetail);
 });
+
+const expandAllBtn = document.getElementById("perf-expand-all");
+if (expandAllBtn) expandAllBtn.addEventListener("click", () => togglePerfExpandAll(showGroupDetail));
 
 // -------------------- Initialization tab --------------------
 document.querySelectorAll(".method-btn").forEach((btn) => {

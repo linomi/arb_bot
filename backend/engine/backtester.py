@@ -210,6 +210,6 @@ def backtest_group(
             close_reason="open_mtm", pnl=pnl,
         ))
 
-    closed = [{"pnl": t.pnl, "entry_time": t.entry_time, "close_time": t.close_time} for t in trades]
+    closed = [{"pnl": t.pnl, "entry_time": t.entry_time, "close_time": t.close_time, "direction": t.direction} for t in trades]
     perf = compute_group_performance(closed)
     return BacktestResult(trades=trades, performance=perf)

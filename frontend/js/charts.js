@@ -536,38 +536,50 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
   _syncResidualGlobal();
 }
 
+function destroyRadarChart() {
+  radarChart = _destroyChart(radarChart);
+  _syncRadarGlobal();
+}
+
+/**
+ * Radar of one group's trade report. Every axis is scale-free and 0..1 (outer edge = better),
+ * so groups with different trade sizes are comparable. Raw values show in the tooltip.
+ */
+function radarAxes(m) {
+  m = m || {};
+  const n = Number(m.total_trades) || 0;
+  const gp = Number(m.gross_profit) || 0;
+  const gl = Math.abs(Number(m.gross_loss) || 0);
+  const turnover = gp + gl;
+  const net = Number(m.total_net_profit) || 0;
+  const pf = Number(m.profit_factor) || 0;
+  const dd = Number(m.maximal_drawdown) || 0;
+  const longs = Number(m.long_positions) || 0;
+  const shorts = Number(m.short_positions) || 0;
+  const hasData = n > 0;
+  return [
+    { label: t("perf.radar.win_rate"), v: _finite01(m.win_rate), raw: fmtPct(m.win_rate) },
+    { label: t("perf.radar.profit_factor"), v: _finite01(Math.min(pf, 3) / 3), raw: fmtPF(m.profit_factor, n) },
+    { label: t("perf.radar.net_edge"), v: turnover > 0 ? _finite01((net / turnover + 1) / 2) : 0, raw: fmtNum(net) },
+    { label: t("perf.radar.drawdown"), v: hasData ? (turnover > 0 ? _finite01(1 - dd / turnover) : 1) : 0, raw: fmtNum(dd) },
+    { label: t("perf.radar.streaks"), v: hasData ? _finite01(1 - (Number(m.consecutive_losses) || 0) / n) : 0, raw: String(Number(m.consecutive_losses) || 0) },
+    { label: t("perf.radar.balance"), v: hasData ? _finite01(1 - Math.abs(longs - shorts) / n) : 0, raw: `${longs}L / ${shorts}S` },
+  ];
+}
+
 function renderRadarChart(canvasId, metrics) {
   const canvas = document.getElementById(canvasId);
   if (!canvas || typeof Chart === "undefined") return;
-  canvas.style.width = "100%";
-  canvas.style.height = "220px";
-  const m = metrics || {};
-  const norm = {
-    "Win Rate": _finite01(m.win_rate),
-    Sharpe: _squash(m.sharpe_ratio),
-    Sortino: _squash(m.sortino_ratio),
-    "Profit Factor": _squash((Number(m.profit_factor) || 0) / 3),
-    "Low Drawdown": Number(m.max_drawdown) > 0
-      ? _squash(1 / Number(m.max_drawdown))
-      : Number(m.trade_count) > 0
-      ? 1
-      : 0.15,
-    "Trade Freq": _squash((Number(m.trade_count) || 0) / 20),
-  };
-  if (Object.values(norm).every((v) => !v)) {
-    Object.keys(norm).forEach((k) => {
-      norm[k] = 0.12;
-    });
-  }
+  const axes = radarAxes(metrics);
   radarChart = _destroyChart(radarChart);
   radarChart = new Chart(canvas.getContext("2d"), {
     type: "radar",
     data: {
-      labels: Object.keys(norm),
+      labels: axes.map((a) => a.label),
       datasets: [
         {
-          label: "Performance",
-          data: Object.values(norm),
+          label: t("perf.radar.title"),
+          data: axes.map((a) => a.v),
           backgroundColor: "rgba(196,120,58,0.25)",
           borderColor: CHART_COLORS.residual,
           borderWidth: 2,
@@ -580,19 +592,28 @@ function renderRadarChart(canvasId, metrics) {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
-      plugins: { legend: { display: false } },
+      layout: { padding: { left: 18, right: 18, top: 4, bottom: 4 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${axes[ctx.dataIndex].raw}  (${Math.round(ctx.parsed.r * 100)}%)`,
+          },
+        },
+      },
       scales: {
         r: {
           angleLines: { color: CHART_COLORS.grid },
           grid: { color: CHART_COLORS.grid },
-          pointLabels: { color: CHART_COLORS.text, font: { size: 10 } },
-          ticks: { display: false, maxTicksLimit: 3 },
+          pointLabels: { color: CHART_COLORS.text, font: { size: 10 }, padding: 4 },
+          ticks: { display: false, stepSize: 0.25 },
           min: 0,
           max: 1,
         },
       },
     },
   });
+  _syncRadarGlobal();
 }
 
 function _finite01(x) {
@@ -612,6 +633,7 @@ function _squash(x) {
 if (typeof window !== "undefined") {
   window.renderResidualChart = renderResidualChart;
   window.renderRadarChart = renderRadarChart;
+  window.destroyRadarChart = destroyRadarChart;
   window.residualChart = residualChart;
   window.radarChart = radarChart;
 }

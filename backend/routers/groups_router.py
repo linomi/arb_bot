@@ -171,7 +171,7 @@ def all_groups_performance(
             q = q.filter_by(mode=resolved)
         closed = q.all()
         closed_dicts = [
-            {"pnl": _trade_pnl(t), "entry_time": t.entry_time, "close_time": t.close_time}
+            {"pnl": _trade_pnl(t), "entry_time": t.entry_time, "close_time": t.close_time, "direction": getattr(t, "direction", None)}
             for t in closed if _trade_pnl(t) is not None
         ]
         perf = compute_group_performance(closed_dicts).as_dict()
@@ -438,7 +438,7 @@ def group_performance(
         q = q.filter_by(mode=resolved)
     closed = q.all()
     closed_dicts = [
-        {"pnl": _trade_pnl(t), "entry_time": t.entry_time, "close_time": t.close_time}
+        {"pnl": _trade_pnl(t), "entry_time": t.entry_time, "close_time": t.close_time, "direction": getattr(t, "direction", None)}
         for t in closed if _trade_pnl(t) is not None
     ]
     return compute_group_performance(closed_dicts).as_dict()
