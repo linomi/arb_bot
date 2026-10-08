@@ -11,7 +11,7 @@ from backend import config_service
 from backend.models import Group, OLSFit, Trade
 from backend.schemas import GroupStatusUpdate
 from backend.strategy.metrics import compute_group_performance
-from backend.strategy.ols import fit_ols
+from backend.strategy.ols import fit_ols, residual_from_frozen_fit
 from backend.strategy.stats_tests import test_stationarity
 from backend.exchange import factory
 from backend.exchange.paper import PaperExchangeClient
@@ -257,6 +257,7 @@ async def live_fit(group_id: int, persist: bool = False, db: Session = Depends(g
         int(time.time() // sampling_time),
         tuple(g.symbols or ()), g.dependent_symbol,
         int(backbone.get("window_size", 100)),
+        int(backbone.get("chart_history_bars", 500) or 0),
         str(backbone.get("stationarity_method", "engle_granger")),
         float(backbone.get("adf_alpha", 0.05)), float(backbone.get("kpss_alpha", 0.05)),
     )
@@ -270,6 +271,17 @@ async def live_fit(group_id: int, persist: bool = False, db: Session = Depends(g
         return {**payload, "cached": False}
 
 
+_MAX_CHART_BARS = 3000
+
+
+def _frozen_residual_series(price_df, dependent: str, betas: dict, intercept: float) -> list:
+    """Residual of EVERY bar in price_df under one fixed set of betas/intercept."""
+    cols = [c for c in betas if c in price_df.columns]
+    x = sum(float(betas[c]) * price_df[c].to_numpy(dtype=float) for c in cols)
+    resid = price_df[dependent].to_numpy(dtype=float) - (float(intercept) + x)
+    return [[ts.isoformat(), float(v)] for ts, v in zip(price_df.index, resid)]
+
+
 async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
     g = db.get(Group, group_id)
     if not g:
@@ -281,7 +293,8 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
     window_size = int(backbone.get("window_size", 100))
     sampling_time = int(backbone.get("sampling_time", 60))
     resolution = seconds_to_resolution(sampling_time)
-    bars_needed = window_size + 5
+    history = min(_MAX_CHART_BARS, int(backbone.get("chart_history_bars", 500) or 0))
+    bars_needed = max(window_size + 5, history)
 
     md = factory.build_market_data_client(db)
     try:
@@ -298,6 +311,7 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
 
     effective_window = min(window_size, len(price_df))
     window = price_df.iloc[-effective_window:]
+    shown = price_df.iloc[-max(effective_window, history):] if history else window
     dependent = g.dependent_symbol if g.dependent_symbol in window.columns else list(window.columns)[0]
     price_matrix = {s: window[s].to_numpy() for s in window.columns}
 
@@ -316,6 +330,12 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
     )
 
     residual_series = [[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)]
+    # Same betas applied to the whole shown range, so the chart can show more history
+    # than the OLS window without changing the fit itself.
+    residual_full = (
+        _frozen_residual_series(shown, dependent, fit_res.betas, fit_res.intercept)
+        if len(shown) > len(window) else residual_series
+    )
     fitted_at = dt.datetime.utcnow()
 
     def _py(x):
@@ -349,6 +369,7 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
         "kpss_pvalue": _py(stat.kpss_pvalue),
         "passed": bool(stat.passed),
         "residual_series": residual_series,
+        "residual_series_full": residual_full,
         "resolution": resolution,
         "bars_used": int(effective_window),
         "sampling_time": int(sampling_time),
@@ -407,6 +428,41 @@ def get_fit(group_id: int, fit_id: int, db: Session = Depends(get_db)):
     if not f:
         raise HTTPException(404, "fit not found for this group")
     return _fit_to_dict(f)
+
+
+@router.get("/{group_id}/fits/{fit_id}/extended")
+async def get_fit_extended(group_id: int, fit_id: int, db: Session = Depends(get_db)):
+    """A stored fit's betas applied to the full chart range (not just the fit's own window)."""
+    f = db.query(OLSFit).filter_by(id=fit_id, group_id=group_id).first()
+    if not f:
+        raise HTTPException(404, "fit not found for this group")
+    g = db.get(Group, group_id)
+    out = _fit_to_dict(f)
+    if not g or not f.betas:
+        return out
+    backbone = config_service.get_section(db, "backbone")
+    sampling_time = max(1, int(backbone.get("sampling_time", 60)))
+    resolution = seconds_to_resolution(sampling_time)
+    history = min(_MAX_CHART_BARS, int(backbone.get("chart_history_bars", 500) or 0))
+    # Cover everything since the fit's window began, plus the same history before "now".
+    since_bars = 0
+    if f.window_start:
+        since_bars = int((dt.datetime.utcnow() - f.window_start).total_seconds() // sampling_time) + 5
+    bars = min(_MAX_CHART_BARS, max(history, since_bars, int(backbone.get("window_size", 100)) + 5))
+    symbols = list(g.symbols or [])
+    dependent = g.dependent_symbol if g.dependent_symbol in symbols else symbols[0]
+    md = factory.build_market_data_client(db)
+    try:
+        price_df = await fetch_price_df(md, symbols, resolution, bars)
+    finally:
+        await md.aclose()
+    if price_df.empty or dependent not in price_df.columns:
+        return out
+    out["residual_series_full"] = _frozen_residual_series(price_df, dependent, f.betas, f.intercept)
+    out["dependent_symbol"] = dependent
+    out["resolution"] = resolution
+    out["extended_bars"] = int(len(price_df))
+    return out
 
 
 @router.get("/{group_id}/trades")

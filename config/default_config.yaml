@@ -5,6 +5,7 @@
 
 backbone:
   window_size: 100          # bars used to fit the OLS
+  chart_history_bars: 500   # bars shown on the residual chart (betas still come from window_size)
   sampling_time: 60         # seconds between bot cycles
   adf_alpha: 0.05           # ADF p-value must be <= this
   kpss_alpha: 0.05          # KPSS p-value must be >= this

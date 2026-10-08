@@ -27,6 +27,8 @@ const CHART_COLORS = {
   stopMark: "#b85c4a",
 };
 
+const RC_OUTSIDE_COLOR = "rgba(217,148,90,0.5)";
+
 const RC_MARKER_STYLE = {
   entry: { shape: "circle", color: CHART_COLORS.entryMark, glyph: "\u25CF", label: "Entry", size: 1.4 },
   close: { shape: "square", color: CHART_COLORS.closeMark, glyph: "\u25A0", label: "Close", size: 1.4 },
@@ -129,12 +131,14 @@ function _rcBuildMarkers(pts, trades) {
     if (!isFinite(tSec) || !isFinite(price)) return;
     const bar = pts[_rcNearestIndex(pts, tSec)];
     if (!bar || Math.abs(bar.time - tSec) > tol) return;
+    // Draw on the line itself: under a different set of betas the trade's recorded residual
+    // would float off it. The recorded value stays in `info.price`.
     const style = RC_MARKER_STYLE[kind];
     const id = `${kind}:${trade.id}`;
     markers.push({
       time: bar.time,
       position: "atPriceMiddle",
-      price,
+      price: bar.value,
       shape: style.shape,
       color: style.color,
       size: style.size,
@@ -196,6 +200,19 @@ function _rcLevelSpecs(mean, std, zEntry, zClose, zStop, narrow) {
   return specs;
 }
 
+/** Fit all bars, leaving room on the right so the level titles don't cover the latest bars. */
+function _rcFit(rc) {
+  const ts = rc.chart.timeScale();
+  const n = rc.data ? rc.data.pts.length : 0;
+  const w = rc.container.clientWidth;
+  if (!n || !(w > 0)) { try { ts.fitContent(); } catch (e) {} return; }
+  const labelPx = rc.narrow ? 0 : RC_LABEL_PX;
+  const pad = labelPx > 0 && w > labelPx * 2 ? (n * labelPx) / (w - labelPx) : 0;
+  try { ts.setVisibleLogicalRange({ from: -0.5, to: n - 1 + pad }); } catch (e) { ts.fitContent(); }
+}
+
+const RC_LABEL_PX = 104;
+
 function _rcIsNarrow(rc) {
   return rc.container.clientWidth > 0 && rc.container.clientWidth < 560;
 }
@@ -221,6 +238,9 @@ function _rcRenderLegend(rc, d) {
   const lineKey = (color, label, cls) =>
     `<span class="rc-key${cls ? " " + cls : ""}"><i class="rc-line" style="background:${color}"></i>${_rcEsc(label)}</span>`;
   const parts = [lineKey(CHART_COLORS.residual, "Residual")];
+  if (d.winStart != null && d.pts[0].time < d.winStart) {
+    parts.push(lineKey(RC_OUTSIDE_COLOR, t("plot.legend.outside"), "rc-key-level"));
+  }
   if (d.std > 0) {
     parts.push(lineKey(CHART_COLORS.entryLine, `Entry \u00B1${d.zEntry}\u03C3`, "rc-key-level"));
     parts.push(lineKey(CHART_COLORS.closeLine, `Close \u00B1${d.zClose}\u03C3`, "rc-key-level"));
@@ -241,7 +261,7 @@ function _rcRenderLegend(rc, d) {
   if (btn) {
     btn.addEventListener("click", () => {
       rc.userMoved = false;
-      try { rc.chart.timeScale().fitContent(); } catch (e) {}
+      _rcFit(rc);
     });
   }
 }
@@ -389,7 +409,7 @@ function _rcCreate(el, key) {
   chart.subscribeClick(rc._onClick);
   rc._onSize = () => {
     if (rc.hasData && _rcIsNarrow(rc) !== rc.narrow) _rcBuildLines(rc);
-    if (!rc.userMoved && rc.hasData) chart.timeScale().fitContent();
+    if (!rc.userMoved && rc.hasData) _rcFit(rc);
   };
   chart.timeScale().subscribeSizeChange(rc._onSize);
 
@@ -456,9 +476,9 @@ function _rcApply(rc, d) {
       from += shift;
       to += shift;
     }
-    try { ts.setVisibleRange({ from, to }); } catch (e) { ts.fitContent(); }
+    try { ts.setVisibleRange({ from, to }); } catch (e) { _rcFit(rc); }
   } else {
-    ts.fitContent();
+    _rcFit(rc);
   }
   rc.hasData = true;
   rc.lastTime = newLast;
@@ -481,7 +501,7 @@ function _rcDestroy() {
 function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) {
   let el = document.getElementById(canvasId);
   if (!el) return;
-  const pts = _rcBuildPoints(fit && fit.residual_series);
+  const pts = _rcBuildPoints(fit && (fit.residual_series_full || fit.residual_series));
   if (!pts.length) {
     residualChart = _rcDestroy();
     return;
@@ -503,8 +523,14 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
   const zEntry = Number(cfg.z_entry) || 2;
   const zClose = Number(cfg.z_close) || 0.5;
   const zStop = Number(cfg.z_stop_loss) || 3.5;
+  // Bars before the fit window are drawn dimmer: the betas were estimated on the bars after it.
+  const winStart = fit.window_start ? _rcTimeSec(fit.window_start) : NaN;
+  if (isFinite(winStart) && pts[0].time < winStart) {
+    pts.forEach((p) => { if (p.time < winStart) p.color = RC_OUTSIDE_COLOR; });
+  }
   const markerInfo = _rcBuildMarkers(pts, trades);
   const d = {
+    winStart: isFinite(winStart) ? winStart : null,
     pts, mean, std, zEntry, zClose, zStop, markerInfo,
     decimals: _rcDecimals(std),
     spacing: _rcBarSpacing(pts),

@@ -235,6 +235,30 @@ class XTClient(ExchangeClient):
             pass
         return "1h"
 
+    _OHLCV_PAGE = 500
+
+    async def _fetch_ohlcv_paged(self, unified: str, tf: str, tf_sec: int, since: int, limit: int):
+        """One request for <= 500 bars (unchanged behaviour); longer histories are paged forward."""
+        if limit <= self._OHLCV_PAGE:
+            return await self._ex.fetch_ohlcv(unified, timeframe=tf, since=since, limit=limit)
+        rows: list = []
+        seen: set = set()
+        cursor = since
+        now_ms = int(time.time() * 1000)
+        for _ in range(limit // self._OHLCV_PAGE + 3):
+            page = await self._ex.fetch_ohlcv(unified, timeframe=tf, since=cursor, limit=self._OHLCV_PAGE)
+            fresh = [r for r in (page or []) if r and r[0] not in seen]
+            if not fresh:
+                break
+            for r in fresh:
+                seen.add(r[0])
+            rows.extend(fresh)
+            cursor = int(max(r[0] for r in fresh)) + tf_sec * 1000
+            if cursor >= now_ms or len(rows) >= limit:
+                break
+        rows.sort(key=lambda r: r[0])
+        return rows[-limit:]
+
     async def get_ohlc(self, symbol: str, resolution: str, bars: int) -> dict:
         await self._ensure_markets()
         unified = self._normalize_symbol(symbol)
@@ -245,7 +269,7 @@ class XTClient(ExchangeClient):
         limit = max(1, int(bars))
         since = int(time.time() * 1000) - limit * tf_sec * 1000
 
-        ohlcv = await self._ex.fetch_ohlcv(unified, timeframe=tf, since=since, limit=limit)
+        ohlcv = await self._fetch_ohlcv_paged(unified, tf, tf_sec, since, limit)
         out: dict = {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []}
         for row in ohlcv or []:
             # ccxt: [timestamp_ms, open, high, low, close, volume]

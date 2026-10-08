@@ -49,6 +49,7 @@ const API = {
   listFits(id) { return this.get(`/api/groups/${id}/fits`); },
   latestFit(id) { return this.get(`/api/groups/${id}/fits/latest`); },
   getFit(groupId, fitId) { return this.get(`/api/groups/${groupId}/fits/${fitId}`); },
+  getFitExtended(groupId, fitId) { return this.get(`/api/groups/${groupId}/fits/${fitId}/extended`); },
   liveFit(id) { return this.get(`/api/groups/${id}/live-fit?persist=false`); },
   listTrades(id, mode) {
     const q = mode ? `?mode=${encodeURIComponent(mode)}` : "";

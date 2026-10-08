@@ -196,7 +196,12 @@
     }
     let fit;
     try {
-      fit = await API.getFit(groupId, trade.ols_fit_id);
+      // Same full-range chart, but with the betas this trade was entered with.
+      try {
+        fit = await API.getFitExtended(groupId, trade.ols_fit_id);
+      } catch (e0) {
+        fit = await API.getFit(groupId, trade.ols_fit_id);
+      }
     } catch (e) {
       if (meta) {
         meta.innerHTML = t("plot.trade.fit.missing", { id: _escHtml(trade.id), error: _escHtml(e.message || e) }) + back;

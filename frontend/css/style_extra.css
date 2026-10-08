@@ -72,3 +72,17 @@ html[dir="rtl"] .perf-expand.open{transform:scaleX(-1) rotate(90deg)}
 .perf-radar-title{font-size:12px;font-weight:600;margin-bottom:4px}
 .perf-radar-box{position:relative;height:230px;width:100%}
 .perf-radar-hint{font-size:10.5px;color:var(--text-lo);margin-top:4px;line-height:1.5}
+
+/* backbone config: basic fields + one collapsible advanced block */
+.param-form .form-group-title{grid-column:1/-1;font-size:12.5px;font-weight:600;color:var(--text-hi);letter-spacing:.02em}
+.param-form .adv-details{grid-column:1/-1;margin-top:10px;border:1px solid var(--line);border-radius:6px;background:var(--bg-2)}
+.param-form .adv-details>summary{cursor:pointer;list-style:none;display:flex;align-items:baseline;gap:10px;padding:10px 14px;font-size:12.5px;font-weight:600;color:var(--text-hi);user-select:none}
+.param-form .adv-details>summary::-webkit-details-marker{display:none}
+.param-form .adv-details>summary::before{content:"\25B8";color:var(--text-mid);transition:transform .15s;display:inline-block}
+.param-form .adv-details[open]>summary::before{transform:rotate(90deg)}
+html[dir="rtl"] .param-form .adv-details>summary::before{transform:scaleX(-1)}
+html[dir="rtl"] .param-form .adv-details[open]>summary::before{transform:scaleX(-1) rotate(90deg)}
+.param-form .adv-sub{font-weight:400;font-size:11px;color:var(--text-lo)}
+.param-form .adv-details[open]>summary{border-bottom:1px solid var(--line-soft)}
+.param-form .adv-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px}
+@media (max-width:700px){.param-form .adv-grid{grid-template-columns:1fr}}

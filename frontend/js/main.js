@@ -63,19 +63,30 @@ function FIELD_HINTS() {
     max_total_gross_notional: t("hint.max_total_gross_notional"),
     data_staleness_mult: t("hint.data_staleness_mult"),
     max_entry_scale: t("hint.max_entry_scale"),
+    chart_history_bars: t("hint.chart_history_bars"),
   };
 }
 
-// Section layout for the (long) backbone form. Keys not listed fall into "other".
-const BACKBONE_SECTIONS = [
-  ["signal", ["window_size", "sampling_time", "z_entry", "z_close", "z_stop_loss", "max_holding_hours"]],
-  ["stats", ["stationarity_method", "adf_alpha", "kpss_alpha", "half_life_max_fraction"]],
-  ["costs", ["fee_rate", "slippage_rate", "target_profit_rate", "funding_rate_estimate", "expected_holding_funding_intervals"]],
-  ["sizing", ["trade_notional", "max_entry_scale", "max_open_trades", "max_total_gross_notional",
-              "liquidation_proximity_fraction", "entry_retry_cooldown_sec", "data_staleness_mult"]],
-  ["xt", ["xt_leverage", "xt_margin_mode"]],
-  ["init_opts", ["try_all_dependents", "fit_log_interval_sec"]],
+// Backbone form layout. BASIC is always visible; ADVANCED sits in one collapsible block.
+// Keys not listed here land in "other" (advanced), so new config keys never disappear.
+const BACKBONE_BASIC = [
+  ["signal", ["window_size", "sampling_time", "z_entry", "z_close", "z_stop_loss"]],
+  ["stats", ["stationarity_method"]],
+  ["costs", ["trade_notional", "fee_rate", "slippage_rate", "target_profit_rate"]],
 ];
+const BACKBONE_ADVANCED = [
+  ["stats_adv", ["adf_alpha", "kpss_alpha", "half_life_max_fraction"]],
+  ["risk", ["max_holding_hours", "max_entry_scale", "max_open_trades", "max_total_gross_notional",
+            "liquidation_proximity_fraction", "entry_retry_cooldown_sec", "data_staleness_mult"]],
+  ["funding", ["funding_rate_estimate", "expected_holding_funding_intervals"]],
+  ["xt", ["xt_leverage", "xt_margin_mode"]],
+  ["display", ["chart_history_bars", "fit_log_interval_sec", "try_all_dependents"]],
+];
+// Text settings with a fixed set of values render as a dropdown: key -> [[value, i18n key], ...]
+const SELECT_FIELDS = {
+  stationarity_method: [["engle_granger", "opt.engle_granger"], ["adf_kpss", "opt.adf_kpss"]],
+  xt_margin_mode: [["isolated", "opt.isolated"], ["cross", "opt.cross"]],
+};
 // Keys never shown as a generic field (they have their own control).
 const HIDDEN_FORM_KEYS = { "init-form": ["method"] };
 
@@ -91,7 +102,13 @@ function renderParamForm(formEl, data) {
     label.dataset.type = isNumber ? "number" : "string";
     label.innerHTML = `${_prettyLabel(key)}`;
     let input;
-    if (typeof value === "boolean") {
+    if (SELECT_FIELDS[key]) {
+      input = document.createElement("select");
+      const opts = SELECT_FIELDS[key].slice();
+      if (!opts.some(([v]) => v === String(value))) opts.push([String(value), null]); // keep unknown saved value
+      input.innerHTML = opts.map(([v, k]) => `<option value="${v}">${k ? t(k) : v}</option>`).join("");
+      input.value = String(value);
+    } else if (typeof value === "boolean") {
       input = document.createElement("select");
       input.innerHTML = `<option value="true">${t("bool.true")}</option><option value="false">${t("bool.false")}</option>`;
       input.value = String(value);
@@ -117,17 +134,41 @@ function renderParamForm(formEl, data) {
   if (formEl.id === "backbone-form") {
     const byKey = Object.fromEntries(entries);
     const used = new Set();
-    const addSection = (sec, keys) => {
+    const addSection = (host, sec, keys) => {
       const present = keys.filter((k) => k in byKey);
       if (!present.length) return;
       const h = document.createElement("div");
       h.className = "form-section";
       h.textContent = t("form.sec." + sec);
-      formEl.appendChild(h);
-      present.forEach((k) => { used.add(k); formEl.appendChild(buildField(k, byKey[k])); });
+      host.appendChild(h);
+      present.forEach((k) => { used.add(k); host.appendChild(buildField(k, byKey[k])); });
     };
-    BACKBONE_SECTIONS.forEach(([sec, keys]) => addSection(sec, keys));
-    addSection("other", entries.map(([k]) => k).filter((k) => !used.has(k)));
+    const title = (txt, cls) => {
+      const el = document.createElement("div");
+      el.className = cls;
+      el.textContent = txt;
+      return el;
+    };
+    formEl.appendChild(title(t("form.sec.basic"), "form-group-title"));
+    BACKBONE_BASIC.forEach(([sec, keys]) => addSection(formEl, sec, keys));
+    BACKBONE_BASIC.forEach(([, keys]) => keys.forEach((k) => used.add(k)));
+
+    const adv = document.createElement("details");
+    adv.className = "adv-details";
+    const sum = document.createElement("summary");
+    sum.innerHTML = `<span>${t("form.sec.advanced")}</span><span class="adv-sub">${t("form.sec.advanced.sub")}</span>`;
+    adv.appendChild(sum);
+    const grid = document.createElement("div");
+    grid.className = "adv-grid";
+    adv.appendChild(grid);
+    BACKBONE_ADVANCED.forEach(([sec, keys]) => addSection(grid, sec, keys));
+    BACKBONE_ADVANCED.forEach(([, keys]) => keys.forEach((k) => used.add(k)));
+    addSection(grid, "other", entries.map(([k]) => k).filter((k) => !used.has(k)));
+    try { adv.open = localStorage.getItem("arb_adv_open") === "1"; } catch (e) {}
+    adv.addEventListener("toggle", () => {
+      try { localStorage.setItem("arb_adv_open", adv.open ? "1" : "0"); } catch (e) {}
+    });
+    formEl.appendChild(adv);
     return;
   }
   entries.forEach(([key, value]) => formEl.appendChild(buildField(key, value)));

@@ -74,6 +74,9 @@ def _validate_backbone(data: dict):
     ws = int(data.get("window_size", 100))
     if ws < 30:
         raise ValueError("window_size must be >= 30")
+    chb = int(data.get("chart_history_bars", 500) or 0)
+    if chb < 0 or chb > 3000:
+        raise ValueError("chart_history_bars must be between 0 and 3000")
     st = int(data.get("sampling_time", 60))
     if st < 1:
         raise ValueError("sampling_time must be >= 1")
