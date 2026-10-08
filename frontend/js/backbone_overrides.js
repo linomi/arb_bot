@@ -133,12 +133,18 @@
         _showFitForTrade(groupId, trade, trades);
       });
 
-      const modeLabel = (trades && trades[0] && trades[0].mode) || state.tradingMode || "";
+      // The bot's current mode is what matters here; a past trade's mode can be stale
+      // and with no trades there is nothing to read it from.
+      let modeLabel = state.tradingMode || "";
+      if (!modeLabel) {
+        try { modeLabel = (await API.botState()).trading_mode || ""; state.tradingMode = modeLabel; } catch (e) {}
+      }
+      if (!modeLabel) modeLabel = (trades && trades[0] && trades[0].mode) || "";
       const bars = fit.bars_used != null ? fit.bars_used : "?";
       const res = fit.resolution || "?";
       document.getElementById("plot-meta").innerHTML = t("plot.meta.live.named", {
         name: gname,
-        mode: modeLabel || "mode?",
+        mode: modeLabel ? t("mode." + modeLabel) !== "mode." + modeLabel ? t("mode." + modeLabel) : modeLabel : "--",
         adf: fmtNum(fit.adf_pvalue, 3),
         kpss: fmtNum(fit.kpss_pvalue, 3),
         flag: `<span class="${fit.passed ? "flag-pass" : "flag-fail"}">${fit.passed ? t("plot.stationary") : t("plot.rejected")}</span>`,
