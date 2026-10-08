@@ -61,7 +61,23 @@ def _sqlite_add_columns():
                 log.debug("migrate %s.%s: %s", table, col, e)
 
 
+def _repair_group_exchange():
+    """Groups made by Initialization used to be saved as exchange='nobitex' even on XT.
+    Nobitex groups are IRT-quoted, so a USDT-settled perpetual can only be an XT group."""
+    try:
+        with engine.begin() as conn:
+            res = conn.execute(text(
+                "UPDATE groups SET exchange='xt' WHERE exchange='nobitex' "
+                "AND dependent_symbol LIKE '%/USDT:USDT'"
+            ))
+            if res.rowcount:
+                log.warning("Repaired exchange=xt on %s group(s) saved as nobitex", res.rowcount)
+    except Exception as e:
+        log.debug("repair group exchange: %s", e)
+
+
 def init_db():
     from backend import models  # noqa: F401  (register models on Base)
     Base.metadata.create_all(bind=engine)
     _sqlite_add_columns()
+    _repair_group_exchange()
