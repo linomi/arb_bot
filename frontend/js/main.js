@@ -158,6 +158,7 @@ function _prettyLabel(key) {
 
 async function refreshBotState() {
   const s = await API.botState();
+  state.tradingMode = s.trading_mode;
   const btn = document.getElementById("bot-toggle");
   if (!btn) return;
   btn.classList.toggle("running", s.is_running);
