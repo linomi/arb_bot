@@ -321,7 +321,17 @@ async function selectGroup(groupId, force = true) {
 }
 
 async function loadPerfTable() {
-  const rows = await API.allPerformance();
+  const [rows, diag] = await Promise.all([
+    API.allPerformance(),
+    API.botDiagnostics().catch(() => ({ groups: [] })),
+  ]);
+  const byId = {};
+  ((diag && diag.groups) || []).forEach((d) => { byId[d.group_id] = d; });
+  (rows || []).forEach((r) => {
+    const d = byId[r.group_id != null ? r.group_id : r.id];
+    r.diag = d || null;
+    r.diag_stage = d ? d.stage : "";
+  });
   renderPerfTable(rows, showGroupDetail);
   wirePerfTableSorting(showGroupDetail);
 }
