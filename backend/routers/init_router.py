@@ -11,6 +11,7 @@ from backend import config_service
 from backend.models import Group
 from backend.schemas import InitRunRequest
 from backend.exchange import factory
+from backend.bot_state_service import get_or_create_bot_state
 from backend.utils import seconds_to_resolution
 from backend.engine.init_methods import random_init, sector_init
 from backend import init_progress
@@ -37,12 +38,14 @@ async def run_init(body: InitRunRequest, background_tasks: BackgroundTasks, db: 
     backbone_cfg = dict(config_service.get_section(db, "backbone"))
     method = body.method or init_cfg.get("method", "random")
     activate = bool(body.activate)
+    state = get_or_create_bot_state(db)
+    exchange = (body.exchange or getattr(state, "exchange", None) or "nobitex").strip().lower()
 
-    background_tasks.add_task(_run_init_job, method, activate, init_cfg, backbone_cfg)
+    background_tasks.add_task(_run_init_job, method, activate, init_cfg, backbone_cfg, exchange)
     return {"status": "started", "method": method}
 
 
-async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cfg: dict):
+async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cfg: dict, exchange: str = "nobitex"):
     db = SessionLocal()
     md_client = None
     try:
@@ -125,7 +128,7 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
             percent=40,
         )
 
-        backbone_params = _backbone_params(backbone_cfg)
+        backbone_params = _backbone_params(backbone_cfg, exchange)
         loop = asyncio.get_event_loop()
 
         def _do_backtest():
@@ -170,6 +173,7 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
                 source=cand["source"],
                 sector=cand.get("sector"),
                 status="active" if activate else "candidate",
+                exchange=exchange,
                 params_snapshot=backbone_cfg,
                 backtest_metrics=cand["backtest_metrics"],
             )
