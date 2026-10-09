@@ -3,7 +3,7 @@ XT.com USDT-M linear perpetual futures client via ccxt.async_support.xt.
 
 Scope (v1):
   - Linear USDT-settled swaps only (market type=swap, linear=True, settle=USDT).
-  - One-way (net) position mode — hedge mode is not supported; verify in UI.
+  - XT is positionSide-based (LONG/SHORT); ccxt maps reduceOnly to the closing side.
   - Market orders only; reduceOnly closes.
   - Leverage / margin mode configured once per symbol per process.
 """
@@ -300,17 +300,25 @@ class XTClient(ExchangeClient):
         """Call setLeverage / setMarginMode at most once per symbol per process."""
         if symbol in self._configured_symbols:
             return
-        try:
-            await self._ex.set_margin_mode(self._margin_mode, symbol)
-            log.info("XT set_margin_mode(%s, %s)", self._margin_mode, symbol)
-        except Exception as e:
-            # Already set / not required is common; log and continue
-            log.warning("set_margin_mode %s %s: %s", self._margin_mode, symbol, e)
-        try:
-            await self._ex.set_leverage(self._leverage, symbol)
-            log.info("XT set_leverage(%s, %s)", self._leverage, symbol)
-        except Exception as e:
-            log.warning("set_leverage %s %s: %s", self._leverage, symbol, e)
+        # XT futures are positionSide-based (LONG/SHORT); ccxt requires it
+        # for both calls, so configure both sides. Leverage failure is fatal
+        # (fail-closed): never trade at an unknown exchange-side leverage.
+        for pside in ("LONG", "SHORT"):
+            try:
+                await self._ex.set_margin_mode(
+                    self._margin_mode, symbol, {"positionSide": pside})
+                log.info("XT set_margin_mode(%s, %s, %s)", self._margin_mode, symbol, pside)
+            except Exception as e:
+                msg = str(e).lower()
+                if any(k in msg for k in ("already", "same", "exist", "open position", "holding")):
+                    log.warning("set_margin_mode %s %s %s: %s", self._margin_mode, symbol, pside, e)
+                else:
+                    raise XTError(f"set_margin_mode failed for {symbol} {pside}: {e}") from e
+            try:
+                await self._ex.set_leverage(self._leverage, symbol, {"positionSide": pside})
+                log.info("XT set_leverage(%s, %s, %s)", self._leverage, symbol, pside)
+            except Exception as e:
+                raise XTError(f"set_leverage failed for {symbol} {pside}: {e}") from e
         self._configured_symbols.add(symbol)
 
 
@@ -353,10 +361,9 @@ class XTClient(ExchangeClient):
         self._assert_linear_usdt_swap(unified)
 
         if not self._position_mode_warned and self._ex.apiKey:
-            # One-time startup note: hedge mode must be disabled in XT UI
             log.warning(
-                "XT live: ensure account position mode is one-way (net), not hedge/dual-side. "
-                "Hedge mode is not supported in v1; switch in the XT UI if needed."
+                "XT live: orders use positionSide LONG/SHORT; the bot never holds "
+                "opposite sides on one symbol (symbol-clash guard)."
             )
             self._position_mode_warned = True
 
@@ -374,6 +381,22 @@ class XTClient(ExchangeClient):
                 f"amount rounds to zero for {unified} "
                 f"(base={amount}, contractSize={self._contract_size(unified)})"
             )
+
+        # Guard: integer-contract rounding must not push an OPENING order under
+        # the exchange minimum (reduce-only closes are exempt).
+        if not reduce_only and ref_price:
+            try:
+                eff = amount_f * self._contract_size(unified) * float(ref_price)
+                mn = await self.get_min_notional(unified)
+                if mn is not None and eff < float(mn):
+                    raise XTError(
+                        f"{unified}: rounded order notional {eff:.4g} < min {float(mn):.4g} USDT",
+                        code="below_min_notional",
+                    )
+            except XTError:
+                raise
+            except Exception as e:  # lookup problems must not block orders
+                log.debug("min-notional guard skipped for %s: %s", unified, e)
 
         params: dict[str, Any] = {}
         if reduce_only:
@@ -445,6 +468,8 @@ class XTClient(ExchangeClient):
             "liability": liability,
             "contracts": contracts,
             "contractSize": contract_size,
+            "liquidationPrice": pos.get("liquidationPrice"),
+            "marginRatio": pos.get("marginRatio"),
             "PNL": upnl,
             "unrealizedPNL": upnl,
             "openedAt": pos.get("timestamp") or pos.get("datetime"),

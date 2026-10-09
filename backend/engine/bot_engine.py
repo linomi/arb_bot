@@ -792,6 +792,10 @@ class BotEngine:
                 kwargs = {"price": None, "client_order_id": coid}
                 if (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
                     kwargs["ref_price"] = ref_price
+                if is_close and XTClient is not None and isinstance(trading_client, XTClient):
+                    # XT is positionSide-based: an un-flagged opposite order
+                    # would OPEN a new position instead of closing.
+                    kwargs["reduce_only"] = True
                 opened_after = dt.datetime.utcnow().isoformat()
                 resp = await trading_client.place_order(symbol, side, qty, **kwargs)
             except Exception as e:
@@ -923,6 +927,8 @@ class BotEngine:
                     if (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
                         kwargs["ref_price"] = leg.get("price")
                         kwargs["client_order_id"] = _client_order_id("rb", leg["symbol"], opp)
+                        if XTClient is not None and isinstance(trading_client, XTClient):
+                            kwargs["reduce_only"] = True
                     await trading_client.place_order(leg["symbol"], opp, qty, **kwargs)
                 legs[idx] = {**leg, "rolled_back": True}
                 log.info("rolled back leg %s", leg.get("symbol"))

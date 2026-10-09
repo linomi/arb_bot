@@ -126,8 +126,21 @@ def test_leverage_setup_once_per_symbol(mock_ccxt_xt):
     client = XTClient(api_key="k", api_secret="s", leverage=3, margin_mode="isolated")
     _run(client.place_order("BTC/USDT:USDT", "buy", 0.01))
     _run(client.place_order("BTC/USDT:USDT", "buy", 0.01))
-    assert mock_ccxt_xt.set_leverage.await_count == 1
-    assert mock_ccxt_xt.set_margin_mode.await_count == 1
+    # once per symbol, for both LONG and SHORT sides
+    assert mock_ccxt_xt.set_leverage.await_count == 2
+    assert mock_ccxt_xt.set_margin_mode.await_count == 2
+    sides = {c.args[2]["positionSide"] for c in mock_ccxt_xt.set_leverage.await_args_list}
+    assert sides == {"LONG", "SHORT"}
+
+
+def test_leverage_failure_blocks_order(mock_ccxt_xt):
+    from backend.exchange.xt import XTClient, XTError
+
+    mock_ccxt_xt.set_leverage.side_effect = RuntimeError("boom")
+    client = XTClient(api_key="k", api_secret="s", leverage=3, margin_mode="isolated")
+    with pytest.raises(XTError, match="set_leverage failed"):
+        _run(client.place_order("BTC/USDT:USDT", "buy", 0.01))
+    assert not mock_ccxt_xt.create_order.await_count
 
 
 def test_rejects_inverse(mock_ccxt_xt):
@@ -174,3 +187,12 @@ def test_effective_cost_rate_funding_only_for_xt():
     xt = effective_cost_rate(backbone, exchange="xt")
     assert abs(nob - 0.0015) < 1e-12
     assert abs(xt - (0.0015 + 0.0002)) < 1e-12
+
+
+def test_map_position_exposes_liquidation(mock_ccxt_xt):
+    from backend.exchange.xt import XTClient
+
+    c = XTClient()
+    m = c._map_position({"contracts": 2, "contractSize": 0.001, "side": "long",
+                         "symbol": "BTC/USDT:USDT", "liquidationPrice": 50000.0})
+    assert m["liquidationPrice"] == 50000.0
