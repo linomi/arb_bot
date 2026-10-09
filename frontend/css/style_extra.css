@@ -86,3 +86,5 @@ html[dir="rtl"] .param-form .adv-details[open]>summary::before{transform:scaleX(
 .param-form .adv-details[open]>summary{border-bottom:1px solid var(--line-soft)}
 .param-form .adv-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px}
 @media (max-width:700px){.param-form .adv-grid{grid-template-columns:1fr}}
+
+.rc-status{margin-inline-start:10px;font-size:10.5px;color:var(--text-lo);font-style:italic}

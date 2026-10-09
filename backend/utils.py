@@ -31,12 +31,15 @@ def align_price_series(series: dict[str, pd.Series], max_ffill_bars: int = 2) ->
     return df.dropna(how="any")
 
 
-async def fetch_price_df(client, symbols: list[str], resolution: str, bars: int) -> pd.DataFrame:
+async def fetch_price_df(client, symbols: list[str], resolution: str, bars: int,
+                         end_ts: int | None = None) -> pd.DataFrame:
+    """`end_ts` (epoch seconds) fetches the `bars` candles ending there instead of ending now."""
+    kw = {} if end_ts is None else {"end_ts": int(end_ts)}
     # Symbols are fetched concurrently (the exchange clients rate-limit
     # themselves); sequential fetching made every cycle / UI click wait for the
     # sum of all round-trips.
     results = await asyncio.gather(
-        *(client.get_ohlc(sym, resolution, bars) for sym in symbols)
+        *(client.get_ohlc(sym, resolution, bars, **kw) for sym in symbols)
     )
     series = {}
     for sym, ohlc in zip(symbols, results):

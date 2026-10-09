@@ -13,8 +13,8 @@ class PaperExchangeClient:
     async def get_liquid_symbols(self, top_n: int, quote: str = "IRT") -> list[str]:
         return await self.md.get_liquid_symbols(top_n, quote)
 
-    async def get_ohlc(self, symbol: str, resolution: str, bars: int) -> dict:
-        return await self.md.get_ohlc(symbol, resolution, bars)
+    async def get_ohlc(self, symbol: str, resolution: str, bars: int, end_ts: int | None = None) -> dict:
+        return await self.md.get_ohlc(symbol, resolution, bars, end_ts=end_ts) if end_ts else await self.md.get_ohlc(symbol, resolution, bars)
 
     async def get_last_price(self, symbol: str) -> float:
         return await self.md.get_last_price(symbol)

@@ -282,6 +282,15 @@ def _frozen_residual_series(price_df, dependent: str, betas: dict, intercept: fl
     return [[ts.isoformat(), float(v)] for ts, v in zip(price_df.index, resid)]
 
 
+def _prices_payload(price_df) -> dict:
+    """Raw closes of the shown range, so the browser can recompute residuals for ANY betas
+    (a refit, a trade's entry betas, older history) without another exchange request."""
+    return {
+        "t": [int(ts.value // 10**9) for ts in price_df.index],
+        "c": {str(c): [float(v) for v in price_df[c].to_numpy()] for c in price_df.columns},
+    }
+
+
 async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
     g = db.get(Group, group_id)
     if not g:
@@ -370,6 +379,7 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
         "passed": bool(stat.passed),
         "residual_series": residual_series,
         "residual_series_full": residual_full,
+        "prices": _prices_payload(shown),
         "resolution": resolution,
         "bars_used": int(effective_window),
         "sampling_time": int(sampling_time),
@@ -430,6 +440,34 @@ def get_fit(group_id: int, fit_id: int, db: Session = Depends(get_db)):
     return _fit_to_dict(f)
 
 
+_MAX_OLDER_BARS = 1000
+
+
+@router.get("/{group_id}/prices")
+async def older_prices(
+    group_id: int,
+    before: int = Query(..., description="epoch seconds; only bars strictly before this are returned"),
+    bars: int = Query(500, ge=10, le=_MAX_OLDER_BARS),
+    db: Session = Depends(get_db),
+):
+    """One chunk of history that ends just before `before` (for scrolling the chart to the left)."""
+    g = db.get(Group, group_id)
+    if not g or not g.symbols:
+        raise HTTPException(404, "group not found")
+    backbone = config_service.get_section(db, "backbone")
+    resolution = seconds_to_resolution(max(1, int(backbone.get("sampling_time", 60))))
+    md = factory.build_market_data_client(db)
+    try:
+        price_df = await fetch_price_df(md, list(g.symbols), resolution, bars, end_ts=int(before))
+    finally:
+        await md.aclose()
+    if not price_df.empty:
+        price_df = price_df[[int(ts.value // 10**9) < int(before) for ts in price_df.index]]
+    payload = _prices_payload(price_df) if not price_df.empty else {"t": [], "c": {}}
+    payload["exhausted"] = price_df.empty
+    return payload
+
+
 @router.get("/{group_id}/fits/{fit_id}/extended")
 async def get_fit_extended(group_id: int, fit_id: int, db: Session = Depends(get_db)):
     """A stored fit's betas applied to the full chart range (not just the fit's own window)."""
@@ -459,6 +497,7 @@ async def get_fit_extended(group_id: int, fit_id: int, db: Session = Depends(get
     if price_df.empty or dependent not in price_df.columns:
         return out
     out["residual_series_full"] = _frozen_residual_series(price_df, dependent, f.betas, f.intercept)
+    out["prices"] = _prices_payload(price_df)
     out["dependent_symbol"] = dependent
     out["resolution"] = resolution
     out["extended_bars"] = int(len(price_df))

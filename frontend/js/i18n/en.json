@@ -302,5 +302,8 @@
   "opt.isolated": "Isolated",
   "opt.cross": "Cross",
   "param.chart_history_bars": "Chart History (bars)",
-  "hint.chart_history_bars": "Bars shown on the residual chart; betas are still fitted on the last Window Size bars"
+  "hint.chart_history_bars": "Bars shown on the residual chart; betas are still fitted on the last Window Size bars",
+  "plot.history.loading": "Loading older history…",
+  "plot.history.start": "Start of available history",
+  "plot.history.failed": "Could not load older history"
 }

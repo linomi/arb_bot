@@ -322,9 +322,9 @@ class NobitexClient:
         quote_symbol = "IRT" if quote.upper() in ("IRT", "RLS") else quote.upper()
         return f"{base.upper()}{quote_symbol}"
 
-    async def get_ohlc(self, symbol: str, resolution: str, bars: int) -> dict:
+    async def get_ohlc(self, symbol: str, resolution: str, bars: int, end_ts: int | None = None) -> dict:
         seconds_per_bar = self._resolution_seconds(resolution)
-        to_ts = int(time.time())
+        to_ts = int(end_ts) if end_ts else int(time.time())
         from_ts = to_ts - seconds_per_bar * max(bars, 1)
 
         rows: list[tuple] = []

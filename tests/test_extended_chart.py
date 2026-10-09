@@ -60,3 +60,39 @@ def test_chart_history_bars_validated():
     base = {"z_entry": 2.0, "z_close": 0.5, "z_stop_loss": 3.5}
     with pytest.raises(ValueError):
         config_service._validate_backbone({**base, "chart_history_bars": 9000})
+
+
+def test_older_prices_endpoint_returns_only_bars_before_cutoff(monkeypatch):
+    from types import SimpleNamespace
+
+    base = 1_800_000_000
+
+    class MD:
+        async def get_ohlc(self, sym, res, bars, end_ts=None):
+            end = end_ts or base
+            ts = [end - (bars - i) * 60 for i in range(bars + 1)]  # includes one bar at/after the cutoff
+            return {"t": ts, "c": [float(i) for i in range(len(ts))]}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(gr.factory, "build_market_data_client", lambda db: MD())
+    monkeypatch.setattr(gr.config_service, "get_section", lambda db, s: {"sampling_time": 60})
+    db = SimpleNamespace(get=lambda model, gid: SimpleNamespace(symbols=["A", "B"]))
+    out = asyncio.run(gr.older_prices(1, before=base, bars=50, db=db))
+    assert out["t"] and max(out["t"]) < base and set(out["c"]) == {"A", "B"}
+    assert out["exhausted"] is False and len(out["t"]) == len(out["c"]["A"])
+
+
+def test_fetch_price_df_forwards_end_ts_only_when_given():
+    from backend import utils
+    seen = []
+
+    class C:
+        async def get_ohlc(self, sym, res, bars, **kw):
+            seen.append(kw)
+            return {"t": [60, 120], "c": [1.0, 2.0]}
+
+    asyncio.run(utils.fetch_price_df(C(), ["A"], "1", 2))
+    asyncio.run(utils.fetch_price_df(C(), ["A"], "1", 2, end_ts=500))
+    assert seen == [{}, {"end_ts": 500}]

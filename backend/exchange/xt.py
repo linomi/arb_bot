@@ -237,14 +237,15 @@ class XTClient(ExchangeClient):
 
     _OHLCV_PAGE = 500
 
-    async def _fetch_ohlcv_paged(self, unified: str, tf: str, tf_sec: int, since: int, limit: int):
+    async def _fetch_ohlcv_paged(self, unified: str, tf: str, tf_sec: int, since: int, limit: int,
+                                 until_ms: int | None = None):
         """One request for <= 500 bars (unchanged behaviour); longer histories are paged forward."""
         if limit <= self._OHLCV_PAGE:
             return await self._ex.fetch_ohlcv(unified, timeframe=tf, since=since, limit=limit)
         rows: list = []
         seen: set = set()
         cursor = since
-        now_ms = int(time.time() * 1000)
+        now_ms = int(until_ms) if until_ms else int(time.time() * 1000)
         for _ in range(limit // self._OHLCV_PAGE + 3):
             page = await self._ex.fetch_ohlcv(unified, timeframe=tf, since=cursor, limit=self._OHLCV_PAGE)
             fresh = [r for r in (page or []) if r and r[0] not in seen]
@@ -259,7 +260,7 @@ class XTClient(ExchangeClient):
         rows.sort(key=lambda r: r[0])
         return rows[-limit:]
 
-    async def get_ohlc(self, symbol: str, resolution: str, bars: int) -> dict:
+    async def get_ohlc(self, symbol: str, resolution: str, bars: int, end_ts: int | None = None) -> dict:
         await self._ensure_markets()
         unified = self._normalize_symbol(symbol)
         self._assert_linear_usdt_swap(unified)
@@ -267,9 +268,12 @@ class XTClient(ExchangeClient):
         tf = self._map_resolution(resolution)
         tf_sec = _TF_SECONDS.get(tf, 3600)
         limit = max(1, int(bars))
-        since = int(time.time() * 1000) - limit * tf_sec * 1000
+        end_ms = int(end_ts) * 1000 if end_ts else int(time.time() * 1000)
+        since = end_ms - limit * tf_sec * 1000
 
-        ohlcv = await self._fetch_ohlcv_paged(unified, tf, tf_sec, since, limit)
+        ohlcv = await self._fetch_ohlcv_paged(unified, tf, tf_sec, since, limit, end_ms)
+        if end_ts:
+            ohlcv = [r for r in (ohlcv or []) if r and r[0] < end_ms]
         out: dict = {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []}
         for row in ohlcv or []:
             # ccxt: [timestamp_ms, open, high, low, close, volume]

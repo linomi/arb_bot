@@ -76,6 +76,53 @@ function _rcTimeSec(iso) {
   return isFinite(ms) ? Math.floor(ms / 1000) : NaN;
 }
 
+/* ---- per-group raw price cache: residuals are recomputed from prices for whatever betas are shown ---- */
+const _RC_PRICES = {};
+const RC_CHUNK_BARS = 500;
+const RC_MAX_BARS = 30000;
+
+function _rcCache(gid) {
+  return (_RC_PRICES[gid] = _RC_PRICES[gid] || { rows: new Map(), exhausted: false, loading: false });
+}
+
+function _rcMergePrices(gid, prices) {
+  if (!prices || !prices.t || !prices.t.length) return 0;
+  const cache = _rcCache(gid);
+  let added = 0;
+  const syms = Object.keys(prices.c || {});
+  prices.t.forEach((t, i) => {
+    let row = cache.rows.get(t);
+    if (!row) { row = {}; cache.rows.set(t, row); added++; }
+    syms.forEach((sy) => { row[sy] = prices.c[sy][i]; });
+  });
+  return added;
+}
+
+/** [[iso, residual]] for every cached bar under one fixed set of betas. */
+function _rcResidualsFromCache(gid, fit) {
+  const cache = _RC_PRICES[gid];
+  const betas = fit.betas || {};
+  const dep = fit.dependent_symbol;
+  if (!cache || !dep || !Object.keys(betas).length) return null;
+  const times = [...cache.rows.keys()].sort((a, b) => a - b);
+  const syms = Object.keys(betas);
+  const out = [];
+  for (const t of times) {
+    const row = cache.rows.get(t);
+    let y = row[dep];
+    if (y == null) continue;
+    let x = Number(fit.intercept) || 0;
+    let ok = true;
+    for (const sy of syms) {
+      const v = row[sy];
+      if (v == null) { ok = false; break; }
+      x += Number(betas[sy]) * v;
+    }
+    if (ok) out.push([new Date(t * 1000).toISOString(), y - x]);
+  }
+  return out.length ? out : null;
+}
+
 /** [[iso, value], ...] -> sorted, unique-time [{time, value}] with NaNs dropped. */
 function _rcBuildPoints(series) {
   const pts = [];
@@ -257,6 +304,7 @@ function _rcRenderLegend(rc, d) {
   rc.legendEl.innerHTML =
     `<div class="rc-legend-items">${parts.join("")}</div>` +
     `<button type="button" class="rc-fit" title="Fit all bars">Fit</button>`;
+  if (rc.statusText) _rcSetStatus(rc, rc.statusText);
   const btn = rc.legendEl.querySelector(".rc-fit");
   if (btn) {
     btn.addEventListener("click", () => {
@@ -412,6 +460,8 @@ function _rcCreate(el, key) {
     if (!rc.userMoved && rc.hasData) _rcFit(rc);
   };
   chart.timeScale().subscribeSizeChange(rc._onSize);
+  rc._onRange = (r) => { _rcMaybeLoadOlder(rc, r); };
+  chart.timeScale().subscribeVisibleLogicalRangeChange(rc._onRange);
 
   // Remember that the user panned/zoomed so periodic refreshes don't snap the view back.
   let downX = null;
@@ -434,6 +484,7 @@ function _rcCreate(el, key) {
     try { chart.unsubscribeCrosshairMove(rc._onMove); } catch (e) {}
     try { chart.unsubscribeClick(rc._onClick); } catch (e) {}
     try { chart.timeScale().unsubscribeSizeChange(rc._onSize); } catch (e) {}
+    try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(rc._onRange); } catch (e) {}
     el.removeEventListener("pointerdown", rc._onPointerDown);
     el.removeEventListener("pointermove", rc._onPointerMove);
     window.removeEventListener("pointerup", rc._onPointerUp);
@@ -493,6 +544,81 @@ function _rcDestroy() {
   return null;
 }
 
+function _rcMakeData(fit, cfg, trades) {
+  const gid = fit.group_id;
+  if (fit.prices && gid != null) _rcMergePrices(gid, fit.prices);
+  const fromCache = gid != null ? _rcResidualsFromCache(gid, fit) : null;
+  const pts = _rcBuildPoints(fromCache || fit.residual_series_full || fit.residual_series);
+  if (!pts.length) return null;
+  const mean = Number(fit.resid_mean) || 0;
+  const std = Number(fit.resid_std) || 0;
+  const zEntry = Number(cfg.z_entry) || 2;
+  const zClose = Number(cfg.z_close) || 0.5;
+  const zStop = Number(cfg.z_stop_loss) || 3.5;
+  // Bars before the fit window are drawn dimmer: the betas were estimated on the bars after it.
+  const winStart = fit.window_start ? _rcTimeSec(fit.window_start) : NaN;
+  if (isFinite(winStart) && pts[0].time < winStart) {
+    pts.forEach((p) => { if (p.time < winStart) p.color = RC_OUTSIDE_COLOR; });
+  }
+  const markerInfo = _rcBuildMarkers(pts, trades);
+  return {
+    winStart: isFinite(winStart) ? winStart : null,
+    pts, mean, std, zEntry, zClose, zStop, markerInfo,
+    decimals: _rcDecimals(std),
+    spacing: _rcBarSpacing(pts),
+  };
+}
+
+function _rcSig(key, d) {
+  const last = d.pts[d.pts.length - 1];
+  return JSON.stringify([
+    key, d.pts.length, d.pts[0].time, last.time, last.value, d.mean, d.std, d.zEntry, d.zClose, d.zStop,
+    d.markerInfo.markers.map((m) => [m.id, m.time, m.price]),
+  ]);
+}
+
+function _rcSetStatus(rc, text) {
+  rc.statusText = text || "";
+  let el = rc.legendEl.querySelector(".rc-status");
+  if (!el) {
+    el = document.createElement("span");
+    el.className = "rc-status";
+    const items = rc.legendEl.querySelector(".rc-legend-items");
+    (items || rc.legendEl).appendChild(el);
+  }
+  el.textContent = rc.statusText;
+}
+
+/** Scrolled / zoomed near the left edge: pull one older chunk of prices and redraw. */
+async function _rcMaybeLoadOlder(rc, range) {
+  if (rc.destroyed || !range || !rc.userMoved || !rc.data || rc.gid == null) return;
+  if (range.from > 25) return;
+  const cache = _rcCache(rc.gid);
+  if (cache.loading || cache.exhausted) return;
+  if (cache.rows.size >= RC_MAX_BARS) { cache.exhausted = true; _rcSetStatus(rc, t("plot.history.start")); return; }
+  if (typeof API === "undefined" || !API.olderPrices) return;
+  cache.loading = true;
+  _rcSetStatus(rc, t("plot.history.loading"));
+  try {
+    const first = Math.min(...cache.rows.keys());
+    const chunk = await API.olderPrices(rc.gid, first, RC_CHUNK_BARS);
+    const added = _rcMergePrices(rc.gid, chunk);
+    if (!added || chunk.exhausted) cache.exhausted = true;
+    if (rc.destroyed) return;
+    const d = _rcMakeData(rc.fit, rc.cfg, rc.trades);
+    if (d) {
+      _rcApply(rc, d);
+      rc.sig = _rcSig(rc.key, d);
+    }
+    _rcSetStatus(rc, cache.exhausted ? t("plot.history.start") : "");
+  } catch (e) {
+    console.warn("older history", e);
+    if (!rc.destroyed) _rcSetStatus(rc, t("plot.history.failed"));
+  } finally {
+    cache.loading = false;
+  }
+}
+
 /**
  * Same contract as the old Chart.js renderer. `canvasId` is now the id of a <div>
  * (a stale <canvas> with that id is swapped for a div automatically).
@@ -501,8 +627,9 @@ function _rcDestroy() {
 function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) {
   let el = document.getElementById(canvasId);
   if (!el) return;
-  const pts = _rcBuildPoints(fit && (fit.residual_series_full || fit.residual_series));
-  if (!pts.length) {
+  const cfg = backboneCfg || {};
+  const d = _rcMakeData(fit, cfg, trades);
+  if (!d) {
     residualChart = _rcDestroy();
     return;
   }
@@ -516,32 +643,9 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
     el.replaceWith(div);
     el = div;
   }
-
-  const cfg = backboneCfg || {};
-  const mean = Number(fit.resid_mean) || 0;
-  const std = Number(fit.resid_std) || 0;
-  const zEntry = Number(cfg.z_entry) || 2;
-  const zClose = Number(cfg.z_close) || 0.5;
-  const zStop = Number(cfg.z_stop_loss) || 3.5;
-  // Bars before the fit window are drawn dimmer: the betas were estimated on the bars after it.
-  const winStart = fit.window_start ? _rcTimeSec(fit.window_start) : NaN;
-  if (isFinite(winStart) && pts[0].time < winStart) {
-    pts.forEach((p) => { if (p.time < winStart) p.color = RC_OUTSIDE_COLOR; });
-  }
-  const markerInfo = _rcBuildMarkers(pts, trades);
-  const d = {
-    winStart: isFinite(winStart) ? winStart : null,
-    pts, mean, std, zEntry, zClose, zStop, markerInfo,
-    decimals: _rcDecimals(std),
-    spacing: _rcBarSpacing(pts),
-  };
   const key = `${fit.group_id != null ? fit.group_id : (fit.group_name || "")}:${
     fit._pinned_trade_id != null ? fit._pinned_trade_id : "live"}`;
-  const last = pts[pts.length - 1];
-  const sig = JSON.stringify([
-    key, pts.length, pts[0].time, last.time, last.value, mean, std, zEntry, zClose, zStop,
-    markerInfo.markers.map((m) => [m.id, m.time, m.price]),
-  ]);
+  const sig = _rcSig(key, d);
 
   let rc = residualChart;
   if (rc && (rc.destroyed || rc.container !== el || !el.isConnected || rc.key !== key)) {
@@ -556,8 +660,14 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
   }
   if (!rc) rc = residualChart = _rcCreate(el, key);
   rc.onMarkerClick = onMarkerClick || null;
+  rc.gid = fit.group_id != null ? fit.group_id : null;
+  rc.fit = fit;
+  rc.cfg = cfg;
+  rc.trades = trades;
   _rcApply(rc, d);
   rc.sig = sig;
+  const cache = rc.gid != null ? _RC_PRICES[rc.gid] : null;
+  _rcSetStatus(rc, cache && cache.exhausted ? t("plot.history.start") : "");
   residualChart = rc;
   _syncResidualGlobal();
 }

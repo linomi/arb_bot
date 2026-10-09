@@ -13,7 +13,7 @@ class ExchangeClient(ABC):
         """Return the top-N markets by 24h volume, quoted/settled in `quote`."""
 
     @abstractmethod
-    async def get_ohlc(self, symbol: str, resolution: str, bars: int) -> dict:
+    async def get_ohlc(self, symbol: str, resolution: str, bars: int, end_ts: int | None = None) -> dict:
         """Return {'t': [...], 'o':[...], 'h':[...], 'l':[...], 'c':[...], 'v':[...]}"""
 
     @abstractmethod
