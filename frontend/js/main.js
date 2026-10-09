@@ -64,6 +64,7 @@ function FIELD_HINTS() {
     data_staleness_mult: t("hint.data_staleness_mult"),
     max_entry_scale: t("hint.max_entry_scale"),
     chart_history_bars: t("hint.chart_history_bars"),
+    paper_start_balance: t("hint.paper_start_balance"),
   };
 }
 
@@ -72,7 +73,7 @@ function FIELD_HINTS() {
 const BACKBONE_BASIC = [
   ["signal", ["window_size", "sampling_time", "z_entry", "z_close", "z_stop_loss"]],
   ["stats", ["stationarity_method"]],
-  ["costs", ["trade_notional", "fee_rate", "slippage_rate", "target_profit_rate"]],
+  ["costs", ["paper_start_balance", "trade_notional", "fee_rate", "slippage_rate", "target_profit_rate"]],
 ];
 const BACKBONE_ADVANCED = [
   ["stats_adv", ["adf_alpha", "kpss_alpha", "half_life_max_fraction"]],
@@ -343,6 +344,7 @@ async function selectGroup(groupId, force = true) {
           startEquity: curve.start_equity,
           accountBalance: curve.account_balance,
           source: curve.source,
+          curve,
         });
       }
     }

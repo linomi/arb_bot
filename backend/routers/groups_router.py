@@ -84,7 +84,30 @@ def _trade_pnl(t: Trade):
     return None
 
 
-def _trade_to_dict(t: Trade) -> dict:
+def _leverage_for(exchange: str | None, backbone: dict) -> float:
+    """Leverage used to turn gross notional into margin (Nobitex orders use 1x)."""
+    if (exchange or "nobitex").lower() == "xt":
+        try:
+            return max(1.0, float(backbone.get("xt_leverage", 1) or 1))
+        except (TypeError, ValueError):
+            return 1.0
+    return 1.0
+
+
+def _trade_gross(t: Trade) -> float | None:
+    """Total entry notional across all legs (exposure), from fills when known."""
+    from backend.strategy.pnl import legs_gross_notional
+    legs = getattr(t, "legs_entry", None)
+    if legs:
+        g = legs_gross_notional(legs)
+        if g > 0:
+            return float(g)
+    tn = getattr(t, "trade_notional", None)
+    return float(tn) if tn is not None else None
+
+
+def _trade_to_dict(t: Trade, leverage: float = 1.0) -> dict:
+    gross = _trade_gross(t)
     pnl = _trade_pnl(t)
     realized = float(t.realized_pnl) if getattr(t, "realized_pnl", None) is not None else None
     model = float(t.model_pnl) if getattr(t, "model_pnl", None) is not None else None
@@ -110,6 +133,10 @@ def _trade_to_dict(t: Trade) -> dict:
         "legs_entry": getattr(t, "legs_entry", None),
         "legs_close": getattr(t, "legs_close", None),
         "trade_notional": float(t.trade_notional) if getattr(t, "trade_notional", None) is not None else None,
+        # capital tied up: gross = sum of all leg notionals, margin = gross / leverage
+        "gross_notional": gross,
+        "margin_used": (gross / leverage) if gross is not None else None,
+        "leverage": leverage,
     }
 
 
@@ -515,7 +542,9 @@ def list_trades(
     if resolved:
         q = q.filter_by(mode=resolved)
     trades = q.order_by(Trade.entry_time.desc()).all()
-    return [_trade_to_dict(t) for t in trades]
+    g = db.get(Group, group_id)
+    lev = _leverage_for(getattr(g, "exchange", None), config_service.get_section(db, "backbone"))
+    return [_trade_to_dict(t, lev) for t in trades]
 
 
 @router.get("/{group_id}/performance")
@@ -548,7 +577,7 @@ async def equity_curve(
     """
     Cumulative equity for the group.
 
-    paper: starts at 0, adds model PnL each close.
+    paper: starts at backbone.paper_start_balance, adds model PnL each close.
     live: starts from current margin wallet free balance minus sum of this
           group's exchange realized PnLs (so the curve ends near account
           level and is grounded in exchange data, not model residual).
@@ -571,7 +600,10 @@ async def equity_curve(
             continue
         pnls.append((t.close_time.isoformat(), float(p)))
 
-    start_equity = 0.0
+    backbone = config_service.get_section(db, "backbone")
+    lev = _leverage_for(getattr(g, "exchange", None), backbone)
+    paper_start = float(backbone.get("paper_start_balance", 1000.0) or 0.0)
+    start_equity = paper_start if resolved != "live" else 0.0
     source = "model_cum_pnl"
     account_balance = None
 
@@ -619,10 +651,45 @@ async def equity_curve(
             "is_start": False,
         })
 
+    # Margin tied up over time: step series over entry/close events of this group
+    allq = db.query(Trade).filter_by(group_id=group_id)
+    if resolved:
+        allq = allq.filter_by(mode=resolved)
+    events = []
+    for t in allq.all():
+        gross = _trade_gross(t)
+        if gross is None or t.entry_time is None:
+            continue
+        m = gross / lev
+        events.append((t.entry_time, m))
+        if t.status == "closed" and t.close_time is not None:
+            events.append((t.close_time, -m))
+    events.sort(key=lambda e: e[0])
+    margin_series, cur = [], 0.0
+    for ts, dm in events:
+        cur = max(0.0, cur + dm)
+        margin_series.append({"time": ts.isoformat(), "margin": cur})
+    peak_margin = max((m["margin"] for m in margin_series), default=0.0)
+
+    eq = [pt["equity"] for pt in points]
+    peak, max_dd_pct = eq[0], 0.0
+    for v in eq:
+        peak = max(peak, v)
+        if peak > 0:
+            max_dd_pct = max(max_dd_pct, (peak - v) / peak * 100.0)
+    base = float(start_equity)
+    return_pct = ((eq[-1] - base) / base * 100.0) if base > 0 else None
+
     return {
         "mode": resolved or "all",
         "source": source,
         "start_equity": start_equity,
         "account_balance": account_balance,
         "points": points,
+        "margin_series": margin_series,
+        "peak_margin": peak_margin,
+        "current_margin": margin_series[-1]["margin"] if margin_series else 0.0,
+        "leverage": lev,
+        "return_pct": return_pct,
+        "max_drawdown_pct": max_dd_pct,
     }

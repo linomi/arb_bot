@@ -22,6 +22,7 @@
         startEquity: curve && curve.start_equity != null ? Number(curve.start_equity) : 0,
         accountBalance: curve && curve.account_balance != null ? Number(curve.account_balance) : null,
         source: (curve && curve.source) || "model_cum_pnl",
+        curve: curve || {},
       };
       if (typeof renderEquityCurvePoints === "function") {
         renderEquityCurvePoints("equity-canvas", points, meta);

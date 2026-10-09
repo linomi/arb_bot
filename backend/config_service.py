@@ -71,6 +71,9 @@ def _validate_backbone(data: dict):
     tn = float(data.get("trade_notional", 1))
     if tn <= 0:
         raise ValueError("trade_notional must be > 0")
+    psb = float(data.get("paper_start_balance", 1000.0) or 0.0)
+    if psb < 0:
+        raise ValueError("paper_start_balance must be >= 0")
     ws = int(data.get("window_size", 100))
     if ws < 30:
         raise ValueError("window_size must be >= 30")

@@ -14,6 +14,7 @@ backbone:
   z_stop_loss: 3.5
   fee_rate: 0.001           # exchange trading fee, fractional
   slippage_rate: 0.0005     # modeled slippage, fractional
+  paper_start_balance: 1000 # paper mode: starting capital (USDT) for the equity curve / % returns
   trade_notional: 100       # quote-currency notional per leg (paper + sizing hint for live)
   # Min net profit (as fraction of total leg notional G) required at a perfect
   # close to |z|=z_close, after round-trip costs. 0.01 = 1%. 0 disables the gate.

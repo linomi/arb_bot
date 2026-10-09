@@ -33,7 +33,7 @@
   "beta.fit.failed": "برازش ناموفق — بتاها در دسترس نیستند.",
   "equity.title": "منحنی سرمایه",
   "equity.title.group": "منحنی سرمایه — {name}",
-  "equity.hint": "زنده: از موجودی کیف پول · کاغذی: از صفر",
+  "equity.hint": "سرمایه = موجودی اولیه + مجموع سود و زیان",
   "equity.hint.cum": "سود/زیان نقدی تحقق‌یافته تجمعی",
   "equity.empty": "هنوز معامله بسته‌ای برای این گروه وجود ندارد.",
   "trades.title": "گزارش معاملات",
@@ -305,5 +305,18 @@
   "hint.chart_history_bars": "تعداد کندل‌های نمایش‌داده‌شده در نمودار باقیمانده؛ بتاها همچنان روی آخرین «اندازه پنجره» کندل برازش می‌شوند",
   "plot.history.loading": "در حال بارگذاری تاریخچه قدیمی‌تر…",
   "plot.history.start": "ابتدای تاریخچه موجود",
-  "plot.history.failed": "بارگذاری تاریخچه قدیمی‌تر ناموفق بود"
+  "plot.history.failed": "بارگذاری تاریخچه قدیمی‌تر ناموفق بود",
+  "param.paper_start_balance": "موجودی اولیه پیپر",
+  "hint.paper_start_balance": "فقط حالت پیپر: سرمایه اولیه (USDT) برای نمودار سرمایه و درصد بازده",
+  "equity.hint.paper": "پیپر · موجودی اولیه {start} + مجموع سود مدل · وقت تهران",
+  "equity.margin_line": "مارجین درگیر",
+  "equity.stat.start": "شروع",
+  "equity.stat.equity": "سرمایه",
+  "equity.stat.return": "بازده",
+  "equity.stat.maxdd": "حداکثر افت",
+  "equity.stat.margin": "مارجین فعلی / اوج",
+  "trades.th.gross": "حجم کل",
+  "trades.th.margin": "مارجین",
+  "trades.th.gross.title": "مجموع ارزش همه پایه‌ها (میزان مواجهه)",
+  "trades.th.margin.title": "سرمایه درگیر = حجم کل ÷ اهرم"
 }

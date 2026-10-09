@@ -88,3 +88,9 @@ html[dir="rtl"] .param-form .adv-details[open]>summary::before{transform:scaleX(
 @media (max-width:700px){.param-form .adv-grid{grid-template-columns:1fr}}
 
 .rc-status{margin-inline-start:10px;font-size:10.5px;color:var(--text-lo);font-style:italic}
+
+/* Equity stats strip + margin toggle */
+.equity-stats{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;padding:0 14px 12px;font-size:12px;color:var(--text-dim,#c4b5a0)}
+.equity-stats .eq-k{opacity:.75}
+.equity-stats b.pos{color:#6b9a6b}.equity-stats b.neg{color:#b85c4a}
+.equity-stats .eq-toggle{margin-inline-start:auto;display:inline-flex;gap:4px;align-items:center;cursor:pointer;color:#c9a24b}

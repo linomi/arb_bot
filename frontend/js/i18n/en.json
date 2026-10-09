@@ -33,7 +33,7 @@
   "beta.fit.failed": "Fit failed — betas unavailable.",
   "equity.title": "Equity Curve",
   "equity.title.group": "Equity Curve — {name}",
-  "equity.hint": "Live: starts from wallet balance · Paper: from 0",
+  "equity.hint": "Equity = start balance + cumulative PnL",
   "equity.hint.cum": "Cumulative realized cash PnL",
   "equity.empty": "No closed trades yet for this group.",
   "trades.title": "Trade Log",
@@ -305,5 +305,18 @@
   "hint.chart_history_bars": "Bars shown on the residual chart; betas are still fitted on the last Window Size bars",
   "plot.history.loading": "Loading older history…",
   "plot.history.start": "Start of available history",
-  "plot.history.failed": "Could not load older history"
+  "plot.history.failed": "Could not load older history",
+  "param.paper_start_balance": "Paper Start Balance",
+  "hint.paper_start_balance": "Paper mode only: starting capital (USDT) the equity curve and % returns are based on",
+  "equity.hint.paper": "Paper · start balance {start} + cumulative model PnL · Tehran time",
+  "equity.margin_line": "Margin in use",
+  "equity.stat.start": "Start",
+  "equity.stat.equity": "Equity",
+  "equity.stat.return": "Return",
+  "equity.stat.maxdd": "Max DD",
+  "equity.stat.margin": "Margin now / peak",
+  "trades.th.gross": "Gross",
+  "trades.th.margin": "Margin",
+  "trades.th.gross.title": "Sum of all leg notionals (exposure)",
+  "trades.th.margin.title": "Capital tied up = gross ÷ leverage"
 }
