@@ -1,52 +1,76 @@
-# Stat-Arb Bot (Nobitex)
+# Stat-Arb Bot (Nobitex margin + XT.com USDT-M perpetuals)
 
-Statistical-arbitrage bot: OLS spread construction, ADF+KPSS stationarity
-screening, z-score mean-reversion entries/exits, paper trading by default,
-optional live trading against Nobitex. Full web UI (dashboard + init +
-settings), SQLite storage (no CSVs), background trading loop that survives
-the browser being closed.
+Statistical-arbitrage bot with a built-in web UI. It builds a spread from a
+group of correlated symbols (OLS on raw prices), screens it for stationarity,
+trades the z-score of the residual (enter at the extremes, exit on reversion
+or stop), and runs headless in the background. Paper trading is the default;
+live trading is available on **Nobitex** (IRT margin) and **XT.com** (USDT-M
+perpetual swaps). One exchange is active at a time. State lives in SQLite.
 
-## 1. Requirements
+> **Money warning.** Live mode places real orders. Read
+> [section 8](#8-going-live-on-xt-checklist) first, start tiny, and use a
+> dedicated API key without withdrawal permission.
 
-- Python 3.11+ (3.10 probably works too, untested)
-- Internet access from wherever you run this (to reach `apiv2.nobitex.ir`
-  for market data, and for real orders in live mode)
+## 1. How the strategy works
 
-## 2. Install
+For a group of symbols, one is the *dependent* `Y` and the rest are
+regressors `X1..Xk`.
+
+1. **Fit.** OLS of `Y` on `X` over the last `window_size` bars gives betas
+   and an intercept. The residual `e = Y - (a + Σ b·X)` is the spread.
+2. **Screen.** The residual must pass a stationarity gate
+   (`stationarity_method`: `engle_granger`, the default, or legacy
+   `adf_kpss`), plus a half-life filter (`half_life_max_fraction`). Groups
+   with more than 5 regressors use a Monte-Carlo p-value.
+3. **Signal.** `z = (e - mean) / std` from the fit window.
+   - Enter when `|z| >= z_entry` (short the residual when z is high, long
+     when low).
+   - Exit at `|z| <= z_close`, or stop at `|z| >= z_stop_loss`, or after
+     `max_holding_hours`.
+   - Betas, mean and std are **frozen** from entry until exit.
+4. **Gates before an entry** (each is shown in the *Entry status* column and
+   in the `entry scan:` log line): stationarity, half-life, expected profit
+   vs. costs (`target_profit_rate`), per-group cooldown after a failed entry,
+   portfolio caps (`max_open_trades`, `max_total_gross_notional`), stale
+   data, symbols already used by another open trade, and exchange minimums /
+   free balance.
+5. **Sizing.** Each leg is `trade_notional`-scaled by its beta so the
+   basket is beta-weighted; legs are lifted to the exchange minimum when
+   needed (capped by `max_entry_scale`) and scaled down to the free balance.
+6. **Execution.** Legs are sent one after another as market orders. If one
+   fails after others filled, the filled legs are rolled back. Closes use
+   reduce-only orders for the actual open size.
+
+## 2. Requirements
+
+- Python 3.11+
+- Network access to the exchange you use (`apiv2.nobitex.ir` and/or
+  XT.com's public and futures APIs through `ccxt`)
+
+## 3. Install and configure
 
 ```bash
 cd arb_bot
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-## 3. Configure
-
-```bash
 cp .env.example .env
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-# paste the printed key into .env as ENCRYPTION_KEY=...
+# paste the key into .env as ENCRYPTION_KEY=...
 ```
 
-Leave `NOBITEX_BASE_URL` as the mainnet URL, or point it at
-`https://testnetapiv2.nobitex.ir` while you're testing live-order plumbing.
+Environment variables (`.env`):
 
-### Basic authentication (recommended)
-
-To protect the UI and API, set both values in `.env`:
-
-```bash
-AUTH_USERNAME=admin
-AUTH_PASSWORD=your-strong-password
-# Optional (defaults to ENCRYPTION_KEY):
-# SESSION_SECRET=another-random-string
-```
-
-After restart you will see a login screen. A signed session cookie is issued
-and stays valid for **5 days**. HTTP Basic Auth also works for scripts
-(`curl -u user:pass ...`). If the two variables are left empty, auth stays
-disabled (previous behaviour).
+| Variable | Purpose |
+|---|---|
+| `ENCRYPTION_KEY` | Required to save API credentials (Fernet key). |
+| `AUTH_USERNAME` / `AUTH_PASSWORD` | Enable the login screen (session cookie, 5 days; HTTP Basic also works for scripts). |
+| `SESSION_SECRET` | Optional cookie-signing secret (defaults to `ENCRYPTION_KEY`). |
+| `SESSION_HTTPS_ONLY` | `1` to mark the cookie secure behind HTTPS. |
+| `HOST` / `APP_PORT` | Bind address (default `127.0.0.1:8000`). Binding to a non-loopback host requires auth to be set. |
+| `NOBITEX_BASE_URL` | Mainnet by default; point at the testnet for plumbing tests. |
+| `DATABASE_URL` | Defaults to `sqlite:///data/arb_bot.db`. |
 
 ## 4. Run
 
@@ -54,103 +78,147 @@ disabled (previous behaviour).
 python run.py
 ```
 
-Open **http://localhost:8000** in a browser. That's the whole app --
-backend + UI are served from the same process.
+Open **http://localhost:8000**. Backend and UI are one process. The trading
+loop starts with the server, in **paper** mode and **inactive**; press
+ACTIVE in the top bar to start trading. It keeps running with the browser
+closed. For a server, run it under systemd.
 
-The trading loop starts automatically with the server (in **paper** mode,
-**inactive**, per the safety defaults) and keeps running in the background
-regardless of whether a browser tab is open. Use the ACTIVE/INACTIVE button
-in the top bar to actually turn trading on.
+## 5. Using the UI
 
-## 5. First run walkthrough
+1. **Initialization tab.** Edit the Backbone and Initialization parameters,
+   pick **Random Groups** or **Sector-Based**, and run. It pulls liquid
+   markets from the active exchange, backtests candidate groups with the
+   same backbone logic as the live engine, keeps the best by Sharpe/PnL and
+   saves them as groups. You can also create a **manual group**.
+2. **Backbone tab.**
+   - *Config* is split into **Basic** and a collapsible **Advanced**
+     section.
+   - *Residual chart*: full history (`chart_history_bars`) with the betas of
+     the current fit; bars before the fit window are dimmed. Scroll or zoom
+     to the left and older candles are fetched on demand. Click an entry or
+     close marker to redraw the same chart with the betas that trade was
+     entered with (the series morphs between the two); "Back to live"
+     returns. Threshold lines mark entry / close / stop.
+   - *Equity curve*: start balance plus cumulative PnL, with return %, max
+     drawdown %, current/peak margin in use and an optional margin-in-use
+     line. Paper mode starts from `paper_start_balance`; live mode starts
+     from the wallet balance.
+   - *Trade log*: per trade, the gross notional (sum of all legs) and the
+     **margin** (gross / leverage: `xt_leverage` on XT, 1x on Nobitex),
+     PnL and close reason. **Clear history** deletes this group's finished
+     trades for the current mode (open and partially-failed trades are never
+     deleted).
+   - *Performance comparison*: Win Rate, Profit Factor, Net Profit, Expected
+     Payoff and Max Drawdown per group, with the rest (gross profit/loss,
+     absolute drawdown, streaks, long/short counts) under "Show all
+     metrics", plus a radar chart.
+3. **Settings & Credentials tab.** Save API credentials per exchange. Live
+   mode is refused without them.
+4. **Top bar.** ACTIVE/INACTIVE, Paper/Live (asks for confirmation) and the
+   exchange selector. Language: English or Persian.
 
-1. **Initialization tab** -- review/edit the Backbone and Initialization
-   parameters (every parameter from the spec is editable here, no hidden
-   limits). Pick **Random Groups** or **Sector-Based**, then click
-   **Run Initialization**. This:
-   - pulls the top-N most liquid markets from Nobitex,
-   - builds candidate groups (random combinations, or same-sector
-     combinations from `backend/sectors.py`),
-   - backtests each candidate through the exact same backbone logic the
-     live engine uses,
-   - keeps the top-N by a Sharpe/PnL score,
-   - saves them as `Group` rows (active by default) in `data/arb_bot.db`.
-2. **Backbone tab** -- pick a group on the left. You'll see the residual
-   plot with the z-entry/z-close/z-stop-loss bands, and trade markers once
-   the bot has run a few cycles. Click a marker to see the frozen OLS that
-   produced that specific trade. The trade log and the sortable performance
-   comparison table (bottom) update from the same data.
-3. Flip the top-bar toggle to **ACTIVE** to start trading (paper mode by
-   default -- no real orders, just simulated fills against real market
-   prices).
-4. **Settings & Credentials tab** -- only needed for live trading. Paste
-   either an API **token** (`Authorization: Token <token>`, the simple
-   path) or a Key+Ed25519 secret pair if your account requires signature
-   auth. Then switch the top-bar Mode dropdown to **Live** (this asks for
-   confirmation).
+## 6. Configuration reference
 
-## 6. Project layout
+Defaults live in `config/default_config.yaml` and only seed the database;
+after that, edit everything in the UI. Missing keys in an existing install
+are filled in automatically.
+
+**Basic**
+
+| Key | Meaning |
+|---|---|
+| `window_size` | Bars used to fit the OLS. |
+| `sampling_time` | Seconds between bot cycles (also the candle size). |
+| `z_entry` / `z_close` / `z_stop_loss` | Thresholds; require `stop > entry > close`. |
+| `stationarity_method` | `engle_granger` (recommended) or `adf_kpss`. |
+| `paper_start_balance` | Paper mode: starting capital for the equity curve. |
+| `trade_notional` | Basket size before beta-scaling. |
+| `fee_rate`, `slippage_rate` | Cost model per side. |
+| `target_profit_rate` | Minimum expected net profit, as a fraction of gross notional, to allow an entry (0 disables). |
+
+**Advanced**
+
+| Key | Meaning |
+|---|---|
+| `adf_alpha`, `kpss_alpha`, `half_life_max_fraction` | Statistical screens. |
+| `max_holding_hours` | Time stop (0 = off). |
+| `max_entry_scale` | Max inflation of a basket to reach exchange minimums (0 = off). |
+| `max_open_trades`, `max_total_gross_notional` | Portfolio caps (0 = off). |
+| `liquidation_proximity_fraction` | Force-close when mark is this close to liquidation (0 = off). |
+| `entry_retry_cooldown_sec` | Pause for a group after a failed/rolled-back entry. |
+| `data_staleness_mult` | Skip entries when a bar is older than this x `sampling_time`. |
+| `funding_rate_estimate`, `expected_holding_funding_intervals` | Funding cost assumed in the profit gate. |
+| `xt_leverage`, `xt_margin_mode` | XT leverage (applied per symbol, both sides, before the first order) and `isolated`/`cross`. |
+| `chart_history_bars`, `fit_log_interval_sec`, `try_all_dependents` | Display / logging / init options. |
+
+## 7. Project layout
 
 ```
 backend/
-  main.py              FastAPI app, startup wiring, SessionMiddleware
-  auth.py              username/password + 5-day session cookie
-  models.py            SQLAlchemy models (Group, OLSFit, Trade, Credential, BotState)
-  db.py                SQLite engine/session
-  config_service.py    reads/writes config sections stored in the DB
-  security.py          Fernet encryption for credentials at rest
-  sectors.py           heuristic sector map for the sector-based init method
-  schemas.py           pydantic request/response models
-  strategy/
-    ols.py             OLS fit + frozen-fit residual calc
-    stats_tests.py     ADF + KPSS stationarity screen
-    zscore.py          entry/close/stop-loss decision rules
-    metrics.py         win rate / Sharpe / Sortino / max DD / etc.
+  main.py, auth.py, security.py, db.py, models.py, schemas.py
+  config_service.py      config sections stored in the DB (+ validation)
+  strategy/              ols, stats_tests, half_life, zscore, sizing, pnl, metrics
   engine/
-    backtester.py      bar-by-bar replay of the backbone logic
-    init_methods.py    random-group and sector-based candidate search + pruning
-    bot_engine.py       the actual always-on trading loop
+    bot_engine.py        the always-on trading loop (scan, entry, exit, reconcile, risk exits)
+    backtester.py        bar-by-bar replay used by initialization
+    init_methods.py      random / sector candidate search
+    xt_hooks.py          XT rate-limit pause, min notional, balance helpers
   exchange/
-    base.py            shared client interface
-    nobitex.py         real Nobitex REST client (market data + orders)
-    paper.py           paper-trading simulator (real prices, simulated fills)
-    factory.py         picks paper vs live client from current settings
-  routers/             FastAPI route handlers (auth/config/groups/init/bot/credentials)
-frontend/
-  index.html, css/, js/  vanilla HTML/CSS/JS UI (Chart.js from cdnjs), no build step
-config/default_config.yaml  seeds the DB on first run only
-data/arb_bot.db              SQLite database (created on first run)
+    nobitex.py, xt.py    live clients (xt.py uses ccxt, swap/linear, USDT-M)
+    paper.py             paper simulator over a real market-data client
+    factory.py           picks the client for the active exchange and mode
+  routers/               auth, config, groups, init, bot, credentials, manual, symbols
+frontend/                vanilla HTML/CSS/JS, no build step
+                         (Lightweight Charts for the residual chart, Chart.js for the rest)
+config/default_config.yaml
+data/arb_bot.db          SQLite (created on first run)
+tests/                   pytest suite (run: python -m pytest -q)
 ```
 
-## 7. Notes, caveats, and things to double-check before real money
+## 8. Going live on XT: checklist
 
-- **The Nobitex client was written directly from the OpenAPI docs you
-  provided and has never been exercised against the live API** (this
-  sandbox has no network access). Before live trading: smoke-test
-  `backend/exchange/nobitex.py` by hand against
-  `https://testnetapiv2.nobitex.ir`, especially `place_order`'s field
-  names/units and the `/market/stats` key format used by
-  `get_liquid_symbols` (assumed to be `"btc-rls"`-style keys -- adjust
-  `_stat_key_to_symbol` if your account's response differs).
-- **Signature auth (Ed25519) is scaffolded but not wired up**
-  (`sign_ed25519` in `nobitex.py`). Token auth
-  (`Authorization: Token <token>`) is implemented and is the simpler path
-  if your API key supports it.
-- **Position sizing** is a simple `trade_notional / price` per leg, not
-  beta-weighted. For real trading you'll likely want to size the
-  independent legs by their OLS beta so the position is actually
-  dollar/beta-neutral -- the hook is `BotEngine._opening_side` /
-  `_check_entry` in `bot_engine.py`.
-- **PnL accounting** in both the backtester and the live engine is a
-  unit-notional log-spread approximation (good for ranking/comparing
-  groups and for a paper-trading feel); it is not a full ledger of actual
-  fills, partial fills, or funding costs.
-- **Sector map** (`backend/sectors.py`) is a small hand-maintained
-  dictionary, not pulled from a live source -- extend it as you add
-  markets.
-- The dependent symbol for a group is currently just "the first symbol in
-  the group." Swap in a different selection rule in `init_methods.py` /
-  the group-creation code if you want it chosen differently (e.g. most
-  liquid, or lowest ADF p-value across choices).
-- **Paper mode is the default and stays the default across restarts**
-  (`BotState.trading_mode`) until you explicitly switch it from the UI.
+1. **API key.** On XT create a key with *futures trade* and *read*
+   permission, **no withdrawal**, and whitelist your server's IP. Prefer a
+   dedicated subaccount funded only with what you can lose. Save it in
+   Settings & Credentials.
+2. **Minimums.** XT limits are per contract. Read them from
+   `https://fapi.xt.com/future/market/v3/public/symbol/list`
+   (`minQty`, `minNotional`, `contractSize`, `quantityPrecision`). Every leg
+   must clear its symbol's `minNotional`, so a 2-leg basket is realistically
+   25-40 USDT gross, and about half of that as margin at 2x leverage.
+3. **Conservative config.** Two-symbol groups, `xt_leverage` 2,
+   `xt_margin_mode` isolated, `max_open_trades` 1-2,
+   `max_total_gross_notional` about 3x `trade_notional`,
+   `max_holding_hours` set (24-48), `fee_rate` about 0.0006 (confirm your
+   tier), `slippage_rate` 0.0005 or more.
+4. **Switch to Live and start one small group.** Watch the log for
+   `entry scan:` lines and the *Entry status* column to see why entries are
+   skipped.
+5. **Verify the first trade on XT:** leverage and margin mode applied on
+   both LONG and SHORT sides, both legs filled, no stray positions after
+   close; compare the bot's PnL with XT's.
+6. Scale up only after several clean round trips.
+
+Safety behaviour you can rely on (and should still verify): leverage/margin
+setup is fail-closed (an order is never sent if leverage could not be set);
+closes are reduce-only; entries below the exchange minimum after contract
+rounding are refused; a rate-limit response pauses the bot for 10 minutes;
+open positions on the exchange that the bot does not know about are flagged
+as orphans and block entries on their symbols (use a dedicated account);
+a position near liquidation is closed.
+
+## 9. Caveats
+
+- Paper PnL is a model (beta-weighted cash PnL with the configured fee and
+  slippage); live PnL comes from the exchange when available and otherwise
+  from fill prices. They will differ.
+- XT funding (every 8 hours) is only approximated by
+  `funding_rate_estimate`.
+- Markets are fetched through `ccxt` and cached for an hour; limits and
+  leverage tiers can change on the exchange side.
+- The Nobitex client has been run against the live API only lightly; test
+  with small sizes first. Ed25519 signature auth is scaffolded but unused;
+  token auth is the supported path.
+- Backtests in Initialization are in-sample and optimistic; treat them as a
+  ranking, not a forecast.
+- `docs/RATE_LIMIT_AUDIT.md` records the exchange rate-limit review.

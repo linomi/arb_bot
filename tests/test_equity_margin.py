@@ -58,3 +58,23 @@ def test_paper_equity_starts_at_start_balance_with_margin_series():
     assert out["leverage"] == 2.0 and out["peak_margin"] == 50.0 and out["current_margin"] == 50.0
     assert abs(out["return_pct"] - 0.6) < 1e-9
     assert abs(out["max_drawdown_pct"] - (4 / 1010 * 100)) < 1e-9
+
+
+def test_xt_symbol_gets_leverage_even_if_exchange_column_says_nobitex():
+    assert gr._leverage_for("nobitex", {"xt_leverage": 2}, "BTC/USDT:USDT") == 2.0
+
+
+def test_clear_trades_keeps_open_trades():
+    db = _db()
+    config_service.seed_defaults_if_missing(db)
+    g = Group(name="g", dependent_symbol="A", symbols=["A", "B"], exchange="xt")
+    db.add(g); db.flush()
+    fit = OLSFit(group_id=g.id, betas={}, intercept=0.0, resid_mean=0.0, resid_std=1.0)
+    db.add(fit); db.flush()
+    _trade(db, g, fit, 0, 1.0)
+    _trade(db, g, fit, 1, 2.0)
+    _trade(db, g, fit, 2, 0.0, closed=False)
+    db.commit()
+    out = gr.clear_trades(g.id, mode="paper", db=db)
+    assert out["deleted"] == 2 and out["kept_open"] == 1
+    assert db.query(Trade).count() == 1

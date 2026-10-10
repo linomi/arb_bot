@@ -318,5 +318,10 @@
   "trades.th.gross": "حجم کل",
   "trades.th.margin": "مارجین",
   "trades.th.gross.title": "مجموع ارزش همه پایه‌ها (میزان مواجهه)",
-  "trades.th.margin.title": "سرمایه درگیر = حجم کل ÷ اهرم"
+  "trades.th.margin.title": "سرمایه درگیر = حجم کل ÷ اهرم",
+  "trades.clear": "پاک کردن تاریخچه",
+  "trades.clear.confirm": "همه معاملات بسته‌شده {mode} این گروه حذف شوند؟ معاملات باز نگه داشته می‌شوند. این کار قابل بازگشت نیست.",
+  "trades.clear.done": "{n} معامله حذف شد{kept}.",
+  "trades.clear.kept": "، {k} معامله باز نگه داشته شد",
+  "trades.clear.failed": "پاک‌سازی انجام نشد: {error}"
 }

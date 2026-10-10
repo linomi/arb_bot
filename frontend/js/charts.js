@@ -481,6 +481,7 @@ function _rcCreate(el, key) {
   rc.destroy = function () {
     if (rc.destroyed) return;
     rc.destroyed = true;
+    _rcStopMorph(rc);
     try { chart.unsubscribeCrosshairMove(rc._onMove); } catch (e) {}
     try { chart.unsubscribeClick(rc._onClick); } catch (e) {}
     try { chart.timeScale().unsubscribeSizeChange(rc._onSize); } catch (e) {}
@@ -498,10 +499,56 @@ function _rcCreate(el, key) {
   return rc;
 }
 
-function _rcApply(rc, d) {
+/** First index in a sorted [{time}] array whose time is >= t (or length). */
+function _rcLowerBound(pts, t) {
+  let lo = 0, hi = pts.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].time < t) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+const RC_MORPH_MS = 480;
+const _rcEase = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+
+function _rcStopMorph(rc) {
+  if (rc._morphRaf) { cancelAnimationFrame(rc._morphRaf); rc._morphRaf = null; }
+}
+
+/** Points of the new series with each value pulled back towards the old value at that time. */
+function _rcMixPoints(newPts, oldMap, k) {
+  if (k >= 1) return newPts;
+  return newPts.map((p) => {
+    const o = oldMap.get(p.time);
+    return o === undefined ? p : { time: p.time, value: o + (p.value - o) * k, color: p.color };
+  });
+}
+
+function _rcApply(rc, d, opts) {
+  opts = opts || {};
+  _rcStopMorph(rc);
   const ts = rc.chart.timeScale();
-  const prevRange = rc.hasData ? ts.getVisibleRange() : null;
-  const prevLast = rc.lastTime;
+  const old = rc.hasData ? rc.data : null;
+  // Logical (bar-index) range survives prepended history and value changes; time ranges don't
+  // (getVisibleRange clamps to the loaded data, which made the view jump back after loading).
+  let prevLogical = null;
+  try { prevLogical = old ? ts.getVisibleLogicalRange() : null; } catch (e) { prevLogical = null; }
+  const oldN = old ? old.pts.length : 0;
+  const atEdge = !!(prevLogical && oldN && prevLogical.to >= oldN - 1 - 0.5);
+
+  const oldMap = new Map();
+  let changed = false;
+  if (old && !opts.noMorph) {
+    old.pts.forEach((p) => oldMap.set(p.time, p.value));
+    let diffs = 0;
+    d.pts.forEach((p) => {
+      const o = oldMap.get(p.time);
+      if (o !== undefined && Math.abs(o - p.value) > 1e-9 * (1 + Math.abs(o))) diffs++;
+    });
+    changed = diffs > 2; // a live bar updating its last value is not worth animating
+  }
+  const from = changed ? old : null;
 
   rc.data = d;
   rc.levelRange = d.std > 0
@@ -512,27 +559,47 @@ function _rcApply(rc, d) {
   rc.series.applyOptions({
     priceFormat: { type: "custom", minMove: Math.pow(10, -dec), formatter: (p) => Number(p).toFixed(dec) },
   });
-  rc.series.setData(d.pts);
-
+  rc.series.setData(from ? _rcMixPoints(d.pts, oldMap, 0) : d.pts);
+  if (from) {
+    // Level lines start at the old levels and glide to the new ones with the series.
+    rc.data = { ...d, mean: from.mean, std: from.std, zEntry: from.zEntry, zClose: from.zClose, zStop: from.zStop };
+  }
   _rcBuildLines(rc);
   rc.markersApi.setMarkers(d.markerInfo.markers);
   _rcRenderLegend(rc, d);
 
-  const newLast = d.pts[d.pts.length - 1].time;
-  if (rc.userMoved && prevRange) {
-    let { from, to } = prevRange;
-    // If the user was parked at the live edge, keep following it as new bars arrive.
-    if (prevLast != null && newLast > prevLast && to >= prevLast - d.spacing * 0.5) {
-      const shift = newLast - prevLast;
-      from += shift;
-      to += shift;
-    }
-    try { ts.setVisibleRange({ from, to }); } catch (e) { _rcFit(rc); }
+  const newN = d.pts.length;
+  const newLast = d.pts[newN - 1].time;
+  if (rc.userMoved && prevLogical && old) {
+    const prepended = _rcLowerBound(d.pts, old.pts[0].time);
+    const appended = Math.max(0, newN - prepended - oldN);
+    const shift = prepended + (atEdge ? appended : 0);
+    try {
+      ts.setVisibleLogicalRange({ from: prevLogical.from + shift, to: prevLogical.to + shift });
+    } catch (e) { _rcFit(rc); }
   } else {
     _rcFit(rc);
   }
   rc.hasData = true;
   rc.lastTime = newLast;
+
+  if (from) {
+    const t0 = performance.now();
+    const step = (now) => {
+      if (rc.destroyed) return;
+      const x = Math.min(1, (now - t0) / RC_MORPH_MS);
+      const k = _rcEase(x);
+      rc.series.setData(_rcMixPoints(d.pts, oldMap, k));
+      const lerp = (a, b) => a + (b - a) * k;
+      rc.data = x >= 1 ? d : {
+        ...d, mean: lerp(from.mean, d.mean), std: lerp(from.std, d.std),
+      };
+      _rcBuildLines(rc);
+      if (x < 1) rc._morphRaf = requestAnimationFrame(step);
+      else { rc._morphRaf = null; rc.data = d; }
+    };
+    rc._morphRaf = requestAnimationFrame(step);
+  }
 }
 
 function _rcDestroy() {
@@ -608,7 +675,7 @@ async function _rcMaybeLoadOlder(rc, range) {
     const d = _rcMakeData(rc.fit, rc.cfg, rc.trades);
     if (d) {
       _rcApply(rc, d);
-      rc.sig = _rcSig(rc.key, d);
+      rc.sig = _rcSig(`${rc.key}:${rc.variant}`, d);
     }
     _rcSetStatus(rc, cache.exhausted ? t("plot.history.start") : "");
   } catch (e) {
@@ -643,9 +710,11 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
     el.replaceWith(div);
     el = div;
   }
-  const key = `${fit.group_id != null ? fit.group_id : (fit.group_name || "")}:${
-    fit._pinned_trade_id != null ? fit._pinned_trade_id : "live"}`;
-  const sig = _rcSig(key, d);
+  // The chart instance is per group; switching betas (live <-> a trade's entry fit) keeps the
+  // instance, so pan/zoom survive and the series morphs instead of being rebuilt.
+  const key = `${fit.group_id != null ? fit.group_id : (fit.group_name || "")}`;
+  const variant = fit._pinned_trade_id != null ? fit._pinned_trade_id : "live";
+  const sig = _rcSig(`${key}:${variant}`, d);
 
   let rc = residualChart;
   if (rc && (rc.destroyed || rc.container !== el || !el.isConnected || rc.key !== key)) {
@@ -664,6 +733,7 @@ function renderResidualChart(canvasId, fit, backboneCfg, trades, onMarkerClick) 
   rc.fit = fit;
   rc.cfg = cfg;
   rc.trades = trades;
+  rc.variant = variant;
   _rcApply(rc, d);
   rc.sig = sig;
   const cache = rc.gid != null ? _RC_PRICES[rc.gid] : null;

@@ -94,3 +94,7 @@ html[dir="rtl"] .param-form .adv-details[open]>summary::before{transform:scaleX(
 .equity-stats .eq-k{opacity:.75}
 .equity-stats b.pos{color:#6b9a6b}.equity-stats b.neg{color:#b85c4a}
 .equity-stats .eq-toggle{margin-inline-start:auto;display:inline-flex;gap:4px;align-items:center;cursor:pointer;color:#c9a24b}
+
+.trades-panel .panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.btn-danger-ghost{padding:3px 10px;font-size:12px;color:#b85c4a;border-color:rgba(184,92,74,.55)}
+.btn-danger-ghost:hover{background:rgba(184,92,74,.14)}

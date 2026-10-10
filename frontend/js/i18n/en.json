@@ -318,5 +318,10 @@
   "trades.th.gross": "Gross",
   "trades.th.margin": "Margin",
   "trades.th.gross.title": "Sum of all leg notionals (exposure)",
-  "trades.th.margin.title": "Capital tied up = gross ÷ leverage"
+  "trades.th.margin.title": "Capital tied up = gross ÷ leverage",
+  "trades.clear": "Clear history",
+  "trades.clear.confirm": "Delete all finished {mode} trades of this group? Open trades are kept. This cannot be undone.",
+  "trades.clear.done": "Deleted {n} trade(s){kept}.",
+  "trades.clear.kept": ", kept {k} open",
+  "trades.clear.failed": "Could not clear history: {error}"
 }

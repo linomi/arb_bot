@@ -231,6 +231,28 @@
     _wireBackToLive(groupId);
   };
 
+  const clearBtn = document.getElementById("clear-trades-btn");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", async () => {
+      const gid = state.selectedGroupId;
+      if (gid == null) return;
+      let mode = "paper";
+      try { mode = (await API.botState()).trading_mode || "paper"; } catch (e) {}
+      if (!confirm(t("trades.clear.confirm", { mode }))) return;
+      try {
+        const r = await API.clearTrades(gid, mode);
+        const kept = r.kept_open ? t("trades.clear.kept", { k: r.kept_open }) : "";
+        alert(t("trades.clear.done", { n: r.deleted, kept }));
+      } catch (e) {
+        alert(t("trades.clear.failed", { error: e.message || e }));
+        return;
+      }
+      state.tradeSig = {};
+      await selectGroup(gid, true);
+      if (typeof loadPerfTable === "function") loadPerfTable();
+    });
+  }
+
   window.deleteGroupFromTable = async function (groupId, name) {
     if (!confirm(t("confirm.delete.group.perm", { name }))) return;
     try {

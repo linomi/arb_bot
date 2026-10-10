@@ -46,6 +46,10 @@ const API = {
   getGroup(id) { return this.get(`/api/groups/${id}`); },
   setGroupStatus(id, status) { return this.patch(`/api/groups/${id}/status`, { status }); },
   deleteGroup(id) { return this.del(`/api/groups/${id}`); },
+  clearTrades(id, mode) {
+    const q = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+    return this.del(`/api/groups/${id}/trades${q}`);
+  },
   listFits(id) { return this.get(`/api/groups/${id}/fits`); },
   latestFit(id) { return this.get(`/api/groups/${id}/fits/latest`); },
   getFit(groupId, fitId) { return this.get(`/api/groups/${groupId}/fits/${fitId}`); },

@@ -84,9 +84,13 @@ def _trade_pnl(t: Trade):
     return None
 
 
-def _leverage_for(exchange: str | None, backbone: dict) -> float:
-    """Leverage used to turn gross notional into margin (Nobitex orders use 1x)."""
-    if (exchange or "nobitex").lower() == "xt":
+def _leverage_for(exchange: str | None, backbone: dict, dependent_symbol: str | None = None) -> float:
+    """Leverage used to turn gross notional into margin (Nobitex orders use 1x).
+
+    A USDT-settled perpetual symbol ("BTC/USDT:USDT") is an XT group even if the
+    stored exchange column says otherwise (older rows were saved as nobitex)."""
+    is_xt = (exchange or "nobitex").lower() == "xt" or str(dependent_symbol or "").endswith("/USDT:USDT")
+    if is_xt:
         try:
             return max(1.0, float(backbone.get("xt_leverage", 1) or 1))
         except (TypeError, ValueError):
@@ -531,6 +535,34 @@ async def get_fit_extended(group_id: int, fit_id: int, db: Session = Depends(get
     return out
 
 
+@router.delete("/{group_id}/trades")
+def clear_trades(
+    group_id: int,
+    mode: str | None = Query(None, description="paper | live | all (default: current bot mode)"),
+    db: Session = Depends(get_db),
+):
+    """Delete this group's finished trade history for one mode.
+
+    Open and failed_partial trades are never deleted: they may still correspond to
+    real exchange positions that the bot tracks.
+    """
+    if not db.get(Group, group_id):
+        raise HTTPException(404, "group not found")
+    resolved = _resolve_mode(db, mode)
+    q = db.query(Trade).filter_by(group_id=group_id)
+    if resolved:
+        q = q.filter_by(mode=resolved)
+    deleted = kept = 0
+    for t in q.all():
+        if t.status in ("open", "failed_partial"):
+            kept += 1
+            continue
+        db.delete(t)
+        deleted += 1
+    db.commit()
+    return {"deleted": deleted, "kept_open": kept, "mode": resolved or "all"}
+
+
 @router.get("/{group_id}/trades")
 def list_trades(
     group_id: int,
@@ -543,7 +575,7 @@ def list_trades(
         q = q.filter_by(mode=resolved)
     trades = q.order_by(Trade.entry_time.desc()).all()
     g = db.get(Group, group_id)
-    lev = _leverage_for(getattr(g, "exchange", None), config_service.get_section(db, "backbone"))
+    lev = _leverage_for(getattr(g, "exchange", None), config_service.get_section(db, "backbone"), getattr(g, "dependent_symbol", None))
     return [_trade_to_dict(t, lev) for t in trades]
 
 
@@ -601,7 +633,7 @@ async def equity_curve(
         pnls.append((t.close_time.isoformat(), float(p)))
 
     backbone = config_service.get_section(db, "backbone")
-    lev = _leverage_for(getattr(g, "exchange", None), backbone)
+    lev = _leverage_for(getattr(g, "exchange", None), backbone, getattr(g, "dependent_symbol", None))
     paper_start = float(backbone.get("paper_start_balance", 1000.0) or 0.0)
     start_equity = paper_start if resolved != "live" else 0.0
     source = "model_cum_pnl"
