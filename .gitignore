@@ -6,3 +6,5 @@ __pycache__/
 *.db
 data/*.db
 .DS_Store
+data/heartbeat
+data/watchdog.state

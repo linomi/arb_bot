@@ -215,6 +215,13 @@ async function refreshBotState() {
     exSel.value = s.exchange;
     state.activeExchange = s.exchange;
   }
+  const tg = document.getElementById("tg-status");
+  if (tg && s.telegram) {
+    tg.removeAttribute("data-i18n");
+    tg.textContent = !s.telegram.enabled ? t("settings.tg.off")
+      : (s.telegram.connected ? t("settings.tg.ok", { n: s.telegram.chats })
+        : t("settings.tg.down", { error: s.telegram.last_error || "?" }));
+  }
   if (s.pause_until) {
     console.warn("Bot rate-limit pause until", s.pause_until);
   }

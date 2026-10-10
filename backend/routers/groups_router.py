@@ -19,6 +19,7 @@ from backend.exchange.nobitex import NobitexClient
 from backend.utils import seconds_to_resolution, fetch_price_df
 from backend.group_names import generate_group_name, is_legacy_name
 from backend.bot_state_service import get_or_create_bot_state
+from backend.notify import emit
 
 log = logging.getLogger("groups_router")
 router = APIRouter(prefix="/api/groups", tags=["groups"])
@@ -230,6 +231,7 @@ def set_group_status(group_id: int, body: GroupStatusUpdate, db: Session = Depen
             )
 
     g.status = body.status
+    emit("bot_state", what="group", group=g.name, value=("فعال" if body.status == "active" else body.status))
     db.commit()
     return _group_to_dict(g)
 
@@ -537,6 +539,7 @@ def clear_trades(
         db.delete(t)
         deleted += 1
     db.commit()
+    emit("bot_state", what="cleared", group=db.get(Group, group_id).name, n=deleted)
     return {"deleted": deleted, "kept_open": kept, "mode": resolved or "all"}
 
 

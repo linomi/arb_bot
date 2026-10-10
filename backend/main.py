@@ -101,7 +101,39 @@ async def on_startup():
             "to protect the UI and API."
         )
 
+    # Telegram (optional): enabled only when TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS are set.
+    try:
+        from backend.notify import telegram as _tg, emit as _emit
+        _tg.bot = _tg.from_env()
+        if _tg.bot is not None:
+            await _tg.bot.start()
+        else:
+            log.info("Telegram disabled (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS in .env to enable).")
+    except Exception:
+        log.exception("Telegram failed to start (non-fatal)")
+
     bot_engine.start_background_loop()
+    try:
+        from backend.bot_state_service import get_or_create_bot_state
+        _db = SessionLocal()
+        try:
+            _st = get_or_create_bot_state(_db)
+            _emit("engine", what="started", mode=_st.trading_mode, exchange=_st.exchange)
+        finally:
+            _db.close()
+    except Exception:
+        log.exception("startup notification failed")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    try:
+        from backend.notify import telegram as _tg, emit as _emit
+        if _tg.bot is not None:
+            _emit("engine", what="shutdown")
+            await _tg.bot.stop()
+    except Exception:
+        log.exception("Telegram shutdown failed")
 
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")

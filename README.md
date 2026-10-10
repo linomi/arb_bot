@@ -8,7 +8,7 @@ live trading is available on **Nobitex** (IRT margin) and **XT.com** (USDT-M
 perpetual swaps). One exchange is active at a time. State lives in SQLite.
 
 > **Money warning.** Live mode places real orders. Read
-> [section 8](#8-going-live-on-xt-checklist) first, start tiny, and use a
+> [section 9](#9-going-live-on-xt-checklist) first, start tiny, and use a
 > dedicated API key without withdrawal permission.
 
 ## 1. How the strategy works
@@ -176,6 +176,8 @@ backend/
     paper.py             paper simulator over a real market-data client
     factory.py           picks the client for the active exchange and mode
   routers/               auth, config, groups, init, bot, credentials, manual, symbols
+  notify/                event hub + Telegram bot (commands, Persian messages, digest)
+scripts/watchdog.py      external heartbeat watchdog (Telegram alert); deploy/ has systemd units
 frontend/                vanilla HTML/CSS/JS, no build step
                          (Lightweight Charts for the residual chart, Chart.js for the rest)
 config/default_config.yaml
@@ -183,7 +185,46 @@ data/arb_bot.db          SQLite (created on first run)
 tests/                   pytest suite (run: python -m pytest -q)
 ```
 
-## 8. Going live on XT: checklist
+## 8. Telegram: notifications and control from your phone
+
+Optional. Messages are in Persian, times are Tehran time (Jalali date).
+
+**Setup**
+1. Create a bot with @BotFather and copy its token.
+2. Get your numeric user id (message @userinfobot).
+3. In `.env`: `TELEGRAM_BOT_TOKEN=...` and `TELEGRAM_CHAT_IDS=<your id>` (comma-separate more
+   ids). The allow-list is mandatory: with an empty list Telegram stays disabled, and
+   messages from any other chat or user are ignored. Optional: `TELEGRAM_PIN`,
+   `TELEGRAM_PROXY` (if Telegram is blocked from the server), `TELEGRAM_DIGEST_TIME`
+   (default `21:00`, `off` disables) and `TELEGRAM_TZ`.
+4. Install the optional chart dependency if you want `/chart`: `pip install matplotlib`.
+5. Restart the bot. Settings shows the connection state. The bot uses long polling, so
+   no open port is needed.
+
+**Notifications:** entry and close (group, direction, z, gross, margin, PnL, reason),
+failed entries, failed rollbacks and failed closes, orphan positions, liquidation-risk
+exits, exchange rate-limit pauses, cycle errors, bot start/stop, group and setting
+changes, and a daily digest. Repeated alerts are suppressed per trade/error.
+
+**Commands:** `/status`, `/positions`, `/groups`, `/why <group>`, `/pnl [today|week|month|all]`,
+`/chart`, `/digest`, `/log [n]`, `/pause`, `/resume`, `/group <name> on|off`, `/set [param value]`
+(a whitelist: z thresholds, `trade_notional`, `target_profit_rate`, `max_open_trades`,
+`max_total_gross_notional`, `max_holding_hours`, `entry_retry_cooldown_sec`, validated like in the UI),
+`/closeall`, `/confirm <code> [pin]`, `/cancel`.
+
+**Safety:** `/closeall`, and `/resume` or `/set` while in Live mode, need a one-time
+code from the bot (valid 60 seconds, three tries) and your PIN if one is set. Switching
+Paper/Live, changing the exchange and API credentials are deliberately not available
+from Telegram. `/closeall` also stops new entries; use `/resume` to continue. Updates
+that piled up while the bot was down, or are older than two minutes, are discarded and
+never replayed.
+
+**Watchdog (the bot cannot report its own death):** the trading loop touches
+`data/heartbeat` every cycle. Run `scripts/watchdog.py` from a systemd timer
+(`deploy/arb-bot-watchdog.service` and `.timer`; adjust the paths) or cron. It sends one
+alert when the heartbeat goes stale (default 10 minutes) and one when it recovers.
+
+## 9. Going live on XT: checklist
 
 1. **API key.** On XT create a key with *futures trade* and *read*
    permission, **no withdrawal**, and whitelist your server's IP. Prefer a
@@ -216,7 +257,7 @@ open positions on the exchange that the bot does not know about are flagged
 as orphans and block entries on their symbols (use a dedicated account);
 a position near liquidation is closed.
 
-## 9. Caveats
+## 10. Caveats
 
 - Paper PnL is a model (beta-weighted cash PnL with the configured fee and
   slippage); live PnL comes from the exchange when available and otherwise

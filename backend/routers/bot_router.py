@@ -6,8 +6,15 @@ from backend.schemas import BotModeUpdate, BotExchangeUpdate
 from backend.engine.bot_engine import bot_engine
 from backend.bot_state_service import get_or_create_bot_state
 from backend.exchange.factory import credentials_configured, SUPPORTED_EXCHANGES
+from backend.notify import emit
 
 router = APIRouter(prefix="/api/bot", tags=["bot"])
+
+
+def _telegram_status() -> dict:
+    from backend.notify import telegram
+    b = telegram.bot
+    return b.status() if b is not None else {"enabled": False}
 
 
 @router.get("/state")
@@ -23,6 +30,7 @@ def get_state(db: Session = Depends(get_db)):
         "pause_until": getattr(bot_engine, "_pause_until", None),
         "credentials_configured": credentials_configured(db, exchange),
         "orphan_positions": list(getattr(bot_engine, "_orphan_positions", []) or []),
+        "telegram": _telegram_status(),
         "note": "is_running=False only blocks new entries; open positions are still managed",
     }
 
@@ -44,6 +52,7 @@ def start_bot(db: Session = Depends(get_db)):
         )
     state.is_running = True
     db.commit()
+    emit("bot_state", what="started")
     return {"is_running": True}
 
 
@@ -53,6 +62,7 @@ def stop_bot(db: Session = Depends(get_db)):
     state = get_or_create_bot_state(db)
     state.is_running = False
     db.commit()
+    emit("bot_state", what="stopped")
     return {
         "is_running": False,
         "message": "New entries paused; open positions still managed",
@@ -72,6 +82,7 @@ def set_mode(body: BotModeUpdate, db: Session = Depends(get_db)):
         )
     state.trading_mode = body.trading_mode
     db.commit()
+    emit("bot_state", what="mode", value=state.trading_mode, via="وب")
     return {"trading_mode": state.trading_mode, "exchange": exchange}
 
 
@@ -84,4 +95,5 @@ def set_exchange(body: BotExchangeUpdate, db: Session = Depends(get_db)):
     state = get_or_create_bot_state(db)
     state.exchange = ex
     db.commit()
+    emit("bot_state", what="exchange", value=ex, via="وب")
     return {"exchange": state.exchange, "trading_mode": state.trading_mode}

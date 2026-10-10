@@ -323,5 +323,9 @@
   "trades.clear.kept": ", kept {k} open",
   "trades.clear.failed": "Could not clear history: {error}",
   "hint.trade_notional": "Total notional of ALL legs of one basket (not just one leg). Legs are split by the OLS betas; margin = this ÷ leverage",
-  "trades.margin.tip": "Gross {gross} · leverage ×{lev}"
+  "trades.margin.tip": "Gross {gross} · leverage ×{lev}",
+  "settings.tg.title": "Telegram",
+  "settings.tg.off": "Telegram is not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS in .env and restart (see README).",
+  "settings.tg.ok": "Connected · notifications and commands enabled for {n} chat(s).",
+  "settings.tg.down": "Configured but not connected: {error}"
 }

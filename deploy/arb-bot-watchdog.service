@@ -1,0 +1,8 @@
+[Unit]
+Description=Arb bot watchdog (Telegram alert when the heartbeat goes stale)
+
+[Service]
+Type=oneshot
+# Adjust the paths to your install
+WorkingDirectory=/opt/arb_bot
+ExecStart=/opt/arb_bot/.venv/bin/python /opt/arb_bot/scripts/watchdog.py --max-age 600

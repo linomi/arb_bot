@@ -323,5 +323,9 @@
   "trades.clear.kept": "، {k} معامله باز نگه داشته شد",
   "trades.clear.failed": "پاک‌سازی انجام نشد: {error}",
   "hint.trade_notional": "مجموع ارزش «همه» پایه‌های یک سبد (نه فقط یک پایه). پایه‌ها بر اساس بتاهای OLS تقسیم می‌شوند؛ مارجین = این مقدار ÷ اهرم",
-  "trades.margin.tip": "حجم کل {gross} · اهرم ×{lev}"
+  "trades.margin.tip": "حجم کل {gross} · اهرم ×{lev}",
+  "settings.tg.title": "تلگرام",
+  "settings.tg.off": "تلگرام تنظیم نشده است. TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_IDS را در .env بگذارید و سرویس را ری‌استارت کنید (راهنما در README).",
+  "settings.tg.ok": "متصل · اعلان و دستورات برای {n} چت فعال است.",
+  "settings.tg.down": "تنظیم شده اما متصل نیست: {error}"
 }

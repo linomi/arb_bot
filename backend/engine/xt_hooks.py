@@ -53,6 +53,11 @@ def handle_rate_limit(engine: Any, exc: BaseException, *, exchange: str) -> bool
         "XT rate-limit lockout — pausing bot-wide until %s (no immediate retry)",
         engine._pause_until,
     )
+    try:
+        from backend.notify import emit
+        emit("rate_limit", until=engine._pause_until)
+    except Exception:
+        pass
     return True
 
 

@@ -47,7 +47,8 @@ from backend.strategy.sizing import (
     ExcessiveScalingError,
 )
 from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional, entry_target_check
-from backend.strategy.account import paper_free_balance, leverage_for
+from backend.strategy.account import paper_free_balance, leverage_for, trade_gross
+from backend.notify import emit
 from backend.engine import xt_hooks
 try:
     from backend.exchange.xt import XTClient, XTError
@@ -139,6 +140,8 @@ class BotEngine:
         self._last_fit_logged: dict[int, float] = {}        # group_id -> monotonic time
         self._orphan_positions: list[dict] = []             # exchange positions without open trade
         self._last_orphan_check: float = 0.0
+        self._lock = asyncio.Lock()                         # one cycle / close-all at a time
+        self._known_orphans: set[str] = set()
 
     def start_background_loop(self):
         if self._task is None or self._task.done():
@@ -149,15 +152,26 @@ class BotEngine:
             db = SessionLocal()
             try:
                 state = get_or_create_bot_state(db)
-                await self._run_cycle(db, state)
+                async with self._lock:
+                    await self._run_cycle(db, state)
                 sampling_time = config_service.get_section(db, "backbone").get("sampling_time", 60)
+                self._write_heartbeat()
             except Exception:
                 self._last_error = traceback.format_exc()
                 log.exception("bot cycle failed")
+                emit("cycle_error", error=self._last_error.strip().splitlines()[-1])
                 sampling_time = 30
             finally:
                 db.close()
             await asyncio.sleep(max(1, int(sampling_time)))
+
+    def _write_heartbeat(self) -> None:
+        """Touch data/heartbeat so an external watchdog can tell the loop is alive."""
+        try:
+            from backend.db import DATA_DIR
+            (DATA_DIR / "heartbeat").write_text(str(int(time.time())))
+        except Exception:
+            pass
 
     async def _run_cycle(self, db, state: BotState):
         backbone = config_service.get_section(db, "backbone")
@@ -236,6 +250,7 @@ class BotEngine:
                     self._last_error = err
                     self._group_errors[gid] = err
                     log.exception("group %s failed this cycle", gid)
+                    emit("cycle_error", group=getattr(group, "name", gid), error=err.strip().splitlines()[-1])
             self._log_scan_summary(groups)
         finally:
             await md_client.aclose()
@@ -321,6 +336,58 @@ class BotEngine:
                 exchange=group_ex,
             )
 
+
+    async def close_all(self, reason: str = "manual_closeall") -> dict:
+        """Stop new entries and close every open trade of the current mode right now.
+
+        Runs under the same lock as the trading cycle, so it cannot race with it. Trades that
+        fail to close stay open and are retried by the normal cycle.
+        """
+        async with self._lock:
+            db = SessionLocal()
+            md_client = trading_client = None
+            try:
+                state = get_or_create_bot_state(db)
+                state.is_running = False
+                db.commit()
+                mode = state.trading_mode or "paper"
+                backbone = config_service.get_section(db, "backbone")
+                trades = db.query(Trade).filter_by(status="open", mode=mode).all()
+                result = {"total": len(trades), "closed": 0, "failed": 0}
+                if not trades:
+                    return result
+                md_client = factory.build_market_data_client(db)
+                trading_client = factory.build_trading_client(db)
+                resolution = seconds_to_resolution(backbone["sampling_time"])
+                exchange = (getattr(state, "exchange", None) or "nobitex").strip().lower()
+                for t in trades:
+                    g = db.get(Group, t.group_id)
+                    try:
+                        df = await fetch_price_df(md_client, g.symbols, resolution, 40)
+                        if df.empty:
+                            raise RuntimeError("no prices")
+                        prices = df.iloc[-1].to_dict()
+                        group_ex = (getattr(g, "exchange", None) or exchange).strip().lower()
+                        await self._check_exit(
+                            db, g, t, prices, backbone, trading_client, mode,
+                            exchange=group_ex, force_reason=reason,
+                        )
+                        db.refresh(t)
+                    except Exception as e:
+                        log.exception("close_all: trade #%s failed: %s", t.id, e)
+                    if t.status == "closed":
+                        result["closed"] += 1
+                    else:
+                        result["failed"] += 1
+                return result
+            finally:
+                for c in (md_client, trading_client):
+                    if c is not None and not isinstance(c, PaperExchangeClient):
+                        try:
+                            await c.aclose()
+                        except Exception:
+                            pass
+                db.close()
 
     def _data_is_stale(self, price_df, backbone: dict) -> bool:
         """True if latest bar older than data_staleness_mult * sampling_time."""
@@ -411,6 +478,11 @@ class BotEngine:
 
         self._orphan_positions = orphans
         self._last_orphan_check = time.monotonic()
+        keys = {f"{o.get('symbol')}:{o.get('side')}" for o in orphans}
+        fresh = [o for o in orphans if f"{o.get('symbol')}:{o.get('side')}" not in self._known_orphans]
+        self._known_orphans = keys
+        if fresh:
+            emit("orphan", orphans=fresh, exchange=exchange)
         if orphans:
             self._last_error = f"{len(orphans)} orphan position(s) on {exchange}"
         return orphans
@@ -1047,7 +1119,8 @@ class BotEngine:
             return None, details
         return float(total), details
 
-    async def _check_exit(self, db, group, open_trade: Trade, latest_prices, backbone, trading_client, trading_mode, exchange: str = "nobitex"):
+    async def _check_exit(self, db, group, open_trade: Trade, latest_prices, backbone, trading_client, trading_mode, exchange: str = "nobitex",
+                          force_reason: str | None = None):
         fit = open_trade.ols_fit
         if fit is None:
             log.error("trade #%s missing ols_fit — cannot exit", open_trade.id)
@@ -1060,6 +1133,12 @@ class BotEngine:
             resid_now, open_trade.direction, fit.resid_mean, fit.resid_std,
             backbone["z_close"], backbone["z_stop_loss"],
         )
+        if force_reason:
+            exit_dec = ExitDecision(True, force_reason, exit_dec.z)
+        elif (not exit_dec.should_exit and trading_mode == "live"
+              and await self._risk_exit_if_near_liquidation(open_trade, trading_client, backbone)):
+            exit_dec = ExitDecision(True, "risk_exit", exit_dec.z)
+            emit("risk_exit", group=group.name, trade_id=open_trade.id)
         if not exit_dec.should_exit:
             max_hold_h = float(backbone.get("max_holding_hours", 0) or 0)
             if max_hold_h > 0 and open_trade.entry_time is not None:
@@ -1105,6 +1184,7 @@ class BotEngine:
             self._last_error = str(e)
             self._group_errors[group.id] = f"exit failed: {e}"
             log.error("group %s trade #%s exit place failed: %s", group.id, open_trade.id, e)
+            emit("exit_failed", group=group.name, trade_id=open_trade.id, error=str(e)[:300])
             return
 
         still_open = [
@@ -1119,6 +1199,8 @@ class BotEngine:
                 group.id, open_trade.id,
                 [l.get("symbol") for l in still_open],
             )
+            emit("exit_failed", group=group.name, trade_id=open_trade.id,
+                 error="legs not closed: " + ", ".join(str(l.get("symbol")) for l in still_open))
             return
 
         qty_y = float(
@@ -1191,6 +1273,13 @@ class BotEngine:
         log.info(
             "group %s trade #%s closed mode=%s reason=%s pnl=%.6g",
             group.id, open_trade.id, trading_mode, exit_dec.reason, reported_pnl,
+        )
+        emit(
+            "closed", group=group.name, trade_id=open_trade.id, mode=trading_mode,
+            reason=exit_dec.reason, z=exit_dec.z, pnl=reported_pnl,
+            pnl_source=open_trade.pnl_source,
+            held_sec=((open_trade.close_time - open_trade.entry_time).total_seconds()
+                      if open_trade.entry_time and open_trade.close_time else None),
         )
 
     async def _check_entry(
@@ -1443,6 +1532,11 @@ class BotEngine:
             self._group_errors[group.id] = str(e)
             log.error("group %s partial entry (rolled back if possible): %s", group.id, e)
             self._diag(group, "order_failed", f"partial entry rolled back: {e}", **diag_fields)
+            bad = [l for l in (e.legs or []) if l.get("rollback_failed")]
+            if bad:
+                emit("rollback_failed", group=group.name, symbols=[l.get("symbol") for l in bad])
+            else:
+                emit("entry_failed", group=group.name, error=str(e)[:300], rolled_back=True)
             self._start_cooldown(group.id, backbone)
             trade = Trade(
                 group_id=group.id,
@@ -1468,6 +1562,7 @@ class BotEngine:
             self._group_errors[group.id] = str(e)
             log.error("group %s entry order failed: %s", group.id, e)
             self._diag(group, "order_failed", str(e), **diag_fields)
+            emit("entry_failed", group=group.name, error=str(e)[:300], rolled_back=False)
             self._start_cooldown(group.id, backbone)
             return
 
@@ -1488,6 +1583,12 @@ class BotEngine:
         db.add(trade)
         db.commit()
         self._diag(group, "entered", f"opened {entry_dec.direction} at z={entry_dec.z:.2f}", **diag_fields)
+        _g = legs_gross_notional(legs)
+        emit(
+            "entered", group=group.name, trade_id=trade.id, mode=trading_mode,
+            direction=entry_dec.direction, z=entry_dec.z, legs=legs, gross=_g,
+            margin=_g / leverage_for(group_ex, backbone, group.dependent_symbol),
+        )
         log.info(
             "group %s opened %s mode=%s notional=%.4g legs=%s",
             group.id, entry_dec.direction, trading_mode, notional,
