@@ -34,9 +34,14 @@ regressors `X1..Xk`.
    portfolio caps (`max_open_trades`, `max_total_gross_notional`), stale
    data, symbols already used by another open trade, and exchange minimums /
    free balance.
-5. **Sizing.** Each leg is `trade_notional`-scaled by its beta so the
-   basket is beta-weighted; legs are lifted to the exchange minimum when
-   needed (capped by `max_entry_scale`) and scaled down to the free balance.
+5. **Sizing.** The dependent leg is `trade_notional / price_Y` units. Each
+   regressor leg is `|beta| x` that quantity (opposite side for a positive
+   beta, same side for a negative one), so a one-unit move in Y is hedged by
+   `beta` units of X. Regressor legs under 2% of the dependent notional are
+   dropped. If a leg is under the exchange minimum, the whole basket is
+   scaled up (refused above `max_entry_scale`). Live, it is scaled down to fit
+   the free balance. Gross notional is therefore
+   `trade_notional x (1 + sum(|beta| x P_x / P_y))`.
 6. **Execution.** Legs are sent one after another as market orders. If one
    fails after others filled, the filled legs are rolled back. Closes use
    reduce-only orders for the actual open size.
@@ -132,7 +137,7 @@ are filled in automatically.
 | `z_entry` / `z_close` / `z_stop_loss` | Thresholds; require `stop > entry > close`. |
 | `stationarity_method` | `engle_granger` (recommended) or `adf_kpss`. |
 | `paper_start_balance` | Paper mode: starting capital for the equity curve. |
-| `trade_notional` | Basket size before beta-scaling. |
+| `trade_notional` | Notional of the **dependent** leg; the other legs are `\|beta\|` times its quantity, so total gross is larger (see section 1, Sizing). |
 | `fee_rate`, `slippage_rate` | Cost model per side. |
 | `target_profit_rate` | Minimum expected net profit, as a fraction of gross notional, to allow an entry (0 disables). |
 
