@@ -84,30 +84,7 @@ def _trade_pnl(t: Trade):
     return None
 
 
-def _leverage_for(exchange: str | None, backbone: dict, dependent_symbol: str | None = None) -> float:
-    """Leverage used to turn gross notional into margin (Nobitex orders use 1x).
-
-    A USDT-settled perpetual symbol ("BTC/USDT:USDT") is an XT group even if the
-    stored exchange column says otherwise (older rows were saved as nobitex)."""
-    is_xt = (exchange or "nobitex").lower() == "xt" or str(dependent_symbol or "").endswith("/USDT:USDT")
-    if is_xt:
-        try:
-            return max(1.0, float(backbone.get("xt_leverage", 1) or 1))
-        except (TypeError, ValueError):
-            return 1.0
-    return 1.0
-
-
-def _trade_gross(t: Trade) -> float | None:
-    """Total entry notional across all legs (exposure), from fills when known."""
-    from backend.strategy.pnl import legs_gross_notional
-    legs = getattr(t, "legs_entry", None)
-    if legs:
-        g = legs_gross_notional(legs)
-        if g > 0:
-            return float(g)
-    tn = getattr(t, "trade_notional", None)
-    return float(tn) if tn is not None else None
+from backend.strategy.account import leverage_for as _leverage_for, trade_gross as _trade_gross  # noqa: E402
 
 
 def _trade_to_dict(t: Trade, leverage: float = 1.0) -> dict:

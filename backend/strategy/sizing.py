@@ -3,8 +3,12 @@ Beta-aware leg sizing for raw-price OLS residuals.
 
     y = a + sum(beta_j * x_j) + residual
 
-qty_y  = trade_notional / P_y
-qty_xj = |beta_j| * qty_y
+Notional basis (``basis`` argument of leg_orders):
+  "gross" (default): trade_notional is the TOTAL notional of all legs.
+      qty_y  = trade_notional / (P_y * (1 + sum_j |beta_j| * P_xj / P_y))
+  "dependent" (legacy rows only): trade_notional is the dependent leg's notional.
+      qty_y  = trade_notional / P_y
+In both cases qty_xj = |beta_j| * qty_y.
 
 Negligible independent legs (contrib << dependent notional) are dropped
 instead of scaling the whole basket up to meet the exchange min order size.
@@ -49,7 +53,10 @@ def leg_orders(
     min_order_value_irt: float | None = None,  # backward-compat alias
     min_weight_fraction: float = DEFAULT_MIN_WEIGHT_FRACTION,
     max_scale: float | None = None,
+    basis: str = "gross",
 ) -> list[dict]:
+    if basis not in ("gross", "dependent"):
+        raise ValueError(f"unknown notional basis: {basis}")
     if direction not in ("long_residual", "short_residual"):
         raise ValueError(f"unknown direction: {direction}")
     notional = float(trade_notional)
@@ -69,7 +76,39 @@ def leg_orders(
         raise ValueError(f"invalid price for {dependent_symbol}: {py}")
 
     dep_side = "buy" if direction == "long_residual" else "sell"
-    dep_qty = notional / py
+
+    # Relative weight of each regressor leg vs the dependent leg (|beta| * P_x / P_y).
+    # The 2% drop rule is expressed in these units, independent of the notional basis.
+    rel: dict[str, float] = {}
+    beta_of: dict[str, float] = {}
+    px_of: dict[str, float] = {}
+    dropped: list[dict] = []
+    for sym, beta in (betas or {}).items():
+        b = float(beta)
+        px = float(prices[sym])
+        if px <= 0:
+            raise ValueError(f"invalid price for {sym}: {px}")
+        w = abs(b) * px / py
+        if w < float(min_weight_fraction):
+            dropped.append({
+                "symbol": str(sym),
+                "beta": b,
+                "weight": w,
+                "reason": f"weight {w:.4f} < min_weight_fraction {min_weight_fraction}",
+            })
+            continue
+        rel[str(sym)] = w
+        beta_of[str(sym)] = b
+        px_of[str(sym)] = px
+
+    if basis == "gross":
+        dep_notional = notional / (1.0 + sum(rel.values()))
+    else:
+        dep_notional = notional
+    dep_qty = dep_notional / py
+    for d in dropped:
+        d["leg_notional"] = abs(d["beta"]) * dep_qty * float(prices[d["symbol"]])
+
     legs: list[dict] = [
         {
             "symbol": dependent_symbol,
@@ -79,35 +118,15 @@ def leg_orders(
             "is_dependent": True,
         }
     ]
-
-    dropped: list[dict] = []
-    for sym, beta in (betas or {}).items():
-        b = float(beta)
-        px = float(prices[sym])
-        if px <= 0:
-            raise ValueError(f"invalid price for {sym}: {px}")
-
-        # Approximate leg notional at current dep qty: |β| * qty_y * P_x
-        leg_notional = abs(b) * dep_qty * px
-        weight = leg_notional / notional if notional > 0 else 0.0
-        if weight < float(min_weight_fraction):
-            dropped.append({
-                "symbol": str(sym),
-                "beta": b,
-                "weight": weight,
-                "leg_notional": leg_notional,
-                "reason": f"weight {weight:.4f} < min_weight_fraction {min_weight_fraction}",
-            })
-            continue
-
+    for sym, w in rel.items():
+        b = beta_of[sym]
         same_side = b < 0
         side = dep_side if same_side else ("sell" if dep_side == "buy" else "buy")
-        qty = abs(b) * dep_qty
         legs.append({
-            "symbol": str(sym),
+            "symbol": sym,
             "side": side,
-            "qty": float(qty),
-            "price": px,
+            "qty": float(abs(b) * dep_qty),
+            "price": px_of[sym],
             "is_dependent": False,
             "beta": b,
         })

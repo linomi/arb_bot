@@ -14,8 +14,8 @@ backbone:
   z_stop_loss: 3.5
   fee_rate: 0.001           # exchange trading fee, fractional
   slippage_rate: 0.0005     # modeled slippage, fractional
-  paper_start_balance: 1000 # paper mode: starting capital (USDT) for the equity curve / % returns
-  trade_notional: 100       # notional of the DEPENDENT leg; other legs = |beta| x its qty (gross is larger)
+  paper_start_balance: 1000 # paper mode (XT groups): starting USDT wallet shared by all groups; entries are sized/refused against it. 0 = no check
+  trade_notional: 100       # TOTAL (gross) notional of all legs of one basket; legs split by |beta|
   # Min net profit (as fraction of total leg notional G) required at a perfect
   # close to |z|=z_close, after round-trip costs. 0.01 = 1%. 0 disables the gate.
   target_profit_rate: 0.01

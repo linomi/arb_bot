@@ -34,14 +34,17 @@ regressors `X1..Xk`.
    portfolio caps (`max_open_trades`, `max_total_gross_notional`), stale
    data, symbols already used by another open trade, and exchange minimums /
    free balance.
-5. **Sizing.** The dependent leg is `trade_notional / price_Y` units. Each
-   regressor leg is `|beta| x` that quantity (opposite side for a positive
-   beta, same side for a negative one), so a one-unit move in Y is hedged by
-   `beta` units of X. Regressor legs under 2% of the dependent notional are
-   dropped. If a leg is under the exchange minimum, the whole basket is
-   scaled up (refused above `max_entry_scale`). Live, it is scaled down to fit
-   the free balance. Gross notional is therefore
-   `trade_notional x (1 + sum(|beta| x P_x / P_y))`.
+5. **Sizing.** `trade_notional` is the **total (gross) notional of all legs**
+   of one basket. It is split by the OLS betas: the dependent leg is
+   `trade_notional / (1 + sum(|beta| x P_x / P_y))` of value, and each
+   regressor leg holds `|beta| x` the dependent quantity (opposite side for a
+   positive beta, same side for a negative one), so a one-unit move in Y is
+   hedged by `beta` units of X. Regressor legs under 2% of the dependent leg's
+   value are dropped and the rest are renormalised to the target gross. If a
+   leg is under the exchange minimum, the whole basket is scaled up (refused
+   above `max_entry_scale`). The basket is then scaled down to fit the free
+   balance: the real wallet in live mode, and in paper mode the simulated
+   wallet described under `paper_start_balance`. Margin = gross / leverage.
 6. **Execution.** Legs are sent one after another as market orders. If one
    fails after others filled, the filled legs are rolled back. Closes use
    reduce-only orders for the actual open size.
@@ -136,8 +139,8 @@ are filled in automatically.
 | `sampling_time` | Seconds between bot cycles (also the candle size). |
 | `z_entry` / `z_close` / `z_stop_loss` | Thresholds; require `stop > entry > close`. |
 | `stationarity_method` | `engle_granger` (recommended) or `adf_kpss`. |
-| `paper_start_balance` | Paper mode: starting capital for the equity curve. |
-| `trade_notional` | Notional of the **dependent** leg; the other legs are `\|beta\|` times its quantity, so total gross is larger (see section 1, Sizing). |
+| `paper_start_balance` | Paper mode, XT groups: starting USDT wallet shared by all groups. Free balance = start + realized PnL - margin of open trades; new entries are scaled down or refused when it is too low. Also the equity-curve baseline. 0 turns the check off. |
+| `trade_notional` | **Total (gross) notional of all legs** of one basket; legs are split by the OLS betas. Margin per trade = this / leverage. |
 | `fee_rate`, `slippage_rate` | Cost model per side. |
 | `target_profit_rate` | Minimum expected net profit, as a fraction of gross notional, to allow an entry (0 disables). |
 
@@ -189,11 +192,12 @@ tests/                   pytest suite (run: python -m pytest -q)
 2. **Minimums.** XT limits are per contract. Read them from
    `https://fapi.xt.com/future/market/v3/public/symbol/list`
    (`minQty`, `minNotional`, `contractSize`, `quantityPrecision`). Every leg
-   must clear its symbol's `minNotional`, so a 2-leg basket is realistically
-   25-40 USDT gross, and about half of that as margin at 2x leverage.
+   must clear its symbol's `minNotional`, so set `trade_notional` (gross) to at
+   least about 25-40 USDT for a 2-leg basket (more if the beta makes one leg
+   small); margin is half of that at 2x leverage.
 3. **Conservative config.** Two-symbol groups, `xt_leverage` 2,
    `xt_margin_mode` isolated, `max_open_trades` 1-2,
-   `max_total_gross_notional` about 3x `trade_notional`,
+   `max_total_gross_notional` about 2-3x `trade_notional`,
    `max_holding_hours` set (24-48), `fee_rate` about 0.0006 (confirm your
    tier), `slippage_rate` 0.0005 or more.
 4. **Switch to Live and start one small group.** Watch the log for

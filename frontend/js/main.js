@@ -65,6 +65,7 @@ function FIELD_HINTS() {
     max_entry_scale: t("hint.max_entry_scale"),
     chart_history_bars: t("hint.chart_history_bars"),
     paper_start_balance: t("hint.paper_start_balance"),
+    trade_notional: t("hint.trade_notional"),
   };
 }
 

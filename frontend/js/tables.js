@@ -337,8 +337,7 @@ function renderTradesTable(trades) {
       <td class="${reasonCls}">${tr0.close_reason || (tr0.status === "open" ? t("trades.open") : "--")}</td>
       <td>${fmtNum(tr0.entry_z, 2)}</td>
       <td>${fmtNum(tr0.close_z, 2)}</td>
-      <td>${tr0.gross_notional != null ? fmtNum(tr0.gross_notional, 2) : "--"}</td>
-      <td title="${tr0.leverage ? "×" + tr0.leverage : ""}">${tr0.margin_used != null ? fmtNum(tr0.margin_used, 2) : "--"}</td>
+      <td title="${tr0.gross_notional != null ? t("trades.margin.tip", { gross: fmtNum(tr0.gross_notional, 2), lev: tr0.leverage || 1 }) : ""}">${tr0.margin_used != null ? fmtNum(tr0.margin_used, 2) : "--"}</td>
       <td class="${pnlClass(p)}">${pnlCell}</td>
       <td>${tr0.mode}/${src}</td>
     `;

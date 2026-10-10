@@ -99,6 +99,8 @@ class Trade(Base):
     realized_pnl = Column(Float, nullable=True)
     realized_fee = Column(Float, nullable=True)
     trade_notional = Column(Float, nullable=True)
+    # NULL = legacy row (trade_notional was the dependent leg's notional); 'gross' = total of all legs
+    notional_basis = Column(String, nullable=True)
 
     group = relationship("Group", back_populates="trades")
     ols_fit = relationship("OLSFit")

@@ -45,6 +45,7 @@ def _sqlite_add_columns():
         ("trades", "realized_pnl", "FLOAT"),
         ("trades", "realized_fee", "FLOAT"),
         ("trades", "trade_notional", "FLOAT"),
+        ("trades", "notional_basis", "VARCHAR"),
         ("groups", "exchange", "VARCHAR NOT NULL DEFAULT 'nobitex'"),
         ("bot_state", "exchange", "VARCHAR DEFAULT 'nobitex'"),
     ]

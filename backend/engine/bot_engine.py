@@ -47,6 +47,7 @@ from backend.strategy.sizing import (
     ExcessiveScalingError,
 )
 from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional, entry_target_check
+from backend.strategy.account import paper_free_balance, leverage_for
 from backend.engine import xt_hooks
 try:
     from backend.exchange.xt import XTClient, XTError
@@ -536,10 +537,14 @@ class BotEngine:
         max_scale: float | None = None,
         exchange: str = "nobitex",
         symbols: list[str] | None = None,
+        paper_free: float | None = None,
+        paper_leverage: float = 1.0,
     ) -> tuple[list[dict] | None, float, str]:
         """
-        Build legs for desired_notional. On live, scale down so total collateral
-        fits free balance × safety − buffer, while every leg stays ≥ exchange min.
+        Build legs for desired_notional (the TOTAL gross of all legs). On live, scale down
+        so total collateral fits free balance × safety − buffer, while every leg stays ≥
+        exchange min. In paper mode the same fit runs against the simulated wallet
+        (`paper_free`, margin = gross / `paper_leverage`) when one is configured.
 
         Returns (legs | None, final_notional, message).
         """
@@ -556,29 +561,41 @@ class BotEngine:
                 max_scale=max_scale,
             )
 
-        if trading_mode != "live" or not (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
+        is_live_client = trading_mode == "live" and (
+            isinstance(trading_client, NobitexClient)
+            or (XTClient is not None and isinstance(trading_client, XTClient))
+        )
+        if not is_live_client and paper_free is None:
             legs = _build(desired_notional)
             return legs, float(desired_notional), ""
 
-        free = await self._read_free_balance_irt(trading_client, exchange=exchange)
-        if free is None:
-            return None, 0.0, (
-                "cannot read margin wallet balance — refusing live entry "
-                "(API key needs wallet read; endpoint /users/wallets/list)"
-            )
+        if is_live_client:
+            # Live keeps counting gross at 1x (conservative: ignores leverage).
+            lev = 1.0
+            free = await self._read_free_balance_irt(trading_client, exchange=exchange)
+            if free is None:
+                return None, 0.0, (
+                    "cannot read margin wallet balance — refusing live entry "
+                    "(API key needs wallet read; endpoint /users/wallets/list)"
+                )
+        else:
+            lev = max(1.0, float(paper_leverage or 1.0))
+            free = float(paper_free)
 
+        unit = "IRT" if exchange == "nobitex" else "USDT"
+        dp = 0 if exchange == "nobitex" else 2
         usable = max(0.0, float(free) * BALANCE_SAFETY_FRACTION - buffer)
         if usable < min_val * 2:
             return None, 0.0, (
-                f"free balance too low: free={free:.0f} IRT, usable≈{usable:.0f} "
-                f"(need ≥ {min_val * 2:.0f} for a 2-leg basket)"
+                f"free balance too low: free={free:.{dp}f} {unit}, usable≈{usable:.{dp}f} "
+                f"(need ≥ {min_val * 2:.{dp}f} for a 2-leg basket)"
             )
 
         try:
             legs = _build(desired_notional)
         except Exception as e:
             return None, 0.0, f"sizing failed: {e}"
-        need = total_required_collateral(legs, leverage=1.0)
+        need = total_required_collateral(legs, leverage=lev)
         notional = float(desired_notional)
 
         if need > usable:
@@ -588,35 +605,35 @@ class BotEngine:
             notional = float(desired_notional) * scale
             if notional < min_val:
                 return None, 0.0, (
-                    f"insufficient margin: desired need≈{need:.0f} IRT for "
-                    f"notional={desired_notional:.0f}, free={free:.0f}, usable={usable:.0f}"
+                    f"insufficient margin: desired need≈{need:.{dp}f} {unit} for "
+                    f"notional={desired_notional:.{dp}f}, free={free:.{dp}f}, usable={usable:.{dp}f}"
                 )
             try:
                 legs = _build(notional)
             except Exception as e:
                 return None, 0.0, f"sizing failed after scale: {e}"
-            need = total_required_collateral(legs, leverage=1.0)
+            need = total_required_collateral(legs, leverage=lev)
             if need > usable:
                 scale2 = (usable / need) * 0.98
                 notional = notional * scale2
                 if notional < min_val:
                     return None, 0.0, (
-                        f"insufficient margin after min-order scale-up: need≈{need:.0f}, "
-                        f"usable={usable:.0f}, free={free:.0f}"
+                        f"insufficient margin after min-order scale-up: need≈{need:.{dp}f}, "
+                        f"usable={usable:.{dp}f}, free={free:.{dp}f}"
                     )
                 legs = _build(notional)
-                need = total_required_collateral(legs, leverage=1.0)
+                need = total_required_collateral(legs, leverage=lev)
                 if need > usable:
                     return None, 0.0, (
-                        f"insufficient margin: need≈{need:.0f} IRT, free={free:.0f}, "
-                        f"usable={usable:.0f}"
+                        f"insufficient margin: need≈{need:.{dp}f} {unit}, free={free:.{dp}f}, "
+                        f"usable={usable:.{dp}f}"
                     )
 
         msg = ""
         if notional + 1 < float(desired_notional):
             msg = (
-                f"scaled notional {desired_notional:.0f} → {notional:.0f} IRT "
-                f"(collateral need={need:.0f}, free={free:.0f}, usable={usable:.0f})"
+                f"scaled notional {desired_notional:.{dp}f} → {notional:.{dp}f} {unit} "
+                f"(collateral need={need:.{dp}f}, free={free:.{dp}f}, usable={usable:.{dp}f})"
             )
             log.warning("%s", msg)
         else:
@@ -1065,12 +1082,17 @@ class BotEngine:
 
         legs_entry = open_trade.legs_entry
         if not legs_entry:
+            # Rows saved before the gross-notional change (notional_basis NULL) stored the
+            # dependent leg's notional; a missing trade_notional falls back to the current
+            # config value, which is gross.
+            basis = "gross" if open_trade.trade_notional is None else (open_trade.notional_basis or "dependent")
             legs_entry = leg_orders(
                 group.dependent_symbol,
                 open_trade.direction,
                 fit.betas or {},
                 open_trade.entry_prices or latest_prices,
                 notional,
+                basis=basis,
             )
         legs_close = close_legs_from_entry(legs_entry, latest_prices)
 
@@ -1163,6 +1185,7 @@ class BotEngine:
         open_trade.fee_paid = float(fee_model)
         if open_trade.trade_notional is None:
             open_trade.trade_notional = notional
+            open_trade.notional_basis = "gross"
         db.commit()
 
         log.info(
@@ -1373,6 +1396,11 @@ class BotEngine:
             self._diag(group, "scale_cap", str(e), **diag_fields)
             return
 
+        # Paper mode: the same balance fit as live, against the simulated shared USDT wallet.
+        paper_free = paper_lev = None
+        if trading_mode != "live" and group_ex == "xt":
+            paper_free = paper_free_balance(db, backbone)
+            paper_lev = leverage_for(group_ex, backbone, group.dependent_symbol)
         legs, notional, bal_msg = await self._fit_notional_to_balance(
             trading_client,
             dependent_symbol=group.dependent_symbol,
@@ -1384,6 +1412,8 @@ class BotEngine:
             max_scale=max_entry_scale,
             exchange=(getattr(group, "exchange", None) or exchange or "nobitex"),
             symbols=list(group.symbols or []),
+            paper_free=paper_free,
+            paper_leverage=paper_lev,
         )
         if legs is None:
             self._last_error = bal_msg
@@ -1426,6 +1456,7 @@ class BotEngine:
                 status="failed_partial",
                 legs_entry=e.legs,
                 trade_notional=notional,
+                notional_basis="gross",
                 close_reason="entry_rollback",
                 close_time=dt.datetime.utcnow(),
             )
@@ -1452,6 +1483,7 @@ class BotEngine:
             status="open",
             legs_entry=legs,
             trade_notional=notional,
+            notional_basis="gross",
         )
         db.add(trade)
         db.commit()
