@@ -349,16 +349,34 @@ function tradeLegsHtml(tr0) {
   const cells = (f) => (f
     ? `<td>${fmtSig(f.px)}</td><td>${fmtSig(f.qty, 8)}</td><td>${size(f)}</td>`
     : `<td>--</td><td>--</td><td>--</td>`);
+  // Gross PnL of one leg (before fees): long gains when price rises, short when it falls.
+  const legPnl = (sym) => {
+    const e = entry[sym], c = close[sym], sd = side[sym];
+    if (!e || !c || !sd || e.px == null || c.px == null) return null;
+    const q = c.qty != null ? c.qty : e.qty;
+    if (q == null) return null;
+    return (sd === "buy" ? 1 : -1) * (c.px - e.px) * q;
+  };
+  let pnlTot = 0, pnlAny = false;
   const rows = order.map((sym) => {
     const sd = side[sym];
     const sdCell = sd ? `<span class="${sd === "buy" ? "dir-long" : "dir-short"}">${t(sd === "buy" ? "trades.legs.buy" : "trades.legs.sell")}</span>` : "--";
-    return `<tr><td class="leg-sym">${_esc(sym)}</td><td>${sdCell}</td>${cells(entry[sym])}${cells(close[sym])}</tr>`;
+    const lp = legPnl(sym);
+    if (lp != null) { pnlTot += lp; pnlAny = true; }
+    return `<tr><td class="leg-sym">${_esc(sym)}</td><td>${sdCell}</td>${cells(entry[sym])}${cells(close[sym])}<td class="${pnlClass(lp)}">${lp != null ? fmtNum(lp, 4) : "--"}</td></tr>`;
   }).join("");
-  const sumSize = (m) => {
+  const sumSize = (m, only) => {
     let tot = 0, any = false;
-    order.forEach((sym) => { const f = m[sym]; if (f && f.qty != null && f.px != null) { tot += f.qty * f.px; any = true; } });
+    order.forEach((sym) => {
+      if (only && side[sym] !== only) return;
+      const f = m[sym];
+      if (f && f.qty != null && f.px != null) { tot += f.qty * f.px; any = true; }
+    });
     return any ? fmtNum(tot, 2) : "--";
   };
+  const foot = (label, only, cls, pnlCell) =>
+    `<tr class="${cls || ""}"><td colspan="2">${label}</td><td></td><td></td><td>${sumSize(entry, only)}</td><td></td><td></td><td>${sumSize(close, only)}</td>${pnlCell || "<td></td>"}</tr>`;
+  const hasSides = order.some((sym) => side[sym]);
   return `
     <table class="legs-table">
       <thead>
@@ -366,6 +384,7 @@ function tradeLegsHtml(tr0) {
           <th rowspan="2">${t("trades.legs.symbol")}</th><th rowspan="2">${t("trades.legs.side")}</th>
           <th colspan="3" class="grp-entry">${t("trades.legs.entry")}</th>
           <th colspan="3" class="grp-close">${t("trades.legs.close")}</th>
+          <th rowspan="2" title="${t("trades.legs.pnl.tip")}">${t("trades.legs.pnl")}</th>
         </tr>
         <tr>
           <th>${t("trades.legs.price")}</th><th>${t("trades.legs.qty")}</th><th>${t("trades.legs.size")}</th>
@@ -373,8 +392,12 @@ function tradeLegsHtml(tr0) {
         </tr>
       </thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr><td colspan="4">${t("trades.legs.total")}</td><td>${sumSize(entry)}</td><td colspan="2"></td><td>${sumSize(close)}</td></tr></tfoot>
-    </table>`;
+      <tfoot>
+        ${hasSides ? foot(t("trades.legs.long_size"), "buy") + foot(t("trades.legs.short_size"), "sell") : ""}
+        ${foot(t("trades.legs.total"), null, "foot-total", `<td class="${pnlClass(pnlAny ? pnlTot : null)}">${pnlAny ? fmtNum(pnlTot, 4) : "--"}</td>`)}
+      </tfoot>
+    </table>
+    <div class="legs-note">${t("trades.legs.note")}</div>`;
 }
 
 function renderTradesTable(trades) {

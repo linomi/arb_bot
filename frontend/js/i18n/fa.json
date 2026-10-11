@@ -360,5 +360,10 @@
   "trades.legs.size": "حجم",
   "trades.legs.total": "حجم کل",
   "trades.legs.buy": "خرید",
-  "trades.legs.sell": "فروش"
+  "trades.legs.sell": "فروش",
+  "trades.legs.pnl": "سود/زیان",
+  "trades.legs.pnl.tip": "سود/زیان ناخالص این پا، پیش از کارمزد و لغزش",
+  "trades.legs.long_size": "حجم خرید",
+  "trades.legs.short_size": "حجم فروش",
+  "trades.legs.note": "حجم کل میزان سرمایه درگیر است، نه سود: پای فروشی که ارزشش کم می‌شود حجم کل را کم می‌کند ولی سود می‌دهد. سود معامله = جمع سود پاها منهای کارمزد."
 }

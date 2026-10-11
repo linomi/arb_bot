@@ -360,5 +360,10 @@
   "trades.legs.size": "Size",
   "trades.legs.total": "Total size",
   "trades.legs.buy": "BUY",
-  "trades.legs.sell": "SELL"
+  "trades.legs.sell": "SELL",
+  "trades.legs.pnl": "PnL",
+  "trades.legs.pnl.tip": "Gross PnL of this leg, before fees and slippage",
+  "trades.legs.long_size": "Long size",
+  "trades.legs.short_size": "Short size",
+  "trades.legs.note": "Total size is capital deployed, not PnL: a short leg that loses value shrinks it while still making money. Trade PnL = sum of leg PnL minus fees."
 }

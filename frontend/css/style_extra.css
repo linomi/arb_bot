@@ -137,3 +137,5 @@ html[dir="rtl"] .param-form .adv-details[open]>summary::before{transform:scaleX(
 .log-more-wrap{text-align:center;padding:8px}
 @media (max-width:700px){.log-row{grid-template-columns:1fr 1fr;gap:2px 8px}.log-msg{grid-column:1/-1}}
 .log-msg{unicode-bidi:plaintext;text-align:start}
+.legs-table tfoot tr.foot-total td{color:var(--text-hi);font-weight:600}
+.legs-note{margin-top:6px;color:var(--text-lo);font-size:10.5px;position:sticky;inset-inline-start:0;max-width:min(100%,calc(100vw - 64px))}
