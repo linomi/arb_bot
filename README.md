@@ -74,6 +74,7 @@ Environment variables (`.env`):
 |---|---|
 | `ENCRYPTION_KEY` | Required to save API credentials (Fernet key). |
 | `AUTH_USERNAME` / `AUTH_PASSWORD` | Enable the login screen (session cookie, 5 days; HTTP Basic also works for scripts). |
+| `AUTH_RELOGIN_ON_RESTART` | Default `1`: a service restart (or a changed username/password) signs everyone out. Set `0` to keep logins across restarts (a changed password still signs out). |
 | `SESSION_SECRET` | Optional cookie-signing secret (defaults to `ENCRYPTION_KEY`). |
 | `SESSION_HTTPS_ONLY` | `1` to mark the cookie secure behind HTTPS. |
 | `HOST` / `APP_PORT` | Bind address (default `127.0.0.1:8000`). Binding to a non-loopback host requires auth to be set. |

@@ -6,11 +6,15 @@ Credentials come from the environment:
   AUTH_PASSWORD  (required to enable auth)
   SESSION_SECRET (optional; falls back to ENCRYPTION_KEY or a generated warning)
 
-Cookie lasts 5 days. If AUTH_USERNAME / AUTH_PASSWORD are unset, authentication
+Cookie lasts 5 days, but it is tied to the current username/password and to this server
+process: changing .env or restarting the service asks for the password again
+(set AUTH_RELOGIN_ON_RESTART=0 to keep logins across restarts). If AUTH_USERNAME / AUTH_PASSWORD are unset, authentication
 is disabled (open access) so existing deployments keep working until configured.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import secrets
 from typing import Optional
@@ -23,6 +27,28 @@ SESSION_MAX_AGE = 5 * 24 * 60 * 60
 COOKIE_NAME = "arb_session"
 
 _security = HTTPBasic(auto_error=False)
+
+# Random per process: a restart invalidates every browser session (unless AUTH_RELOGIN_ON_RESTART=0).
+_BOOT_NONCE = secrets.token_hex(8)
+
+
+def _relogin_on_restart() -> bool:
+    return (os.environ.get("AUTH_RELOGIN_ON_RESTART", "1").strip().lower() not in ("0", "false", "no", "off"))
+
+
+def session_stamp() -> str:
+    """Fingerprint stored in the session cookie. It changes when the username or password in
+    .env changes (and on every restart by default), so old cookies stop working."""
+    user = (os.environ.get("AUTH_USERNAME") or "").strip()
+    pwd = (os.environ.get("AUTH_PASSWORD") or "").strip()
+    msg = f"{user}\x00{pwd}\x00{_BOOT_NONCE if _relogin_on_restart() else ''}"
+    return hmac.new(get_session_secret().encode(), msg.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _mark_authenticated(request: Request, username: str) -> None:
+    request.session["authenticated"] = True
+    request.session["user"] = username
+    request.session["stamp"] = session_stamp()
 
 
 def auth_enabled() -> bool:
@@ -79,7 +105,7 @@ def is_authenticated(request: Request) -> bool:
         return True
     session = request.session
     if session.get("authenticated") is True and session.get("user"):
-        return True
+        return secrets.compare_digest(str(session.get("stamp") or ""), session_stamp())
     return False
 
 
@@ -98,8 +124,7 @@ async def require_auth(
     if credentials is not None:
         if verify_password(credentials.username, credentials.password):
             # Establish session so subsequent browser requests work
-            request.session["authenticated"] = True
-            request.session["user"] = credentials.username
+            _mark_authenticated(request, credentials.username)
             return
 
     raise HTTPException(
@@ -112,8 +137,7 @@ async def require_auth(
 def login(request: Request, username: str, password: str) -> bool:
     if not verify_password(username, password):
         return False
-    request.session["authenticated"] = True
-    request.session["user"] = username
+    _mark_authenticated(request, username)
     return True
 
 
