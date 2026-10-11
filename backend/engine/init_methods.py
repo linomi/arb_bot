@@ -22,6 +22,7 @@ import pandas as pd
 
 from backend.sectors import group_symbols_by_sector
 from backend.engine.backtester import backtest_group
+from backend.strategy.account import leverage_for
 
 # Soft sample-size anchor: at n ≈ this, trade-count confidence ≈ 2/3.
 _TRADE_CONF_HALF = 20
@@ -77,6 +78,9 @@ def _worker_eval(job: tuple) -> dict | None:
                 max_holding_bars=backbone_params.get("max_holding_bars"),
                 stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
                 half_life_max_fraction=float(backbone_params.get("half_life_max_fraction", 1.0/3.0) or 0),
+                leverage=leverage_for(None, backbone_params, dependent),
+                liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
+                maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
             )
         except Exception:
             continue
@@ -101,6 +105,9 @@ def _worker_eval(job: tuple) -> dict | None:
                     max_holding_bars=backbone_params.get("max_holding_bars"),
                     stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
                     half_life_max_fraction=float(backbone_params.get("half_life_max_fraction", 1.0/3.0) or 0),
+                leverage=leverage_for(None, backbone_params, dependent),
+                liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
+                maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
                 )
                 oos_perf = bt_oos.performance.as_dict()
                 oos_score = _score_group(bt_oos.performance)

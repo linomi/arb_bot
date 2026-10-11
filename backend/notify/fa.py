@@ -38,6 +38,7 @@ STAGE = {
     "symbol_clash": "تداخل نماد",
     "scale_cap": "سبد خیلی کوچک (سقف مقیاس)",
     "sizing_blocked": "موجودی/حجم ناکافی",
+    "liq_guard": "فاصله تا لیکوئید کم (اهرم بالا)",
     "order_failed": "سفارش ناموفق",
     "config_error": "خطای پیکربندی",
     "gate_error": "خطای فیلتر سود",

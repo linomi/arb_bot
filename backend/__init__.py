@@ -22,6 +22,7 @@ import pandas as pd
 
 from backend.sectors import group_symbols_by_sector
 from backend.engine.backtester import backtest_group
+from backend.strategy.account import leverage_for
 
 # Soft sample-size anchor: at n ≈ this, trade-count confidence ≈ 2/3.
 _TRADE_CONF_HALF = 20
@@ -76,6 +77,9 @@ def _worker_eval(job: tuple) -> dict | None:
             target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
             trade_notional=float(backbone_params.get("trade_notional", 100) or 100),
             max_entry_scale=max_entry_scale,
+            leverage=leverage_for(None, backbone_params, dependent),
+            liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
+            maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
         )
     except Exception:
         return None

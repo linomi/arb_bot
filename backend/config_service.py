@@ -93,6 +93,12 @@ def _validate_backbone(data: dict):
               "data_staleness_mult", "max_total_gross_notional", "max_open_trades"):
         if float(data.get(k, 0) or 0) < 0:
             raise ValueError(f"{k} must be >= 0")
+    lpf = float(data.get("liquidation_proximity_fraction", 0.2) or 0)
+    if lpf < 0 or lpf >= 1:
+        raise ValueError("liquidation_proximity_fraction must be in [0, 1)")
+    mmr = float(data.get("maintenance_margin_rate", 0.005) or 0)
+    if mmr < 0 or mmr >= 0.5:
+        raise ValueError("maintenance_margin_rate must be in [0, 0.5)")
     mes = data.get("max_entry_scale", 3.0)
     if mes is not None and mes != "":
         mes_f = float(mes)

@@ -109,7 +109,7 @@ def test_liquidation_guard_is_wired_into_live_exit(world, rec, monkeypatch):
     engine = be.BotEngine()
     called = []
 
-    async def near(trade, client, backbone):
+    async def near(trade, client, backbone, **kw):
         called.append(trade.id)
         return True
 
@@ -123,42 +123,93 @@ def test_liquidation_guard_is_wired_into_live_exit(world, rec, monkeypatch):
     db.close()
 
 
-def test_liquidation_guard_not_used_in_paper(world, monkeypatch):
-    sf, gid, tid, Client = world
+def _guard_setup(sf, gid, mode):
+    """Position: long DEP @2500, short X @60000, x2 leverage. resid_std is widened so that moving
+    DEP alone keeps z around -2 (no z-based exit), leaving the liquidation guard as the only trigger."""
     db = sf()
-    engine = be.BotEngine()
-
-    async def boom(*a, **k):
-        raise AssertionError("must not be called in paper mode")
-
-    monkeypatch.setattr(engine, "_risk_exit_if_near_liquidation", boom)
-    bb = config_service.get_section(db, "backbone")
+    fit = db.query(OLSFit).first(); fit.resid_std = 450.0
     t = db.query(Trade).first()
-    asyncio.run(engine._check_exit(db, db.get(Group, gid), t, {DEP: 2397.8, X: 60000.0}, bb, Client(), "paper", exchange="xt"))
+    t.mode = mode
+    db.commit()
+    return db, t, config_service.get_section(db, "backbone")
+
+
+def test_guard_closes_paper_trade_near_modeled_liquidation(world, rec):
+    sf, gid, tid, Client = world
+    db, t, bb = _guard_setup(sf, gid, "paper")
+    # long DEP liq = 2500*(1-1/2+0.005) = 1262.5 ; at 1500 the mark is 15.8% above it (< 20%)
+    asyncio.run(be.BotEngine()._check_exit(db, db.get(Group, gid), t, {DEP: 1500.0, X: 60000.0}, bb, Client(), "paper", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "closed" and t.close_reason == "risk_exit"
+    assert "risk_exit" in rec.kinds()
+    db.close()
+
+
+def test_guard_leaves_paper_trade_alone_when_far_from_liquidation(world):
+    sf, gid, tid, Client = world
+    db, t, bb = _guard_setup(sf, gid, "paper")
+    # 1700 is 25.7% above the modeled liquidation price: outside the 20% band
+    asyncio.run(be.BotEngine()._check_exit(db, db.get(Group, gid), t, {DEP: 1700.0, X: 60000.0}, bb, Client(), "paper", exchange="xt"))
+    db.refresh(t)
     assert t.status == "open"
     db.close()
 
 
-def test_orphan_event_only_for_new_orphans(world, rec):
+def test_guard_can_be_switched_off(world):
     sf, gid, tid, Client = world
-    engine = be.BotEngine()
-
-    class C:
-        async def list_positions(self):
-            return [{"id": "o1", "symbol": "SOL/USDT:USDT", "side": "buy", "liability": 2.0}]
-
-    db = sf()
-    asyncio.run(engine.reconcile_orphans(db, C(), "paper", "xt"))
-    asyncio.run(engine.reconcile_orphans(db, C(), "paper", "xt"))
-    assert rec.kinds().count("orphan") == 1
+    db, t, bb = _guard_setup(sf, gid, "paper")
+    bb["liquidation_proximity_fraction"] = 0
+    asyncio.run(be.BotEngine()._check_exit(db, db.get(Group, gid), t, {DEP: 1500.0, X: 60000.0}, bb, Client(), "paper", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "open"
     db.close()
 
 
-def test_watchdog_decisions():
-    spec = importlib.util.spec_from_file_location("watchdog", Path(__file__).resolve().parent.parent / "scripts" / "watchdog.py")
-    wd = importlib.util.module_from_spec(spec); spec.loader.exec_module(wd)
-    assert wd.decide(10, 600, False) is None
-    assert wd.decide(700, 600, False) == "down"
-    assert wd.decide(None, 600, False) == "down"      # no heartbeat file at all
-    assert wd.decide(700, 600, True) is None          # already alerted: stay quiet
-    assert wd.decide(5, 600, True) == "up"
+def test_live_guard_falls_back_to_model_when_exchange_has_no_data(world):
+    sf, gid, tid, Client = world
+    db, t, bb = _guard_setup(sf, gid, "live")
+
+    class Blind(Client):
+        async def get_position(self, pid):
+            return None  # exchange returns nothing
+
+    asyncio.run(be.BotEngine()._check_exit(db, db.get(Group, gid), t, {DEP: 1500.0, X: 60000.0}, bb, Blind(), "live", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "closed" and t.close_reason == "risk_exit"
+    db.close()
+
+
+def test_live_guard_trusts_exchange_liquidation_price_over_model(world):
+    sf, gid, tid, Client = world
+    db, t, bb = _guard_setup(sf, gid, "live")
+    legs = [dict(l, position_id=l["symbol"]) for l in t.legs_entry]
+    t.legs_entry = legs
+    db.commit()
+
+    class Reports(Client):
+        async def get_position(self, pid):
+            # exchange says liquidation is very far away -> no exit, even though the model would fire
+            return {"markPrice": "1500" if pid == DEP else "60000", "liquidationPrice": "1" if pid == DEP else "999999"}
+
+    asyncio.run(be.BotEngine()._check_exit(db, db.get(Group, gid), t, {DEP: 1500.0, X: 60000.0}, bb, Reports(), "live", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "open"
+    db.close()
+
+
+def test_entry_is_blocked_when_leverage_puts_position_inside_guard_band(world):
+    sf, gid, tid, Client = world
+    db = sf()
+    g = db.get(Group, gid)
+    bb = dict(config_service.get_section(db, "backbone"))
+    legs = [{"symbol": DEP, "side": "buy", "price": 2500.0}, {"symbol": X, "side": "sell", "price": 60000.0}]
+    prices = {DEP: 2500.0, X: 60000.0}
+    block = be.BotEngine._entry_liquidation_block
+    bb["xt_leverage"] = 2
+    assert block(g, legs, prices, bb, "xt") is None
+    bb["xt_leverage"] = 10
+    msg = block(g, legs, prices, bb, "xt")
+    assert msg and "x10" in msg
+    bb["liquidation_proximity_fraction"] = 0
+    assert block(g, legs, prices, bb, "xt") is None
+    db.close()

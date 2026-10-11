@@ -48,6 +48,7 @@ from backend.strategy.sizing import (
 )
 from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional, entry_target_check
 from backend.strategy.account import paper_free_balance, leverage_for, trade_gross
+from backend.strategy.liquidation import near_liquidation, DEFAULT_MMR
 from backend.notify import emit
 from backend.engine import xt_hooks
 try:
@@ -492,50 +493,82 @@ class BotEngine:
 
 
     async def _risk_exit_if_near_liquidation(
-        self, open_trade, trading_client, backbone: dict,
+        self, open_trade, trading_client, backbone: dict, *,
+        trading_mode: str = "live", latest_prices: dict | None = None, leverage: float = 1.0,
     ) -> bool:
-        """If any leg mark is within 20% of liquidation, return True to force close."""
+        """True if any leg is within ``liquidation_proximity_fraction`` of its liquidation price.
+
+        Live: uses the exchange-reported liquidation price / margin ratio per leg. Legs the exchange
+        gives no data for (and every leg in paper mode) are checked against the modeled isolated-margin
+        liquidation price (strategy/liquidation.py), so the guard also protects when XT returns nothing."""
         threshold = float(backbone.get("liquidation_proximity_fraction", 0.20) or 0)
         if threshold <= 0 or not open_trade:
             return False
-        for leg in (open_trade.legs_entry or []):
-            pid = leg.get("position_id")
-            if not pid:
-                continue
-            try:
-                pos = await trading_client.get_position(_pos_id(pid))
-            except Exception:
-                continue
-            if not pos:
-                continue
-            mark = _parse_money(pos.get("markPrice"))
-            # common field names for liquidation
-            liq = None
-            for k in ("liquidationPrice", "liqPrice", "liquidation_price", "bustPrice"):
-                liq = _parse_money(pos.get(k))
-                if liq is not None and liq > 0:
-                    break
-            # margin ratio alternative
-            ratio = pos.get("marginRatio") or pos.get("margin_ratio") or (pos.get("_raw") or {}).get("marginRatio")
-            try:
-                ratio = float(ratio) if ratio is not None else None
-            except (TypeError, ValueError):
-                ratio = None
-            near = False
-            if mark is not None and liq is not None and liq > 0 and mark > 0:
-                # distance as fraction of mark
-                dist = abs(mark - liq) / mark
-                if dist <= threshold:
+        legs = list(open_trade.legs_entry or [])
+        covered: set[str] = set()
+        if trading_mode == "live":
+            for leg in legs:
+                pid = leg.get("position_id")
+                if not pid:
+                    continue
+                try:
+                    pos = await trading_client.get_position(_pos_id(pid))
+                except Exception:
+                    continue
+                if not pos:
+                    continue
+                mark = _parse_money(pos.get("markPrice"))
+                liq = None
+                for k in ("liquidationPrice", "liqPrice", "liquidation_price", "bustPrice"):
+                    liq = _parse_money(pos.get(k))
+                    if liq is not None and liq > 0:
+                        break
+                ratio = pos.get("marginRatio") or pos.get("margin_ratio") or (pos.get("_raw") or {}).get("marginRatio")
+                try:
+                    ratio = float(ratio) if ratio is not None else None
+                except (TypeError, ValueError):
+                    ratio = None
+                if (liq is not None and liq > 0 and mark) or ratio is not None:
+                    covered.add(leg.get("symbol"))
+                near = False
+                if mark is not None and liq is not None and liq > 0 and mark > 0:
+                    if abs(mark - liq) / mark <= threshold:
+                        near = True
+                if ratio is not None and ratio >= (1.0 - threshold):
                     near = True
-            if ratio is not None and ratio >= (1.0 - threshold):
-                near = True
-            if near:
+                if near:
+                    log.error(
+                        "RISK EXIT trade #%s leg %s mark=%s liq=%s ratio=%s",
+                        open_trade.id, leg.get("symbol"), mark, liq, ratio,
+                    )
+                    return True
+        rest = [l for l in legs if l.get("symbol") not in covered]
+        if rest and latest_prices:
+            mmr = float(backbone.get("maintenance_margin_rate", DEFAULT_MMR) or DEFAULT_MMR)
+            hit = near_liquidation(rest, latest_prices, leverage, threshold, mmr)
+            if hit:
                 log.error(
-                    "RISK EXIT trade #%s leg %s mark=%s liq=%s ratio=%s",
-                    open_trade.id, leg.get("symbol"), mark, liq, ratio,
+                    "RISK EXIT (%s, modeled) trade #%s leg %s mark=%.8g liq=%.8g dist=%.1f%%",
+                    trading_mode, open_trade.id, hit["symbol"], hit["mark"], hit["liq"], hit["dist"] * 100,
                 )
                 return True
         return False
+
+    @staticmethod
+    def _entry_liquidation_block(group, legs, prices: dict, backbone: dict, exchange: str = "nobitex") -> str | None:
+        """Message if the planned legs would start inside the liquidation-proximity band, else None."""
+        thr = float(backbone.get("liquidation_proximity_fraction", 0) or 0)
+        if thr <= 0:
+            return None
+        lev = leverage_for(getattr(group, "exchange", None) or exchange, backbone, group.dependent_symbol)
+        hit = near_liquidation(
+            legs, prices, lev, thr,
+            float(backbone.get("maintenance_margin_rate", DEFAULT_MMR) or DEFAULT_MMR),
+        )
+        if not hit:
+            return None
+        return (f"{hit['symbol']}: liquidation only {hit['dist'] * 100:.1f}% away at x{lev:g} "
+                f"leverage (guard {thr * 100:.0f}%) — lower xt_leverage or the guard")
 
     def _diag(self, group, stage: str, text: str = "", **fields) -> None:
         """Record the outcome of this cycle's entry evaluation for a group."""
@@ -1135,8 +1168,11 @@ class BotEngine:
         )
         if force_reason:
             exit_dec = ExitDecision(True, force_reason, exit_dec.z)
-        elif (not exit_dec.should_exit and trading_mode == "live"
-              and await self._risk_exit_if_near_liquidation(open_trade, trading_client, backbone)):
+        elif (not exit_dec.should_exit
+              and await self._risk_exit_if_near_liquidation(
+                  open_trade, trading_client, backbone, trading_mode=trading_mode,
+                  latest_prices=latest_prices,
+                  leverage=leverage_for(getattr(group, "exchange", None) or exchange, backbone, group.dependent_symbol))):
             exit_dec = ExitDecision(True, "risk_exit", exit_dec.z)
             emit("risk_exit", group=group.name, trade_id=open_trade.id)
         if not exit_dec.should_exit:
@@ -1513,6 +1549,15 @@ class BotEngine:
             return
         if bal_msg:
             log.info("group %s: %s", group.id, bal_msg)
+
+        # Liquidation guard at entry: a position that starts inside the proximity band would be
+        # closed by the risk exit on the next cycle (fees paid for nothing), so do not open it.
+        _liq_msg = self._entry_liquidation_block(group, legs, latest_prices, backbone, exchange)
+        if _liq_msg:
+            self._diag(group, "liq_guard", _liq_msg, **diag_fields)
+            log.warning("group %s skip entry: %s", group.id, _liq_msg)
+            self._start_cooldown(group.id, backbone)
+            return
 
         try:
             group_ex = (getattr(group, "exchange", None) or exchange or "nobitex").lower()

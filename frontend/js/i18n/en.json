@@ -365,5 +365,7 @@
   "trades.legs.pnl.tip": "Gross PnL of this leg, before fees and slippage",
   "trades.legs.long_size": "Long size",
   "trades.legs.short_size": "Short size",
-  "trades.legs.note": "Total size is capital deployed, not PnL: a short leg that loses value shrinks it while still making money. Trade PnL = sum of leg PnL minus fees."
+  "trades.legs.note": "Total size is capital deployed, not PnL: a short leg that loses value shrinks it while still making money. Trade PnL = sum of leg PnL minus fees.",
+  "param.maintenance_margin_rate": "Maintenance Margin Rate (modeled)",
+  "diag.stage.liq_guard": "Liquidation guard"
 }

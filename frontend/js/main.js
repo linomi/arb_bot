@@ -80,7 +80,7 @@ const BACKBONE_BASIC = [
 const BACKBONE_ADVANCED = [
   ["stats_adv", ["adf_alpha", "kpss_alpha", "half_life_max_fraction"]],
   ["risk", ["max_holding_hours", "max_entry_scale", "max_open_trades", "max_total_gross_notional",
-            "liquidation_proximity_fraction", "entry_retry_cooldown_sec", "data_staleness_mult"]],
+            "liquidation_proximity_fraction", "maintenance_margin_rate", "entry_retry_cooldown_sec", "data_staleness_mult"]],
   ["funding", ["funding_rate_estimate", "expected_holding_funding_intervals"]],
   ["xt", ["xt_leverage", "xt_margin_mode"]],
   ["display", ["chart_history_bars", "fit_log_interval_sec", "try_all_dependents"]],

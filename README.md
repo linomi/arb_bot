@@ -164,7 +164,8 @@ are filled in automatically.
 | `max_holding_hours` | Time stop (0 = off). |
 | `max_entry_scale` | Max inflation of a basket to reach exchange minimums (0 = off). |
 | `max_open_trades`, `max_total_gross_notional` | Portfolio caps (0 = off). |
-| `liquidation_proximity_fraction` | Force-close when mark is this close to liquidation (0 = off). |
+| `liquidation_proximity_fraction` | Liquidation guard (0 = off). Closes a trade (`risk_exit`) when any leg's mark is within this fraction of its liquidation price. Works in **live** (exchange-reported liquidation price, modeled one if XT returns none), **paper** and **backtests** (modeled). Entries that would start inside the band are skipped (`liq_guard`), which happens when `xt_leverage >= 1/(fraction + maintenance_margin_rate)`, about 4.9x at the default 0.20. |
+| `maintenance_margin_rate` | Modeled maintenance margin used for paper/backtest liquidation prices: long `entry*(1-1/L+mmr)`, short `entry*(1+1/L-mmr)` (isolated margin). Real XT values vary by coin and tier. |
 | `entry_retry_cooldown_sec` | Pause for a group after a failed/rolled-back entry. |
 | `data_staleness_mult` | Skip entries when a bar is older than this x `sampling_time`. |
 | `funding_rate_estimate`, `expected_holding_funding_intervals` | Funding cost assumed in the profit gate. |

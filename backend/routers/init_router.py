@@ -232,4 +232,7 @@ def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
             else float(backbone_cfg.get("max_entry_scale", 3.0))
         ),
         "trade_notional": float(backbone_cfg.get("trade_notional", 100) or 100),
+        "xt_leverage": float(backbone_cfg.get("xt_leverage", 1) or 1),
+        "liquidation_proximity_fraction": float(backbone_cfg.get("liquidation_proximity_fraction", 0) or 0),
+        "maintenance_margin_rate": float(backbone_cfg.get("maintenance_margin_rate", 0.005) or 0.005),
     }

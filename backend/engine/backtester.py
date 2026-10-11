@@ -14,6 +14,7 @@ from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
 from backend.strategy.half_life import half_life_ok
 from backend.strategy.metrics import compute_group_performance, GroupPerformance
 from backend.strategy.pnl import residual_cash_pnl, gross_per_unit_y, entry_target_check
+from backend.strategy.liquidation import legs_from_betas, near_liquidation, DEFAULT_MMR
 
 
 @dataclass
@@ -69,7 +70,14 @@ def backtest_group(
     stationarity_method: str = "engle_granger",
     mark_open_at_end: bool = True,
     half_life_max_fraction: float = 1.0 / 3.0,
+    leverage: float = 1.0,
+    liquidation_proximity: float = 0.0,
+    maintenance_margin_rate: float = DEFAULT_MMR,
 ) -> BacktestResult:
+    """``liquidation_proximity`` > 0 turns on the same guard as the live/paper engine: a trade is
+    closed with reason ``risk_exit`` when any leg's mark is within that fraction of its modeled
+    liquidation price (see strategy/liquidation.py), and entries that would start inside the band
+    are skipped. ``leverage`` is the exchange leverage (1 for Nobitex)."""
     symbols = list(price_df.columns)
     n = len(price_df)
     trades: list[BacktestTrade] = []
@@ -87,6 +95,10 @@ def backtest_group(
                 resid_now, position["direction"], position["mean"], position["std"],
                 z_close, z_stop_loss,
             )
+            if not exit_dec.should_exit and liquidation_proximity and liquidation_proximity > 0:
+                if near_liquidation(position["legs"], prices_now, leverage,
+                                    liquidation_proximity, maintenance_margin_rate):
+                    exit_dec = ExitDecision(True, "risk_exit", exit_dec.z)
             time_stop = (
                 not exit_dec.should_exit
                 and max_holding_bars
@@ -178,7 +190,14 @@ def backtest_group(
                     continue
                 except Exception:
                     pass
+            entry_legs = legs_from_betas(dependent_symbol, entry_dec.direction, fit.betas, prices_now)
+            if liquidation_proximity and liquidation_proximity > 0 and near_liquidation(
+                entry_legs, prices_now, leverage, liquidation_proximity, maintenance_margin_rate,
+            ):
+                i += 1  # would open inside the guard band: the engine skips these too
+                continue
             position = {
+                "legs": entry_legs,
                 "direction": entry_dec.direction,
                 "betas": fit.betas,
                 "intercept": fit.intercept,
