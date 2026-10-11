@@ -98,3 +98,42 @@ html[dir="rtl"] .param-form .adv-details[open]>summary::before{transform:scaleX(
 .trades-panel .panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .btn-danger-ghost{padding:3px 10px;font-size:12px;color:#b85c4a;border-color:rgba(184,92,74,.55)}
 .btn-danger-ghost:hover{background:rgba(184,92,74,.14)}
+
+/* trade log: ~6 rows visible, the rest scrolls; header stays put */
+.trades-scroll{max-height:268px;overflow-y:auto;overflow-x:auto}
+.trades-scroll #trades-table thead th{position:sticky;top:0;z-index:2}
+#trades-table tr.trade-row{cursor:pointer}
+#trades-table tr.trade-extra[hidden]{display:none}
+#trades-table tr.trade-extra:hover td{background:transparent}
+#trades-table tr.trade-extra > td{background:var(--bg-2, rgba(255,255,255,.02));padding:8px 12px;border-top:0}
+.legs-table{width:auto;min-width:min(100%,560px);position:sticky;inset-inline-start:0}
+.legs-table th{text-align:center;font-size:10.5px;padding:4px 8px}
+.legs-table th.grp-entry{color:var(--long)}.legs-table th.grp-close{color:var(--short)}
+.legs-table td{padding:4px 8px;text-align:end;font-size:11px}
+.legs-table td.leg-sym{text-align:start}
+.legs-table tfoot td{color:var(--text-mid);border-top:1px solid var(--line);border-bottom:0}
+.legs-table tr:hover td{background:transparent}
+.legs-empty{color:var(--text-lo);font-size:11.5px}
+
+/* Logs tab */
+.log-filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:0 14px 8px}
+.log-filters input[type=search]{flex:1 1 260px;min-width:160px;background:var(--bg-1);border:1px solid var(--line);border-radius:4px;color:var(--text-hi);padding:6px 9px;font-family:var(--font-mono);font-size:12px}
+.log-filters select{background:var(--bg-1);border:1px solid var(--line);border-radius:4px;color:var(--text-hi);padding:6px 8px;font-size:12px}
+.log-filters .btn-secondary{padding:6px 12px;font-size:11px}
+.log-live{display:inline-flex;gap:5px;align-items:center;font-size:12px;color:var(--text-mid);cursor:pointer}
+.log-cats{display:flex;flex-wrap:wrap;gap:6px;padding:0 14px 10px}
+.log-cats .chip{background:var(--bg-3);color:var(--text-mid);border:1px solid var(--line);border-radius:12px;padding:3px 11px;font-size:11.5px;cursor:pointer}
+.log-cats .chip.on{background:rgba(201,162,75,.18);color:var(--text-hi);border-color:#c9a24b}
+.logs-panel .filter-count{margin-inline-start:auto;font-family:var(--font-mono);font-size:11px;color:var(--text-lo)}
+.log-list{max-height:calc(100vh - 290px);min-height:240px;overflow:auto;border-top:1px solid var(--line-soft);font-family:var(--font-mono);font-size:11.5px}
+.log-row{display:grid;grid-template-columns:104px 64px 82px 1fr;gap:10px;padding:4px 14px;border-bottom:1px solid var(--line-soft);align-items:baseline}
+.log-row:hover{background:var(--bg-2)}
+.log-ts{color:var(--text-lo);white-space:nowrap}
+.log-lvl{font-size:10.5px;color:var(--text-mid)}
+.log-cat{font-size:10.5px;color:var(--text-mid)}.log-cat.cat-trade{color:#c9a24b}
+.log-msg{white-space:pre-wrap;word-break:break-word;color:var(--text-hi)}
+.log-row.lvl-WARNING .log-lvl,.log-row.lvl-WARNING .log-msg{color:#c9a24b}
+.log-row.lvl-ERROR .log-lvl,.log-row.lvl-ERROR .log-msg,.log-row.lvl-CRITICAL .log-lvl,.log-row.lvl-CRITICAL .log-msg{color:#b85c4a}
+.log-more-wrap{text-align:center;padding:8px}
+@media (max-width:700px){.log-row{grid-template-columns:1fr 1fr;gap:2px 8px}.log-msg{grid-column:1/-1}}
+.log-msg{unicode-bidi:plaintext;text-align:start}

@@ -15,7 +15,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("main")
 
-from backend.db import init_db, SessionLocal
+from backend.db import init_db, SessionLocal, DATA_DIR
+from backend import logstore
+logstore.install(DATA_DIR / "app_log.jsonl")  # powers the Logs tab; survives restarts
 from backend import config_service
 from backend.engine.bot_engine import bot_engine
 from backend.routers import (
@@ -28,6 +30,7 @@ from backend.routers import (
     symbols_router,
     debug_router,
     auth_router,
+    logs_router,
 )
 from backend import security
 from backend import auth
@@ -61,6 +64,7 @@ app.include_router(symbols_router.router, dependencies=_auth_dep)
 app.include_router(bot_router.router, dependencies=_auth_dep)
 app.include_router(credentials_router.router, dependencies=_auth_dep)
 app.include_router(debug_router.router, dependencies=_auth_dep)
+app.include_router(logs_router.router, dependencies=_auth_dep)
 
 
 @app.on_event("startup")

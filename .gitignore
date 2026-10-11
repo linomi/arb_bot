@@ -8,3 +8,4 @@ data/*.db
 .DS_Store
 data/heartbeat
 data/watchdog.state
+data/app_log.jsonl*

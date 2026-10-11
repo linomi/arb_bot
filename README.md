@@ -113,16 +113,27 @@ closed. For a server, run it under systemd.
      from the wallet balance.
    - *Trade log*: per trade, the gross notional (sum of all legs) and the
      **margin** (gross / leverage: `xt_leverage` on XT, 1x on Nobitex),
-     PnL and close reason. **Clear history** deletes this group's finished
-     trades for the current mode (open and partially-failed trades are never
-     deleted).
+     PnL and close reason. Click a row to expand the per-coin details:
+     entry and close **price, quantity and size** (qty x price) for every
+     leg, with totals (fill price/qty when the exchange reported them,
+     otherwise the planned ones; older trades show prices only). The table
+     shows about six rows and scrolls, with a fixed header. **Clear
+     history** deletes this group's finished trades for the current mode
+     (open and partially-failed trades are never deleted).
    - *Performance comparison*: Win Rate, Profit Factor, Net Profit, Expected
      Payoff and Max Drawdown per group, with the rest (gross profit/loss,
      absolute drawdown, streaks, long/short counts) under "Show all
      metrics", plus a radar chart.
-3. **Settings & Credentials tab.** Save API credentials per exchange. Live
+3. **Logs tab.** The server log, newest first, searchable (every word must
+   match, case-insensitive) and filterable by level (all / warnings+errors /
+   errors) and category (Trades, Engine, Exchange, Telegram, Init, API,
+   Other; "Trades" = opens, closes, rollbacks, failed entries/exits, risk
+   exits). *Live* tails new lines every 3 s; *Load older* pages back. The
+   last 5000 lines are kept in memory and mirrored to `data/app_log.jsonl`
+   (rotated at 5 MB), so they survive restarts.
+4. **Settings & Credentials tab.** Save API credentials per exchange. Live
    mode is refused without them.
-4. **Top bar.** ACTIVE/INACTIVE, Paper/Live (asks for confirmation) and the
+5. **Top bar.** ACTIVE/INACTIVE, Paper/Live (asks for confirmation) and the
    exchange selector. Language: English or Persian.
 
 ## 6. Configuration reference
@@ -175,7 +186,8 @@ backend/
     nobitex.py, xt.py    live clients (xt.py uses ccxt, swap/linear, USDT-M)
     paper.py             paper simulator over a real market-data client
     factory.py           picks the client for the active exchange and mode
-  routers/               auth, config, groups, init, bot, credentials, manual, symbols
+  routers/               auth, config, groups, init, bot, credentials, manual, symbols, logs
+  logstore.py            searchable log buffer behind the Logs tab (/api/logs)
   notify/                event hub + Telegram bot (commands, Persian messages, digest)
 scripts/watchdog.py      external heartbeat watchdog (Telegram alert); deploy/ has systemd units
 frontend/                vanilla HTML/CSS/JS, no build step

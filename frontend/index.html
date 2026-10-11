@@ -7,12 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Vazirmatn:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20261011a" />
-<link rel="stylesheet" href="/static/css/style_extra.css?v=20261011a" />
-<link rel="stylesheet" href="/static/css/mobile.css?v=20261011a" />
-<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20261011a" />
-<link rel="stylesheet" href="/static/css/auth.css?v=20261011a" />
-<link rel="stylesheet" href="/static/css/i18n.css?v=20261011a" />
+<link rel="stylesheet" href="/static/css/style.css?v=20261011b" />
+<link rel="stylesheet" href="/static/css/style_extra.css?v=20261011b" />
+<link rel="stylesheet" href="/static/css/mobile.css?v=20261011b" />
+<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20261011b" />
+<link rel="stylesheet" href="/static/css/auth.css?v=20261011b" />
+<link rel="stylesheet" href="/static/css/i18n.css?v=20261011b" />
 <script src="/static/js/chart.umd.min.js"></script>
 <script src="/static/js/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -27,6 +27,7 @@
   <nav class="tabs" id="tabs">
     <button class="tab-btn active" data-tab="dashboard" data-i18n="tab.backbone">Backbone</button>
     <button class="tab-btn" data-tab="init" data-i18n="tab.init">Initialization</button>
+    <button class="tab-btn" data-tab="logs" data-i18n="tab.logs">Logs</button>
     <button class="tab-btn" data-tab="settings" data-i18n="tab.settings">Settings & Credentials</button>
   </nav>
 
@@ -104,7 +105,7 @@
             <h2 data-i18n="trades.title">Trade Log</h2>
             <button type="button" id="clear-trades-btn" class="btn-secondary btn-danger-ghost" data-i18n="trades.clear">Clear history</button>
           </div>
-          <div class="table-scroll">
+          <div class="table-scroll trades-scroll">
             <table id="trades-table">
               <thead>
                 <tr>
@@ -323,6 +324,29 @@
     </div>
   </section>
 
+  <section class="tab-panel" id="tab-logs">
+    <div class="panel logs-panel">
+      <div class="panel-head">
+        <h2 data-i18n="logs.title">Logs</h2>
+        <span class="filter-count" id="log-count"></span>
+      </div>
+      <div class="log-filters">
+        <input id="log-search" type="search" data-i18n-placeholder="logs.search.ph" placeholder="Search (all words must match), e.g. group 12 failed" />
+        <select id="log-level">
+          <option value="" data-i18n="logs.level.all">All levels</option>
+          <option value="WARNING" data-i18n="logs.level.warning">Warnings + errors</option>
+          <option value="ERROR" data-i18n="logs.level.error">Errors only</option>
+        </select>
+        <label class="log-live"><input type="checkbox" id="log-live" checked /> <span data-i18n="logs.live">Live</span></label>
+        <button type="button" class="btn-secondary" id="log-refresh" data-i18n="logs.refresh">Refresh</button>
+        <button type="button" class="btn-secondary" id="log-clear" data-i18n="logs.clear">Clear filters</button>
+      </div>
+      <div class="log-cats" id="log-cats"></div>
+      <div class="log-list" id="log-list"></div>
+      <div class="log-more-wrap"><button type="button" class="btn-secondary" id="log-more" hidden data-i18n="logs.more">Load older</button></div>
+    </div>
+  </section>
+
   <section class="tab-panel" id="tab-settings">
     <div class="init-grid">
       <div class="panel">
@@ -381,16 +405,17 @@
 
 </main>
 
-<script src="/static/js/i18n.js?v=20261011a"></script>
-<script src="/static/js/time.js?v=20261011a"></script>
-<script src="/static/js/api.js?v=20261011a"></script>
-<script src="/static/js/auth.js?v=20261011a"></script>
-<script src="/static/js/charts.js?v=20261011a"></script>
-<script src="/static/js/charts_equity.js?v=20261011a"></script>
-<script src="/static/js/tables.js?v=20261011a"></script>
-<script src="/static/js/beta_diagram.js?v=20261011a"></script>
-<script src="/static/js/main.js?v=20261011a"></script>
-<script src="/static/js/ui_fixes.js?v=20261011a"></script>
-<script src="/static/js/backbone_overrides.js?v=20261011a"></script>
+<script src="/static/js/i18n.js?v=20261011b"></script>
+<script src="/static/js/time.js?v=20261011b"></script>
+<script src="/static/js/api.js?v=20261011b"></script>
+<script src="/static/js/auth.js?v=20261011b"></script>
+<script src="/static/js/charts.js?v=20261011b"></script>
+<script src="/static/js/charts_equity.js?v=20261011b"></script>
+<script src="/static/js/tables.js?v=20261011b"></script>
+<script src="/static/js/logs.js?v=20261011b"></script>
+<script src="/static/js/beta_diagram.js?v=20261011b"></script>
+<script src="/static/js/main.js?v=20261011b"></script>
+<script src="/static/js/ui_fixes.js?v=20261011b"></script>
+<script src="/static/js/backbone_overrides.js?v=20261011b"></script>
 </body>
 </html>

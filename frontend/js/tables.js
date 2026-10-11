@@ -312,6 +312,71 @@ function applyPerfFiltersAndRedraw(onRowClick) {
   _redrawPerfTable(onRowClick);
 }
 
+const TradesTableState = { expanded: new Set() };
+
+/** Price/qty with sensible significant digits (works for BTC at 60000 and SHIB at 0.00001). */
+function fmtSig(v, sig = 6) {
+  if (v == null || !isFinite(v)) return "--";
+  const n = Number(v);
+  if (n === 0) return "0";
+  return String(parseFloat(n.toPrecision(sig)));
+}
+
+function _legFill(leg) {
+  if (!leg) return null;
+  const qty = leg.filled_qty != null ? leg.filled_qty : leg.qty;
+  const px = leg.fill_price != null ? leg.fill_price : leg.price;
+  if (qty == null && px == null) return null;
+  return { qty: qty != null ? Number(qty) : null, px: px != null ? Number(px) : null };
+}
+
+/** Per-coin entry / close table for one trade (price, qty, size = qty x price). */
+function tradeLegsHtml(tr0) {
+  const entry = {}, close = {}, order = [], side = {};
+  (tr0.legs_entry || []).forEach((l) => { entry[l.symbol] = _legFill(l); side[l.symbol] = l.side; order.push(l.symbol); });
+  (tr0.legs_close || []).forEach((l) => { close[l.symbol] = _legFill(l); if (!order.includes(l.symbol)) order.push(l.symbol); });
+  // Older trades only stored prices per symbol.
+  Object.keys(tr0.entry_prices || {}).forEach((sym) => {
+    if (!order.includes(sym)) order.push(sym);
+    if (!entry[sym]) entry[sym] = { qty: null, px: Number(tr0.entry_prices[sym]) };
+  });
+  Object.keys(tr0.close_prices || {}).forEach((sym) => {
+    if (!order.includes(sym)) order.push(sym);
+    if (!close[sym]) close[sym] = { qty: null, px: Number(tr0.close_prices[sym]) };
+  });
+  if (!order.length) return `<div class="legs-empty">${t("trades.legs.none")}</div>`;
+  const size = (f) => (f && f.qty != null && f.px != null ? fmtNum(f.qty * f.px, 2) : "--");
+  const cells = (f) => (f
+    ? `<td>${fmtSig(f.px)}</td><td>${fmtSig(f.qty, 8)}</td><td>${size(f)}</td>`
+    : `<td>--</td><td>--</td><td>--</td>`);
+  const rows = order.map((sym) => {
+    const sd = side[sym];
+    const sdCell = sd ? `<span class="${sd === "buy" ? "dir-long" : "dir-short"}">${t(sd === "buy" ? "trades.legs.buy" : "trades.legs.sell")}</span>` : "--";
+    return `<tr><td class="leg-sym">${_esc(sym)}</td><td>${sdCell}</td>${cells(entry[sym])}${cells(close[sym])}</tr>`;
+  }).join("");
+  const sumSize = (m) => {
+    let tot = 0, any = false;
+    order.forEach((sym) => { const f = m[sym]; if (f && f.qty != null && f.px != null) { tot += f.qty * f.px; any = true; } });
+    return any ? fmtNum(tot, 2) : "--";
+  };
+  return `
+    <table class="legs-table">
+      <thead>
+        <tr>
+          <th rowspan="2">${t("trades.legs.symbol")}</th><th rowspan="2">${t("trades.legs.side")}</th>
+          <th colspan="3" class="grp-entry">${t("trades.legs.entry")}</th>
+          <th colspan="3" class="grp-close">${t("trades.legs.close")}</th>
+        </tr>
+        <tr>
+          <th>${t("trades.legs.price")}</th><th>${t("trades.legs.qty")}</th><th>${t("trades.legs.size")}</th>
+          <th>${t("trades.legs.price")}</th><th>${t("trades.legs.qty")}</th><th>${t("trades.legs.size")}</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="4">${t("trades.legs.total")}</td><td>${sumSize(entry)}</td><td colspan="2"></td><td>${sumSize(close)}</td></tr></tfoot>
+    </table>`;
+}
+
 function renderTradesTable(trades) {
   const tbody = document.querySelector("#trades-table tbody");
   if (!tbody) return;
@@ -320,6 +385,7 @@ function renderTradesTable(trades) {
   // t() and made every row throw "t is not a function" (empty chart, empty log).
   (trades || []).forEach((tr0) => {
     const tr = document.createElement("tr");
+    tr.className = "trade-row";
     const dirCls = tr0.direction === "long_residual" ? "dir-long" : "dir-short";
     const reasonCls = tr0.close_reason ? `reason-${tr0.close_reason}` : "";
     const p = displayTradePnl(tr0);
@@ -330,8 +396,9 @@ function renderTradesTable(trades) {
       pnlCell = fmtNum(p);
     }
     const src = tr0.mode === "live" ? (p != null ? "exch" : "?") : "model";
+    const open = TradesTableState.expanded.has(tr0.id);
     tr.innerHTML = `
-      <td class="${dirCls}">${tr0.direction === "long_residual" ? t("trades.long") : t("trades.short")}</td>
+      <td class="${dirCls}"><button type="button" class="perf-expand trade-expand${open ? " open" : ""}" aria-expanded="${open}" title="${t("trades.expand.title")}">&#9656;</button>${tr0.direction === "long_residual" ? t("trades.long") : t("trades.short")}</td>
       <td>${fmtTime(tr0.entry_time)}</td>
       <td>${fmtTime(tr0.close_time)}</td>
       <td class="${reasonCls}">${tr0.close_reason || (tr0.status === "open" ? t("trades.open") : "--")}</td>
@@ -342,6 +409,22 @@ function renderTradesTable(trades) {
       <td>${tr0.mode}/${src}</td>
     `;
     tbody.appendChild(tr);
+
+    const extra = document.createElement("tr");
+    extra.className = "trade-extra";
+    extra.hidden = !open;
+    extra.innerHTML = `<td colspan="9">${tradeLegsHtml(tr0)}</td>`;
+    tbody.appendChild(extra);
+
+    const toggle = () => {
+      const nowOpen = extra.hidden;
+      extra.hidden = !nowOpen;
+      const btn = tr.querySelector(".trade-expand");
+      btn.classList.toggle("open", nowOpen);
+      btn.setAttribute("aria-expanded", String(nowOpen));
+      if (nowOpen) TradesTableState.expanded.add(tr0.id); else TradesTableState.expanded.delete(tr0.id);
+    };
+    tr.addEventListener("click", toggle);
   });
 }
 

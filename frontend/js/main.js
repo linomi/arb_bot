@@ -32,6 +32,7 @@ function switchTab(tab) {
   }
   if (tab === "init") refreshInitTab();
   if (tab === "settings") refreshSettingsTab();
+  if (tab === "logs") LogsView.show(); else LogsView.hide();
 }
 
 function startFitPoll() {
@@ -844,6 +845,7 @@ window.__onLanguageChange = async function () {
     if (state.activeTab === "dashboard") await refreshDashboard();
     if (state.activeTab === "init") await refreshInitTab();
     if (state.activeTab === "settings") await refreshSettingsTab();
+    if (state.activeTab === "logs") LogsView.relabel();
   } catch (e) { console.warn("lang change", e); }
 };
 
