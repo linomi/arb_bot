@@ -177,12 +177,17 @@ def backtest_group(
             if max_entry_scale is not None and float(max_entry_scale) > 0:
                 try:
                     from backend.strategy.sizing import leg_orders, ExcessiveScalingError
+                    from backend.strategy.sizing import quote_suffix
+                    # USDT baskets use a small exchange minimum; the IRT default (50,000) would
+                    # make every USDT entry look like a huge scale-up and skip it.
+                    _min = 5.0 if quote_suffix(dependent_symbol) == "USDT" else None
                     leg_orders(
                         dependent_symbol,
                         entry_dec.direction,
                         fit.betas,
                         prices_now,
                         float(trade_notional),
+                        min_order_value=_min,
                         max_scale=float(max_entry_scale),
                     )
                 except ExcessiveScalingError:

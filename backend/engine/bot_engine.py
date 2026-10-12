@@ -1530,12 +1530,19 @@ class BotEngine:
 
         # Preview sizing against max_entry_scale before balance fit (same treatment as profit gate).
         try:
+            # Use the exchange's real minimum: the IRT default (50,000) would make every USDT basket
+            # look like a ~1000x scale-up and block all XT entries.
+            _min_val = await xt_hooks.resolve_min_order_value(
+                trading_client, list(group.symbols or [group.dependent_symbol]),
+                exchange=group_ex, default_irt=MIN_ORDER_VALUE_IRT,
+            )
             leg_orders(
                 group.dependent_symbol,
                 entry_dec.direction,
                 fit_res.betas,
                 latest_prices,
                 float(notional),
+                min_order_value=_min_val,
                 max_scale=max_entry_scale,
             )
         except ExcessiveScalingError as e:
