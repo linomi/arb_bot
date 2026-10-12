@@ -73,15 +73,6 @@ async def on_startup():
     db = SessionLocal()
     try:
         config_service.seed_defaults_if_missing(db)
-        try:  # paper PnL used to ignore fees; convert older closed paper trades once (idempotent)
-            from backend.strategy.account import migrate_paper_pnl_net_of_fees
-            _fee = float(config_service.get_section(db, "backbone").get("fee_rate", 0.001) or 0)
-            _n = migrate_paper_pnl_net_of_fees(db, _fee)
-            if _n:
-                log.info("Converted %d older paper trade(s) to fee-adjusted PnL (fee_rate=%g)", _n, _fee)
-        except Exception:
-            db.rollback()
-            log.exception("paper PnL fee migration failed (non-fatal)")
         # One-time style fix: old random-BTCIRT-… names → silent_spread style
         try:
             changes = assign_codenames(db, force_all=False)

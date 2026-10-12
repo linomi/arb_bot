@@ -6,7 +6,7 @@ check), so both always agree on what a position costs.
 from __future__ import annotations
 
 from backend.models import Group, Trade
-from backend.strategy.pnl import legs_gross_notional, fills_pnl_and_fee
+from backend.strategy.pnl import legs_gross_notional
 
 USDT_SWAP_SUFFIX = "/USDT:USDT"
 
@@ -82,34 +82,3 @@ def paper_free_balance(db, backbone: dict) -> float | None:
             if gross:
                 free -= gross / leverage_for(getattr(g, "exchange", None), backbone, g.dependent_symbol)
     return free
-
-
-def migrate_paper_pnl_net_of_fees(db, fee_rate: float) -> int:
-    """One-time, idempotent fix for paper trades closed before fees were subtracted from the
-    fill-based PnL. A row is converted only when its stored ``pnl`` equals the gross fills figure
-    (so model-based or already-adjusted rows are left alone). The fee that was subtracted is stored in
-    ``realized_fee`` (which also marks the row as done); the original number is ``pnl + realized_fee``.
-    ``fee_rate`` is the backbone fee currently configured. Returns the number of trades converted."""
-    rows = (
-        db.query(Trade)
-        .filter(Trade.mode == "paper", Trade.status == "closed", Trade.realized_fee.is_(None))
-        .all()
-    )
-    n = 0
-    for t in rows:
-        if t.pnl is None or not t.legs_entry or not t.legs_close:
-            continue
-        fp = fills_pnl_and_fee(t.legs_entry, t.legs_close, fee_rate)
-        if fp is None:
-            continue
-        gross, fee = fp
-        if abs(float(t.pnl) - gross) > max(1e-6, 1e-6 * abs(gross)):
-            continue
-        t.pnl = gross - fee
-        if t.realized_pnl is not None:
-            t.realized_pnl = gross - fee
-        t.realized_fee = fee
-        n += 1
-    if n:
-        db.commit()
-    return n

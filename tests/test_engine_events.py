@@ -241,36 +241,3 @@ def test_pnl_from_leg_fills_net_of_fees():
     assert gross == pytest.approx(20.0) and fee == pytest.approx(0.42)
     assert be.BotEngine._pnl_from_leg_fills(entry, close, 0.001) == pytest.approx(19.58)
     assert be.BotEngine._pnl_from_leg_fills(entry, close) == pytest.approx(20.0)  # old call style still works
-
-
-def test_old_paper_trades_are_converted_once(world):
-    from backend.strategy.account import migrate_paper_pnl_net_of_fees
-    sf, gid, tid, Client = world
-    db = sf()
-    base = db.get(Trade, tid)
-    legs_e = [{"symbol": DEP, "side": "buy", "filled_qty": 1.0, "fill_price": 100.0},
-              {"symbol": X, "side": "sell", "filled_qty": 2.0, "fill_price": 50.0}]
-    legs_c = [{"symbol": DEP, "fill_price": 103.0}, {"symbol": X, "fill_price": 50.0}]
-
-    def mk(pnl, **kw):
-        t = Trade(group_id=gid, ols_fit_id=base.ols_fit_id, direction="long_residual", mode="paper",
-                  entry_z=-2, entry_residual=-2, entry_prices={}, status="closed",
-                  legs_entry=legs_e, legs_close=legs_c, pnl=pnl, realized_pnl=pnl, **kw)
-        db.add(t); db.flush()
-        return t.id
-
-    legacy = mk(3.0)                       # gross fills PnL: (103-100)*1 + 0 = 3.0
-    model_based = mk(2.5)                  # not the fills number -> left alone
-    live_like = mk(3.0)
-    db.get(Trade, live_like).mode = "live"  # live rows are never touched
-    db.commit()
-    assert migrate_paper_pnl_net_of_fees(db, 0.001) == 1
-    fee = 0.001 * (1 * (100 + 103) + 2 * (50 + 50))
-    t = db.get(Trade, legacy)
-    assert t.pnl == pytest.approx(3.0 - fee) and t.realized_pnl == pytest.approx(3.0 - fee)
-    assert t.realized_fee == pytest.approx(fee)
-    assert t.pnl + t.realized_fee == pytest.approx(3.0)  # original value stays recoverable
-    assert db.get(Trade, model_based).pnl == 2.5 and db.get(Trade, live_like).pnl == 3.0
-    assert migrate_paper_pnl_net_of_fees(db, 0.001) == 0   # idempotent
-    assert db.get(Trade, legacy).pnl == pytest.approx(3.0 - fee)
-    db.close()

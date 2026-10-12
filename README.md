@@ -290,10 +290,9 @@ a position near liquidation is closed.
   trade as a cross-check: when it differs from the fills by more than 20% the
   log says so, with the hedge-ratio drift caused by rounding. That line is a
   warning in live mode and informational in paper mode. Paper trades closed
-  before fees were subtracted are converted once at startup using the
-  `fee_rate` configured at that time (the fee is saved in the trade's
-  `realized_fee`; the old value is `pnl + realized_fee`), so set `fee_rate`
-  before restarting. Treat the model and fill numbers as approximate; they
+  before fees were subtracted keep their old, slightly too high PnL; clear
+  them with **Clear history**. The fee subtracted from a trade is saved in
+  its `realized_fee`. Treat the model and fill numbers as approximate; they
   will differ.
 - XT funding (every 8 hours) is only approximated by
   `funding_rate_estimate`.
