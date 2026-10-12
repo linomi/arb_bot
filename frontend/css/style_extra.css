@@ -139,3 +139,9 @@ html[dir="rtl"] .param-form .adv-details[open]>summary::before{transform:scaleX(
 .log-msg{unicode-bidi:plaintext;text-align:start}
 .legs-table tfoot tr.foot-total td{color:var(--text-hi);font-weight:600}
 .legs-note{margin-top:6px;color:var(--text-lo);font-size:10.5px;position:sticky;inset-inline-start:0;max-width:min(100%,calc(100vw - 64px))}
+
+/* init candidates table: same look as the performance table */
+#candidates-table tr.perf-extra[hidden]{display:none}
+#candidates-table tr.perf-extra td{background:var(--bg-2, rgba(255,255,255,.02));padding:10px 14px;border-top:0}
+#candidates-table tbody tr:not(.perf-extra){cursor:pointer}
+.cand-symbols{margin-inline-start:22px;margin-top:2px;font-size:10.5px;color:var(--text-lo);font-family:var(--font-mono);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

@@ -7,12 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Vazirmatn:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20261011c" />
-<link rel="stylesheet" href="/static/css/style_extra.css?v=20261011c" />
-<link rel="stylesheet" href="/static/css/mobile.css?v=20261011c" />
-<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20261011c" />
-<link rel="stylesheet" href="/static/css/auth.css?v=20261011c" />
-<link rel="stylesheet" href="/static/css/i18n.css?v=20261011c" />
+<link rel="stylesheet" href="/static/css/style.css?v=20261011d" />
+<link rel="stylesheet" href="/static/css/style_extra.css?v=20261011d" />
+<link rel="stylesheet" href="/static/css/mobile.css?v=20261011d" />
+<link rel="stylesheet" href="/static/css/beta_diagram.css?v=20261011d" />
+<link rel="stylesheet" href="/static/css/auth.css?v=20261011d" />
+<link rel="stylesheet" href="/static/css/i18n.css?v=20261011d" />
 <script src="/static/js/chart.umd.min.js"></script>
 <script src="/static/js/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -291,6 +291,9 @@
           <label><span data-i18n="perf.filter.sharpe">Sharpe</span> &ge;
             <input id="cand-min-sharpe" type="number" step="any" placeholder="e.g. 1" />
           </label>
+          <label><span data-i18n="perf.filter.pf">Profit Factor</span> &ge;
+            <input id="cand-min-pf" type="number" step="any" placeholder="e.g. 1.2" />
+          </label>
           <label><span data-i18n="perf.filter.pnl">PnL</span> &gt;
             <input id="cand-min-pnl" type="number" step="any" placeholder="e.g. 0" />
           </label>
@@ -298,6 +301,7 @@
             <input id="cand-min-trades" type="number" step="1" placeholder="e.g. 5" />
           </label>
           <button type="button" id="cand-filter-clear" class="btn-secondary" data-i18n="perf.filter.clear">Clear</button>
+          <button type="button" id="cand-expand-all" class="btn-secondary" data-state="closed" data-i18n="perf.expand.all">Show all metrics</button>
           <span class="filter-count" id="cand-count"></span>
         </div>
       </div>
@@ -305,17 +309,16 @@
         <table id="candidates-table" class="sortable-table">
           <thead>
             <tr>
-              <th data-key="name" data-i18n="init.cand.th.name">Name</th>
+              <th data-key="name" data-i18n="perf.th.group">Group</th>
+              <th data-key="status" data-i18n="perf.th.status">Status</th>
               <th data-key="source" data-i18n="init.cand.th.source">Source</th>
-              <th data-key="sector" data-i18n="init.cand.th.sector">Sector</th>
-              <th data-key="symbols_text" data-i18n="init.cand.th.symbols">Symbols</th>
-              <th data-key="sharpe_ratio" data-i18n="init.cand.th.sharpe">Sharpe</th>
-              <th data-key="total_pnl" data-i18n="init.cand.th.pnl">PnL</th>
-              <th data-key="max_drawdown" data-i18n="init.cand.th.max_dd">Max DD</th>
-              <th data-key="win_rate" data-i18n="init.cand.th.win_rate">Win Rate</th>
-              <th data-key="trade_count" data-i18n="init.cand.th.trades">Trades</th>
-              <th data-key="status" data-i18n="init.cand.th.status">Status</th>
-              <th></th>
+              <th data-key="total_trades" data-i18n="perf.th.trades">Total Trades</th>
+              <th data-key="win_rate" data-i18n="perf.th.win_rate">Win Rate</th>
+              <th data-key="profit_factor" data-i18n="perf.th.profit_factor">Profit Factor</th>
+              <th data-key="total_net_profit" data-i18n="perf.th.net_profit">Net Profit</th>
+              <th data-key="expected_payoff" data-i18n="perf.th.expected_payoff">Expected Payoff</th>
+              <th data-key="maximal_drawdown" data-i18n="perf.th.max_dd">Max Drawdown</th>
+              <th class="col-actions" data-i18n="perf.th.actions">Actions</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -405,17 +408,17 @@
 
 </main>
 
-<script src="/static/js/i18n.js?v=20261011c"></script>
-<script src="/static/js/time.js?v=20261011c"></script>
-<script src="/static/js/api.js?v=20261011c"></script>
-<script src="/static/js/auth.js?v=20261011c"></script>
-<script src="/static/js/charts.js?v=20261011c"></script>
-<script src="/static/js/charts_equity.js?v=20261011c"></script>
-<script src="/static/js/tables.js?v=20261011c"></script>
-<script src="/static/js/logs.js?v=20261011c"></script>
-<script src="/static/js/beta_diagram.js?v=20261011c"></script>
-<script src="/static/js/main.js?v=20261011c"></script>
-<script src="/static/js/ui_fixes.js?v=20261011c"></script>
-<script src="/static/js/backbone_overrides.js?v=20261011c"></script>
+<script src="/static/js/i18n.js?v=20261011d"></script>
+<script src="/static/js/time.js?v=20261011d"></script>
+<script src="/static/js/api.js?v=20261011d"></script>
+<script src="/static/js/auth.js?v=20261011d"></script>
+<script src="/static/js/charts.js?v=20261011d"></script>
+<script src="/static/js/charts_equity.js?v=20261011d"></script>
+<script src="/static/js/tables.js?v=20261011d"></script>
+<script src="/static/js/logs.js?v=20261011d"></script>
+<script src="/static/js/beta_diagram.js?v=20261011d"></script>
+<script src="/static/js/main.js?v=20261011d"></script>
+<script src="/static/js/ui_fixes.js?v=20261011d"></script>
+<script src="/static/js/backbone_overrides.js?v=20261011d"></script>
 </body>
 </html>

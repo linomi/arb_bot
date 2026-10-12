@@ -99,6 +99,14 @@ closed. For a server, run it under systemd.
    markets from the active exchange, backtests candidate groups with the
    same backbone logic as the live engine, keeps the best by Sharpe/PnL and
    saves them as groups. You can also create a **manual group**.
+   The candidates table uses the same columns, filters and expandable
+   "all metrics" block as the Backbone performance table (win rate, profit
+   factor, net profit, expected payoff, max drawdown, streaks, long/short
+   counts), plus Sharpe, Sortino, average hold and best/worst trade. The
+   numbers come from the backtest, which sizes each trade as one unit of the
+   dependent coin, so compare groups with each other rather than with live
+   USDT PnL. Candidates saved by older versions only have the basic metrics
+   and show "--" for the rest.
 2. **Backbone tab.**
    - *Config* is split into **Basic** and a collapsible **Advanced**
      section.

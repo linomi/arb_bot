@@ -231,7 +231,7 @@ function fmtPF(v, trades) {
 }
 
 /** Extra (collapsed-by-default) metrics for one group. */
-function perfExtraHtml(r) {
+function perfExtraHtml(r, more) {
   const n = (v) => (v == null ? "--" : String(v));
   const pct = (a, b) => (b ? " (" + ((100 * a) / b).toFixed(0) + "%)" : "");
   const withCount = (amt, cnt) => (cnt ? `${fmtNum(amt)} (${cnt})` : "--");
@@ -248,7 +248,7 @@ function perfExtraHtml(r) {
     ["perf.m.long", n(r.long_positions) + (r.long_positions ? ` (${t("perf.m.won")} ${pct(r.long_won, r.long_positions).trim().replace(/[()]/g, "")})` : ""), ""],
     ["perf.m.short", n(r.short_positions) + (r.short_positions ? ` (${t("perf.m.won")} ${pct(r.short_won, r.short_positions).trim().replace(/[()]/g, "")})` : ""), ""],
   ];
-  return `<div class="perf-extra-grid">${items
+  return `<div class="perf-extra-grid">${items.concat(more || [])
     .map(([k, v, cls]) => `<div class="pe-item"><span class="pe-label">${t(k)}</span><span class="pe-val ${cls}">${v}</span></div>`)
     .join("")}</div>`;
 }
@@ -452,15 +452,24 @@ function renderTradesTable(trades) {
 }
 
 const CandTableState = {
-  rows: [], handlers: {}, sortKey: "sharpe_ratio", sortDir: "desc", wired: false,
+  rows: [], handlers: {}, sortKey: "total_net_profit", sortDir: "desc", wired: false, expanded: new Set(),
 };
+const _CAND_FILTER_IDS = ["cand-search", "cand-status", "cand-source", "cand-min-sharpe", "cand-min-pf",
+  "cand-min-pnl", "cand-min-trades"];
 
+/** Normalise a candidate group to the same field names the performance table uses, so the
+ *  shared helpers (fmtPF, perfExtraHtml, ...) work on it unchanged. Backtest metrics come from the
+ *  same GroupPerformance as live performance; older candidates only have the legacy keys. */
 function _flattenCand(g) {
   const m = g.backtest_metrics || {};
   return {
+    ...m,
     ...g,
-    sharpe_ratio: m.sharpe_ratio, total_pnl: m.total_pnl, max_drawdown: m.max_drawdown,
-    win_rate: m.win_rate, trade_count: m.trade_count,
+    total_trades: m.total_trades || m.trade_count || 0,
+    total_net_profit: m.total_net_profit != null && (m.total_net_profit !== 0 || m.total_pnl == null) ? m.total_net_profit : m.total_pnl,
+    maximal_drawdown: m.maximal_drawdown != null && m.maximal_drawdown !== 0 ? m.maximal_drawdown : m.max_drawdown,
+    expected_payoff: m.expected_payoff != null ? m.expected_payoff : m.avg_pnl,
+    trade_count: m.trade_count,
     symbols_text: (g.symbols || []).join(", "),
   };
 }
@@ -469,35 +478,48 @@ function _candFilterValues() {
   const v = (id) => { const el = document.getElementById(id); return el ? el.value : ""; };
   return {
     search: v("cand-search").trim().toLowerCase(), status: v("cand-status"), source: v("cand-source"),
-    minSharpe: v("cand-min-sharpe"), minPnl: v("cand-min-pnl"), minTrades: v("cand-min-trades"),
+    minSharpe: v("cand-min-sharpe"), minPf: v("cand-min-pf"), minPnl: v("cand-min-pnl"), minTrades: v("cand-min-trades"),
   };
+}
+
+function _syncCandExpandAll(rows) {
+  const btn = document.getElementById("cand-expand-all");
+  if (!btn) return;
+  const allOpen = rows.length > 0 && rows.every((r) => CandTableState.expanded.has(r.id));
+  btn.textContent = allOpen ? t("perf.collapse.all") : t("perf.expand.all");
+  btn.dataset.state = allOpen ? "open" : "closed";
 }
 
 function _wireCandTable() {
   if (CandTableState.wired) return;
   CandTableState.wired = true;
   document.querySelectorAll("#candidates-table thead th[data-key]").forEach((th) => {
+    th.classList.add("sortable");
     th.addEventListener("click", () => {
       const key = th.dataset.key;
       if (CandTableState.sortKey === key) {
         CandTableState.sortDir = CandTableState.sortDir === "asc" ? "desc" : "asc";
       } else {
         CandTableState.sortKey = key;
-        CandTableState.sortDir = ["name", "source", "sector", "symbols_text", "status"].includes(key) ? "asc" : "desc";
+        CandTableState.sortDir = ["name", "source", "status"].includes(key) ? "asc" : "desc";
       }
       _drawCandTable();
     });
   });
-  ["cand-search", "cand-status", "cand-source", "cand-min-sharpe", "cand-min-pnl", "cand-min-trades"].forEach((id) => {
+  _CAND_FILTER_IDS.forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener(el.tagName === "SELECT" ? "change" : "input", _drawCandTable);
   });
   const clr = document.getElementById("cand-filter-clear");
   if (clr) clr.addEventListener("click", () => {
-    ["cand-search", "cand-status", "cand-source", "cand-min-sharpe", "cand-min-pnl", "cand-min-trades"].forEach((id) => {
-      const el = document.getElementById(id); if (el) el.value = "";
-    });
+    _CAND_FILTER_IDS.forEach((id) => { const el = document.getElementById(id); if (el) el.value = ""; });
+    _drawCandTable();
+  });
+  const exp = document.getElementById("cand-expand-all");
+  if (exp) exp.addEventListener("click", () => {
+    const open = exp.dataset.state !== "open";
+    CandTableState.rows.forEach((r) => { if (open) CandTableState.expanded.add(r.id); else CandTableState.expanded.delete(r.id); });
     _drawCandTable();
   });
 }
@@ -515,52 +537,87 @@ function _drawCandTable() {
   const f = _candFilterValues();
   const { onActivate, onDeactivate, onDelete } = CandTableState.handlers;
   const num = (x) => (x === "" ? null : Number(x));
-  const minS = num(f.minSharpe), minP = num(f.minPnl), minT = num(f.minTrades);
+  const minS = num(f.minSharpe), minPf = num(f.minPf), minP = num(f.minPnl), minT = num(f.minTrades);
   const rows = CandTableState.rows.filter((g) => {
     if (f.search && !`${g.name} ${g.symbols_text}`.toLowerCase().includes(f.search)) return false;
     if (f.status && g.status !== f.status) return false;
     if (f.source && g.source !== f.source) return false;
     if (minS != null && !(Number(g.sharpe_ratio) >= minS)) return false;
-    if (minP != null && !(Number(g.total_pnl) > minP)) return false;
-    if (minT != null && !(Number(g.trade_count) >= minT)) return false;
+    if (minPf != null && !(Number(g.profit_factor) >= minPf)) return false;
+    if (minP != null && !(Number(g.total_net_profit) > minP)) return false;
+    if (minT != null && !(Number(g.total_trades) >= minT)) return false;
     return true;
   }).sort((a, b) => _cmp(a[CandTableState.sortKey], b[CandTableState.sortKey], CandTableState.sortDir));
 
   _setSortHeaders("candidates-table", CandTableState.sortKey, CandTableState.sortDir);
   const countEl = document.getElementById("cand-count");
   if (countEl) countEl.textContent = t("perf.count", { shown: rows.length, total: CandTableState.rows.length });
+  _syncCandExpandAll(rows);
 
   tbody.innerHTML = "";
   if (!rows.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="11" class="table-empty">${t(CandTableState.rows.length ? "perf.empty.filtered" : "init.cand.empty")}</td>`;
+    tr.innerHTML = `<td colspan="10" class="table-empty">${t(CandTableState.rows.length ? "perf.empty.filtered" : "init.cand.empty")}</td>`;
     tbody.appendChild(tr);
     return;
   }
   rows.forEach((g) => {
+    const open = CandTableState.expanded.has(g.id);
+    const isActive = g.status === "active";
+    const actionLabel = isActive ? t("perf.deactivate") : t("perf.activate");
+    const toggleCls = isActive ? "btn-secondary" : "btn-primary";
     const tr = document.createElement("tr");
-    const actionLabel = g.status === "active" ? t("perf.deactivate") : t("perf.activate");
-    const toggleCls = g.status === "active" ? "btn-secondary" : "btn-primary";
     tr.innerHTML = `
-      <td>${g.name}</td>
-      <td>${g.source}</td>
-      <td>${g.sector || "--"}</td>
-      <td>${g.symbols_text}</td>
-      <td>${fmtNum(g.sharpe_ratio, 2)}</td>
-      <td class="${pnlClass(g.total_pnl)}">${fmtNum(g.total_pnl)}</td>
-      <td>${fmtNum(g.max_drawdown)}</td>
-      <td>${fmtPct(g.win_rate)}</td>
-      <td>${g.trade_count ?? "--"}</td>
+      <td class="perf-name"><button type="button" class="perf-expand${open ? " open" : ""}" aria-expanded="${open}" title="${t("perf.expand.title")}">&#9656;</button>${_esc(g.name)}<div class="cand-symbols">${_esc(g.symbols_text)}</div></td>
       <td><span class="g-status ${g.status}">${statusLabel(g.status)}</span></td>
-      <td class="actions-cell">
-        <button class="${toggleCls} toggle-btn" data-id="${g.id}">${actionLabel}</button>
-        <button class="btn-danger delete-btn" data-id="${g.id}" title="${t("init.cand.delete.title")}">${t("init.cand.delete")}</button>
+      <td>${_esc(g.source || "--")}${g.sector ? ` · ${_esc(g.sector)}` : ""}</td>
+      <td>${g.total_trades ?? 0}</td>
+      <td>${fmtPct(g.win_rate)}</td>
+      <td>${fmtPF(g.profit_factor, g.total_trades)}</td>
+      <td class="${pnlClass(g.total_net_profit)}">${fmtNum(g.total_net_profit)}</td>
+      <td class="${pnlClass(g.expected_payoff)}">${fmtNum(g.expected_payoff)}</td>
+      <td>${fmtNum(g.maximal_drawdown)}</td>
+      <td class="col-actions actions-cell">
+        <div class="perf-actions">
+          <button type="button" class="${toggleCls} toggle-btn" data-id="${g.id}">${actionLabel}</button>
+          <button type="button" class="btn-danger delete-btn" data-id="${g.id}" title="${t("init.cand.delete.title")}">${t("init.cand.delete")}</button>
+        </div>
       </td>
     `;
     tbody.appendChild(tr);
+
+    // Same extra-metrics block as the Backbone performance table, plus the candidate-only stats.
+    const more = [
+      ["perf.th.sharpe", fmtNum(g.sharpe_ratio, 2), ""],
+      ["perf.th.sortino", fmtNum(g.sortino_ratio, 2), ""],
+      ["perf.th.avg_hold", fmtNum(g.avg_holding_hours, 1), ""],
+      ["perf.m.best_trade", fmtNum(g.best_trade), "num-pos"],
+      ["perf.m.worst_trade", fmtNum(g.worst_trade), "num-neg"],
+    ];
+    const extra = document.createElement("tr");
+    extra.className = "perf-extra";
+    extra.hidden = !open;
+    const grid = perfExtraHtml(g, more.map(([k, v, c]) => [k, v, c]));
+    extra.innerHTML = `<td colspan="10">${grid}</td>`;
+    tbody.appendChild(extra);
+
+    const expBtn = tr.querySelector(".perf-expand");
+    const toggleOpen = () => {
+      const nowOpen = extra.hidden;
+      extra.hidden = !nowOpen;
+      expBtn.classList.toggle("open", nowOpen);
+      expBtn.setAttribute("aria-expanded", String(nowOpen));
+      if (nowOpen) CandTableState.expanded.add(g.id); else CandTableState.expanded.delete(g.id);
+      _syncCandExpandAll(rows);
+    };
+    expBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleOpen(); });
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest(".toggle-btn, .delete-btn, .perf-expand")) return;
+      toggleOpen();
+    });
     tr.querySelector(".toggle-btn").addEventListener("click", (e) => {
       e.stopPropagation();
-      if (g.status === "active") onDeactivate(g.id); else onActivate(g.id);
+      if (isActive) onDeactivate(g.id); else onActivate(g.id);
     });
     tr.querySelector(".delete-btn").addEventListener("click", (e) => {
       e.stopPropagation();

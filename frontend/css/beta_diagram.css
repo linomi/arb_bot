@@ -86,7 +86,9 @@
 .beta-legend .neg{ color:#d48a7a; }
 
 #perf-table th.col-actions,
-#perf-table td.col-actions{
+#perf-table td.col-actions,
+#candidates-table th.col-actions,
+#candidates-table td.col-actions{
   position: sticky;
   right: 0;
   min-width: 176px;
@@ -97,11 +99,13 @@
   text-align: center;
   vertical-align: middle;
 }
-#perf-table thead th.col-actions{
+#perf-table thead th.col-actions,
+#candidates-table thead th.col-actions{
   background: var(--bg-2);
   z-index: 3;
 }
-#perf-table tr:hover td.col-actions{
+#perf-table tr:hover td.col-actions,
+#candidates-table tr:hover td.col-actions{
   background: var(--bg-2);
 }
 #perf-table tr.selected-row td.col-actions{
