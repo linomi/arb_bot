@@ -1246,9 +1246,12 @@ class BotEngine:
                  error="legs not closed: " + ", ".join(str(l.get("symbol")) for l in still_open))
             return
 
+        # The dependent leg is NOT necessarily first: _preflight_legs reorders legs (smallest
+        # notional first), and the model PnL is qty_y * dResidual.
+        _dep_leg = next((l for l in (legs_entry or []) if l.get("symbol") == group.dependent_symbol), None)
         qty_y = float(
-            (legs_entry[0].get("filled_qty") or legs_entry[0]["qty"])
-            if legs_entry else notional / max(
+            (_dep_leg.get("filled_qty") or _dep_leg["qty"])
+            if _dep_leg else notional / max(
                 float((open_trade.entry_prices or latest_prices).get(group.dependent_symbol, 1)), 1e-12
             )
         )

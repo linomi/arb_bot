@@ -241,3 +241,19 @@ def test_pnl_from_leg_fills_net_of_fees():
     assert gross == pytest.approx(20.0) and fee == pytest.approx(0.42)
     assert be.BotEngine._pnl_from_leg_fills(entry, close, 0.001) == pytest.approx(19.58)
     assert be.BotEngine._pnl_from_leg_fills(entry, close) == pytest.approx(20.0)  # old call style still works
+
+
+def test_model_pnl_uses_the_dependent_leg_even_when_legs_are_reordered(world):
+    """_preflight_legs puts the smallest-notional leg first; model PnL must still use qty of the dependent."""
+    sf, gid, tid, Client = world
+    db = sf()
+    t = db.get(Trade, tid)
+    t.legs_entry = [t.legs_entry[1], t.legs_entry[0]]  # regressor leg first
+    t.entry_residual = -2.2
+    db.commit(); db.close()
+    asyncio.run(be.BotEngine().close_all("manual_closeall"))
+    db = sf()
+    t = db.get(Trade, tid)
+    # residual moved from -2.2 to 100 => model = qty_dep(0.01) * 102.2 - costs ~ 0.9 (a regressor qty would give ~0)
+    assert 0.5 < t.model_pnl < 1.2
+    db.close()
