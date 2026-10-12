@@ -8,8 +8,8 @@
       if (t.realized_pnl != null && isFinite(Number(t.realized_pnl))) return Number(t.realized_pnl);
       return null;
     }
-    if (t.realized_pnl != null && isFinite(Number(t.realized_pnl))) return Number(t.realized_pnl);
     if (t.pnl != null && isFinite(Number(t.pnl))) return Number(t.pnl);
+    if (t.realized_pnl != null && isFinite(Number(t.realized_pnl))) return Number(t.realized_pnl);
     return null;
   }
 

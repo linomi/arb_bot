@@ -281,9 +281,20 @@ a position near liquidation is closed.
 
 ## 10. Caveats
 
-- Paper PnL is a model (beta-weighted cash PnL with the configured fee and
-  slippage); live PnL comes from the exchange when available and otherwise
-  from fill prices. They will differ.
+- Where each PnL comes from. **Paper:** rebuilt from the simulated entry and
+  close fills (slippage is in the fill prices) minus `fee_rate` on every fill,
+  so lot/contract rounding at small sizes shows up. **Live:** the exchange's
+  figure when available, otherwise the same fill-based calculation (fees
+  subtracted). The theoretical "model" PnL (spread change minus
+  `fee_rate + slippage_rate`, the same formula as backtests) is stored per
+  trade as a cross-check: when it differs from the fills by more than 20% the
+  log says so, with the hedge-ratio drift caused by rounding. That line is a
+  warning in live mode and informational in paper mode. Paper trades closed
+  before fees were subtracted are converted once at startup using the
+  `fee_rate` configured at that time (the fee is saved in the trade's
+  `realized_fee`; the old value is `pnl + realized_fee`), so set `fee_rate`
+  before restarting. Treat the model and fill numbers as approximate; they
+  will differ.
 - XT funding (every 8 hours) is only approximated by
   `funding_rate_estimate`.
 - Markets are fetched through `ccxt` and cached for an hour; limits and

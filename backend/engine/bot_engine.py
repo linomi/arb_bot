@@ -46,7 +46,7 @@ from backend.strategy.sizing import (
     assert_same_exchange,
     ExcessiveScalingError,
 )
-from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional, entry_target_check
+from backend.strategy.pnl import residual_cash_pnl, legs_gross_notional, entry_target_check, fills_pnl_and_fee
 from backend.strategy.account import paper_free_balance, leverage_for, trade_gross
 from backend.strategy.liquidation import near_liquidation, DEFAULT_MMR
 from backend.notify import emit
@@ -1060,28 +1060,35 @@ class BotEngine:
 
 
     @staticmethod
-    def _pnl_from_leg_fills(legs_entry: list[dict], legs_close: list[dict]) -> float | None:
-        """Approximate realized cash PnL from entry/exit fill prices and qty."""
-        if not legs_entry:
-            return None
-        close_by_sym = {l.get("symbol"): l for l in (legs_close or [])}
-        total = 0.0
-        any_fill = False
-        for leg in legs_entry:
-            sym = leg.get("symbol")
-            qty = float(leg.get("filled_qty") or leg.get("qty") or 0)
-            entry_px = float(leg.get("fill_price") or leg.get("price") or 0)
-            cl = close_by_sym.get(sym) or {}
-            exit_px = float(cl.get("fill_price") or cl.get("price") or 0)
-            if qty <= 0 or entry_px <= 0 or exit_px <= 0:
-                continue
-            any_fill = True
-            side = str(leg.get("side") or "").lower()
-            if side in ("buy", "long"):
-                total += (exit_px - entry_px) * qty
-            else:
-                total += (entry_px - exit_px) * qty
-        return float(total) if any_fill else None
+    def _fills_pnl_and_fee(legs_entry: list[dict], legs_close: list[dict], fee_rate: float = 0.0):
+        """(gross PnL, fee) from entry/exit fills, or None. See strategy.pnl.fills_pnl_and_fee."""
+        return fills_pnl_and_fee(legs_entry, legs_close, fee_rate)
+
+    @staticmethod
+    def _pnl_from_leg_fills(legs_entry: list[dict], legs_close: list[dict], fee_rate: float = 0.0) -> float | None:
+        """Realized cash PnL from fills, net of ``fee_rate`` (0 = gross, the old behaviour)."""
+        r = BotEngine._fills_pnl_and_fee(legs_entry, legs_close, fee_rate)
+        return None if r is None else r[0] - r[1]
+
+    @staticmethod
+    def _hedge_drift(legs_entry: list[dict], betas: dict, dependent_symbol: str) -> str:
+        """Largest gap between the planned hedge ratio |beta| and the quantity ratio that was actually
+        filled (contract / lot rounding). Large drift is the usual reason fills disagree with the model."""
+        try:
+            qty = {l.get("symbol"): float(l.get("filled_qty") or l.get("qty") or 0) for l in (legs_entry or [])}
+            qy = qty.get(dependent_symbol) or 0.0
+            if qy <= 0:
+                return ""
+            worst = None
+            for sym, beta in (betas or {}).items():
+                if sym == dependent_symbol or abs(float(beta)) < 1e-12 or qty.get(sym) is None:
+                    continue
+                drift = (qty[sym] / qy) / abs(float(beta)) - 1.0
+                if worst is None or abs(drift) > abs(worst[1]):
+                    worst = (sym, drift)
+            return f"; hedge-ratio drift {worst[0]} {worst[1] * 100:+.1f}%" if worst else ""
+        except Exception:
+            return ""
 
     async def _realized_pnl_from_exchange(
         self,
@@ -1252,39 +1259,57 @@ class BotEngine:
         )
         fee_model = cost_rate * 2.0 * gross
 
+        fee_rate_cfg = float(backbone.get("fee_rate", 0.001) or 0.0)
         realized = None
+        basis = None  # "exchange" (reported by the exchange) | "fills" (rebuilt from fills, net of fees)
+        fills_fee = None
         if trading_mode == "live" and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
             try:
                 realized, _ = await self._realized_pnl_from_exchange(
                     trading_client, legs_entry, legs_close,
                 )
+                if realized is not None:
+                    basis = "exchange"
             except Exception:
                 log.exception("failed to read exchange PnL for trade #%s", open_trade.id)
 
         if realized is None:
-            # Fallback: reconstruct from entry/exit fills (XT often lacks position PNL)
-            realized = self._pnl_from_leg_fills(legs_entry, legs_close)
-            if realized is not None:
-                log.info("group %s trade #%s PnL from fills=%.6g", group.id, open_trade.id, realized)
+            # No exchange figure (paper, or XT without position PNL): rebuild from entry/exit fills,
+            # net of the exchange fee so the number is comparable to live results.
+            fp = self._fills_pnl_and_fee(legs_entry, legs_close, fee_rate_cfg)
+            if fp is not None:
+                realized, fills_fee, basis = fp[0] - fp[1], fp[1], "fills"
+                log.info(
+                    "group %s trade #%s PnL from fills=%.6g (gross %.6g, fees %.4g @ %.4g%%/side)",
+                    group.id, open_trade.id, realized, fp[0], fp[1], fee_rate_cfg * 100,
+                )
 
         if realized is not None:
             reported_pnl = float(realized)
             open_trade.realized_pnl = float(realized)
             open_trade.pnl = float(realized)
-            open_trade.pnl_source = "exchange"
-            log.info(
-                "group %s trade #%s LIVE PnL=%.6g (model %.6g)",
-                group.id, open_trade.id, realized, model_pnl,
-            )
-            # Flag large divergence between exchange and model
+            open_trade.pnl_source = basis
+            if fills_fee is not None:
+                open_trade.realized_fee = float(fills_fee)
+            if trading_mode == "live":
+                log.info(
+                    "group %s trade #%s LIVE PnL=%.6g (%s, model %.6g)",
+                    group.id, open_trade.id, realized, basis, model_pnl,
+                )
+            # Fills vs the model: a gap usually means lot/contract rounding broke the hedge ratio.
             if model_pnl is not None and abs(model_pnl) > 1e-12:
                 rel = abs(float(realized) - float(model_pnl)) / max(abs(float(model_pnl)), 1e-12)
                 if rel > 0.20:
                     open_trade.pnl_divergence = True
-                    log.warning(
-                        "group %s trade #%s PnL divergence >20%%: exchange=%.6g model=%.6g (rel=%.1f%%)",
-                        group.id, open_trade.id, realized, model_pnl, 100 * rel,
+                    drift = self._hedge_drift(legs_entry, fit.betas, group.dependent_symbol)
+                    msg = (
+                        "group %s trade #%s PnL divergence >20%%: %s=%.6g model=%.6g (rel=%.1f%%)%s"
                     )
+                    args = (group.id, open_trade.id, basis, realized, model_pnl, 100 * rel, drift)
+                    if trading_mode == "live":
+                        log.warning(msg, *args)
+                    else:
+                        log.info(msg, *args)  # paper: informational (fills are simulated)
         else:
             reported_pnl = float(model_pnl)
             open_trade.pnl = float(model_pnl)

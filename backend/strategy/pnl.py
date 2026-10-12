@@ -122,3 +122,33 @@ def entry_target_check(
         return False, details
 
     return True, details
+
+
+def fills_pnl_and_fee(legs_entry: list[dict], legs_close: list[dict], fee_rate: float = 0.0):
+    """Cash PnL from entry/exit fill prices and quantities, plus the trading fee on those fills.
+
+    Returns (gross_pnl, fee) or None when no leg has usable fills. The fee is
+    ``fee_rate * (entry notional + exit notional)`` per leg. Slippage is already inside the fill
+    prices, so only the exchange fee is added here."""
+    if not legs_entry:
+        return None
+    close_by_sym = {l.get("symbol"): l for l in (legs_close or [])}
+    total = 0.0
+    fee = 0.0
+    any_fill = False
+    for leg in legs_entry:
+        sym = leg.get("symbol")
+        qty = float(leg.get("filled_qty") or leg.get("qty") or 0)
+        entry_px = float(leg.get("fill_price") or leg.get("price") or 0)
+        cl = close_by_sym.get(sym) or {}
+        exit_px = float(cl.get("fill_price") or cl.get("price") or 0)
+        if qty <= 0 or entry_px <= 0 or exit_px <= 0:
+            continue
+        any_fill = True
+        side = str(leg.get("side") or "").lower()
+        if side in ("buy", "long"):
+            total += (exit_px - entry_px) * qty
+        else:
+            total += (entry_px - exit_px) * qty
+        fee += float(fee_rate or 0.0) * qty * (entry_px + exit_px)
+    return (float(total), float(fee)) if any_fill else None

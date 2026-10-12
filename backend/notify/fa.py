@@ -99,7 +99,7 @@ def fmt_closed(d: dict) -> str:
     if d.get("held_sec") is not None:
         h = float(d["held_sec"]) / 3600.0
         held = f"\nمدت نگهداری: {num(h, 1)} ساعت"
-    src = "" if d.get("pnl_source") in (None, "model") else " (صرافی)"
+    src = " (صرافی)" if d.get("pnl_source") == "exchange" else ""
     return (
         f"{icon} <b>بستن معامله</b> · {mode_label(d.get('mode'))}\n"
         f"گروه: <b>{esc(d.get('group'))}</b> (#{d.get('trade_id')})\n"
