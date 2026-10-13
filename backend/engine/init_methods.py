@@ -38,9 +38,23 @@ def _worker_init(price_df: pd.DataFrame, backbone_params: dict) -> None:
 
 
 def _worker_eval(job: tuple) -> dict | None:
+    return _evaluate_job(job, _WORKER_PRICE_DF, _WORKER_PARAMS)
+
+
+def evaluate_group(price_df: pd.DataFrame, symbols: list[str], dependent: str,
+                   backbone_params: dict, source: str = "manual") -> dict | None:
+    """Backtest ONE user-chosen group with the user-chosen dependent symbol (no dependent search),
+    using exactly the same in-sample/out-of-sample procedure as the automatic init."""
+    ordered = [dependent] + [s for s in symbols if s != dependent]
+    params = {**backbone_params, "try_all_dependents": False}
+    res = _evaluate_job((ordered, source, None), price_df, params)
+    if res is not None:
+        res["symbols"] = list(symbols)
+    return res
+
+
+def _evaluate_job(job: tuple, price_df_full, backbone_params) -> dict | None:
     symbols, source, sector = job
-    price_df_full = _WORKER_PRICE_DF
-    backbone_params = _WORKER_PARAMS
     if price_df_full is None or backbone_params is None:
         return None
 

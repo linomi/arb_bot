@@ -739,7 +739,8 @@ if (createManualBtn) {
         activate: true,
         exchange: state.activeExchange || "nobitex",
       });
-      setInitStatus(`Created manual group #${g.id}: ${g.name} (${(g.symbols || symbols).join(", ")})`);
+      const bt = g.backtest_ok ? "" : ` — backtest not available: ${g.backtest_error || "unknown"}`;
+      setInitStatus(`Created manual group #${g.id}: ${g.name} (${(g.symbols || symbols).join(", ")})${bt}`);
       state.selectedSymbols.clear();
       if (nameEl) nameEl.value = "";
       renderSymbolChecklist();
