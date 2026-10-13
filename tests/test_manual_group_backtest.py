@@ -63,3 +63,34 @@ def test_manual_group_is_still_created_when_backtest_fails(db, monkeypatch):
     out = _create(db, monkeypatch, MD(fail=True))
     assert out["id"] and out["backtest_metrics"] is None
     assert not out["backtest_ok"] and "network down" in out["backtest_error"]
+
+
+def test_progress_is_reported_and_finishes(db, monkeypatch):
+    from backend import init_progress
+    init_progress.reset()
+    seen = []
+    orig = init_progress.update
+
+    def spy(*a, **k):
+        orig(*a, **k)
+        seen.append((k.get("phase"), init_progress.get_progress()["percent"]))
+
+    monkeypatch.setattr(init_progress, "update", spy)
+    _create(db, monkeypatch, MD())
+    phases = [p for p, _ in seen]
+    assert "fetch_ohlc" in phases and "backtest" in phases and "persist" in phases
+    pcts = [x for _, x in seen]
+    assert pcts == sorted(pcts)  # never goes backwards
+    p = init_progress.get_progress()
+    assert p["phase"] == "done" and p["percent"] == 100 and not p["running"]
+
+
+def test_manual_create_is_refused_while_another_run_is_active(db, monkeypatch):
+    from fastapi import HTTPException
+    from backend import init_progress
+    init_progress.reset()
+    assert init_progress.start("busy")
+    with pytest.raises(HTTPException) as e:
+        _create(db, monkeypatch, MD())
+    assert e.value.status_code == 409
+    init_progress.reset()

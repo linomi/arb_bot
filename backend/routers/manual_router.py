@@ -6,7 +6,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from backend import config_service
+from backend import config_service, init_progress
 from backend.exchange import factory
 from backend.utils import seconds_to_resolution
 
@@ -35,7 +35,20 @@ async def _backtest_manual(db, symbols: list[str], dependent: str, exchange: str
     md = None
     try:
         md = factory.build_market_data_client(db)
-        got = await asyncio.gather(*[md.get_ohlc(sym, resolution, bars) for sym in symbols], return_exceptions=True)
+        n_sym = len(symbols)
+        init_progress.update(phase="fetch_ohlc", message=f"Downloading prices for {n_sym} symbols ({bars} bars, {resolution})…",
+                             current=0, total=n_sym, percent=5)
+        done = 0
+
+        async def _one(sym):
+            nonlocal done
+            data = await md.get_ohlc(sym, resolution, bars)
+            done += 1
+            init_progress.update(phase="fetch_ohlc", message=f"Downloaded {done}/{n_sym}: {sym}",
+                                 current=done, total=n_sym, percent=5 + 40 * done / n_sym)
+            return data
+
+        got = await asyncio.gather(*[_one(sym) for sym in symbols], return_exceptions=True)
         ohlc = {}
         for sym, item in zip(symbols, got):
             if isinstance(item, Exception):
@@ -46,8 +59,14 @@ async def _backtest_manual(db, symbols: list[str], dependent: str, exchange: str
         if missing or len(df) < int(backbone_cfg["window_size"]) + 5:
             return None, f"not enough aligned price history ({len(df)} bars) for {', '.join(missing) or 'the group'}"
         params = _backbone_params(backbone_cfg, exchange)
+        init_progress.update(phase="backtest", message=f"Backtesting {len(df)} bars…", current=0, total=100, percent=45)
+
+        def _cb(frac: float):
+            init_progress.update(phase="backtest", message=f"Backtesting… {frac * 100:.0f}%",
+                                 current=int(frac * 100), total=100, percent=45 + 50 * frac)
+
         res = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: evaluate_group(df, symbols, dependent, params, source="manual"),
+            None, lambda: evaluate_group(df, symbols, dependent, params, source="manual", progress_cb=_cb),
         )
         if res is None:
             return None, "backtest produced no result"
@@ -111,25 +130,39 @@ async def create_manual_group(body: ManualGroupCreate, db: Session = Depends(get
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
-    metrics, bt_error = await _backtest_manual(db, uniq, dependent, exchange)
-
-    used = {n for (n,) in db.query(Group.name).all()}
-    name = (body.name or "").strip() or generate_group_name(used=used)
-    g = Group(
-        name=name,
-        symbols=uniq,
-        dependent_symbol=dependent,
-        source="manual",
-        sector=None,
-        status="active" if body.activate else "candidate",
-        exchange=exchange,
-        params_snapshot=dict(config_service.get_section(db, "backbone")),
-        backtest_metrics=metrics,
-    )
-    db.add(g)
-    db.commit()
-    db.refresh(g)
+    if not init_progress.start("Creating manual group…"):
+        raise HTTPException(409, "Initialization is already running. Wait for it to finish.")
+    try:
+        metrics, bt_error = await _backtest_manual(db, uniq, dependent, exchange)
+        init_progress.update(phase="persist", message="Saving group…", percent=96)
+        used = {n for (n,) in db.query(Group.name).all()}
+        name = (body.name or "").strip() or generate_group_name(used=used)
+        g = Group(
+            name=name,
+            symbols=uniq,
+            dependent_symbol=dependent,
+            source="manual",
+            sector=None,
+            status="active" if body.activate else "candidate",
+            exchange=exchange,
+            params_snapshot=dict(config_service.get_section(db, "backbone")),
+            backtest_metrics=metrics,
+        )
+        db.add(g)
+        db.commit()
+        db.refresh(g)
+    except BaseException as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        init_progress.fail(str(e) or e.__class__.__name__)
+        raise
     out = _group_to_dict(g)
+    if metrics is not None:
+        init_progress.finish({"method": "manual", "groups_created": [g.id]})
+    else:
+        init_progress.fail(f"Group created, but the backtest is not available: {bt_error}")
     out["backtest_ok"] = metrics is not None
     out["backtest_error"] = bt_error
     return out

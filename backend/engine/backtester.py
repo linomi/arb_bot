@@ -73,6 +73,7 @@ def backtest_group(
     leverage: float = 1.0,
     liquidation_proximity: float = 0.0,
     maintenance_margin_rate: float = DEFAULT_MMR,
+    progress_cb=None,
 ) -> BacktestResult:
     """``liquidation_proximity`` > 0 turns on the same guard as the live/paper engine: a trade is
     closed with reason ``risk_exit`` when any leg's mark is within that fraction of its modeled
@@ -84,7 +85,13 @@ def backtest_group(
     position = None
 
     i = window_size
+    _step = max(1, (n - window_size) // 50)  # ~50 progress ticks
     while i < n:
+        if progress_cb is not None and (i - window_size) % _step == 0:
+            try:
+                progress_cb((i - window_size) / max(1, n - window_size))
+            except Exception:
+                pass
         prices_now = price_df.iloc[i].to_dict()
 
         if position is not None:

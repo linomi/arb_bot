@@ -42,18 +42,18 @@ def _worker_eval(job: tuple) -> dict | None:
 
 
 def evaluate_group(price_df: pd.DataFrame, symbols: list[str], dependent: str,
-                   backbone_params: dict, source: str = "manual") -> dict | None:
+                   backbone_params: dict, source: str = "manual", progress_cb=None) -> dict | None:
     """Backtest ONE user-chosen group with the user-chosen dependent symbol (no dependent search),
     using exactly the same in-sample/out-of-sample procedure as the automatic init."""
     ordered = [dependent] + [s for s in symbols if s != dependent]
     params = {**backbone_params, "try_all_dependents": False}
-    res = _evaluate_job((ordered, source, None), price_df, params)
+    res = _evaluate_job((ordered, source, None), price_df, params, progress_cb)
     if res is not None:
         res["symbols"] = list(symbols)
     return res
 
 
-def _evaluate_job(job: tuple, price_df_full, backbone_params) -> dict | None:
+def _evaluate_job(job: tuple, price_df_full, backbone_params, progress_cb=None) -> dict | None:
     symbols, source, sector = job
     if price_df_full is None or backbone_params is None:
         return None
@@ -74,9 +74,11 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params) -> dict | None:
     split = max(int(n * 0.7), int(backbone_params["window_size"]) + 10)
     is_df = sub_df.iloc[:split]
     oos_df = sub_df.iloc[split - int(backbone_params["window_size"]):]  # overlap window for continuity
+    is_share = len(is_df) / max(1, len(is_df) + max(0, len(oos_df) - int(backbone_params["window_size"])))
     for dependent in candidates:
         try:
             bt = backtest_group(
+                progress_cb=(lambda f: progress_cb(f * is_share)) if progress_cb else None,
                 price_df=is_df,
                 dependent_symbol=dependent,
                 window_size=int(backbone_params["window_size"]),
@@ -104,6 +106,7 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params) -> dict | None:
         if len(oos_df) > int(backbone_params["window_size"]) + 5:
             try:
                 bt_oos = backtest_group(
+                    progress_cb=(lambda f: progress_cb(is_share + f * (1 - is_share))) if progress_cb else None,
                     price_df=oos_df,
                     dependent_symbol=dependent,
                     window_size=int(backbone_params["window_size"]),

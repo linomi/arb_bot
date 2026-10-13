@@ -101,6 +101,8 @@
   "init.phase.starting": "شروع",
   "init.phase.fetch_symbols": "بازارها",
   "init.phase.fetch_ohlc": "دانلود",
+  "init.manual.creating": "در حال ساخت گروه…",
+  "init.manual.done": "گروه ساخته و بک‌تست شد.",
   "init.phase.backtest": "بک‌تست",
   "init.phase.persist": "ذخیره",
   "init.phase.done": "تمام",

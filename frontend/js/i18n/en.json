@@ -101,6 +101,8 @@
   "init.phase.starting": "Starting",
   "init.phase.fetch_symbols": "Markets",
   "init.phase.fetch_ohlc": "Downloading",
+  "init.manual.creating": "Creating group…",
+  "init.manual.done": "Group created and backtested.",
   "init.phase.backtest": "Backtesting",
   "init.phase.persist": "Saving",
   "init.phase.done": "Done",

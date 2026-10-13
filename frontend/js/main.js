@@ -731,6 +731,24 @@ if (createManualBtn) {
       setInitStatus("Dependent symbol must be one of the selected symbols.");
       return;
     }
+    // The server reports price-download and backtest progress through the same tracker as the
+    // automatic init, so poll it while the (blocking) create call runs.
+    createManualBtn.disabled = true;
+    const btnLabel = createManualBtn.textContent;
+    createManualBtn.textContent = t("init.manual.creating");
+    showInitProgress(true);
+    updateInitProgressUI({ phase: "starting", message: t("init.starting"), percent: 0 });
+    let polling = true;
+    const pollManual = async () => {
+      while (polling) {
+        try {
+          const p = await API.initProgress();
+          if (polling && p.running) updateInitProgressUI(p);
+        } catch (e) { /* transient */ }
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    };
+    pollManual();
     try {
       const g = await API.createManualGroup({
         name,
@@ -740,6 +758,10 @@ if (createManualBtn) {
         exchange: state.activeExchange || "nobitex",
       });
       const bt = g.backtest_ok ? "" : ` — backtest not available: ${g.backtest_error || "unknown"}`;
+      polling = false;
+      updateInitProgressUI(g.backtest_ok
+        ? { phase: "done", message: t("init.manual.done"), percent: 100 }
+        : { phase: "error", message: g.backtest_error || "", error: g.backtest_error || "backtest failed", percent: 100 });
       setInitStatus(`Created manual group #${g.id}: ${g.name} (${(g.symbols || symbols).join(", ")})${bt}`);
       state.selectedSymbols.clear();
       if (nameEl) nameEl.value = "";
@@ -747,7 +769,13 @@ if (createManualBtn) {
       await loadCandidatesTable();
       await loadPerfTable();
     } catch (e) {
+      polling = false;
+      updateInitProgressUI({ phase: "error", message: e.message || String(e), error: e.message || String(e), percent: 0 });
       setInitStatus("Error creating group: " + (e.message || e));
+    } finally {
+      polling = false;
+      createManualBtn.disabled = false;
+      createManualBtn.textContent = btnLabel;
     }
   });
 }
