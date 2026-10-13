@@ -97,3 +97,40 @@ def test_config_validation_of_guard_keys():
         cs._validate_backbone({**base, "liquidation_proximity_fraction": 1.5})
     with pytest.raises(ValueError):
         cs._validate_backbone({**base, "maintenance_margin_rate": -0.1})
+
+
+def _shocked_frame(direction_factor):
+    """Common-factor shock that leaves the residual (and z) untouched but moves every leg's price,
+    starting 2 bars after the first baseline entry."""
+    from backend.strategy.ols import fit_ols
+    rng = np.random.default_rng(11)
+    n = 1500
+    x = 60000 * np.exp(np.cumsum(rng.normal(0, 0.0008, n)))
+    ou = np.zeros(n)
+    for i in range(1, n):
+        ou[i] = 0.88 * ou[i - 1] + rng.normal(0, 0.004)
+    spread = 25 * ou / ou.std()
+    idx = pd.date_range("2026-01-01", periods=n, freq="60s")
+    kw = dict(window_size=100, adf_alpha=0.05, kpss_alpha=0.05, z_entry=2.0, z_close=0.5,
+              z_stop_loss=3.5, transaction_cost_rate=0.0011, half_life_max_fraction=0.333)
+    base = pd.DataFrame({"Y": 0.04 * x + spread, "X": x}, index=idx)
+    t0 = backtest_group(base, "Y", **kw).trades[0]
+    fit = fit_ols("Y", {"Y": base.Y.to_numpy()[t0.entry_idx - 100:t0.entry_idx],
+                        "X": x[t0.entry_idx - 100:t0.entry_idx]})
+    beta = float(list(fit.betas.values())[0])
+    at = t0.entry_idx + 2
+    dx = np.zeros(n)
+    dx[at:at + 10] = np.linspace(0, (direction_factor - 1) * x[at], 10)
+    dx[at + 10:] = (direction_factor - 1) * x[at]
+    df = pd.DataFrame({"Y": 0.04 * x + beta * dx + spread, "X": x + dx}, index=idx)
+    return df, kw
+
+
+@pytest.mark.parametrize("factor", [1.35, 0.5])
+def test_guard_fires_on_adverse_leg_moves_in_both_directions_and_only_when_close(factor):
+    df, kw = _shocked_frame(factor)
+    first = lambda **k: backtest_group(df, "Y", **k, **kw).trades[0]
+    assert first().close_reason == "close"                                              # no guard
+    assert first(leverage=4.5, liquidation_proximity=0.2).close_reason == "risk_exit"   # 21.7% cushion
+    assert first(leverage=4.5, liquidation_proximity=0.0).close_reason == "close"       # guard off
+    assert first(leverage=1, liquidation_proximity=0.2).close_reason == "close"         # no leverage
