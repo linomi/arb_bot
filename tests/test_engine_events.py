@@ -257,3 +257,21 @@ def test_model_pnl_uses_the_dependent_leg_even_when_legs_are_reordered(world):
     # residual moved from -2.2 to 100 => model = qty_dep(0.01) * 102.2 - costs ~ 0.9 (a regressor qty would give ~0)
     assert 0.5 < t.model_pnl < 1.2
     db.close()
+
+
+def test_paper_fill_price_from_order_response_is_kept_on_the_leg():
+    from backend.exchange.paper import PaperExchangeClient
+
+    class MD:
+        async def get_last_price(self, s):
+            return 100.0
+
+    async def go():
+        eng = be.BotEngine()
+        client = PaperExchangeClient(MD(), fee_rate=0.0006, slippage_rate=0.0005)
+        legs = [{"symbol": "A/USDT:USDT", "side": "buy", "qty": 1.0, "price": 100.0}]
+        return await eng._place_legs(client, legs, is_close=False, attempt_id="t")
+
+    out = asyncio.run(go())
+    assert out[0]["fill_price"] == pytest.approx(100.05)
+    assert out[0]["decision_price"] == 100.0

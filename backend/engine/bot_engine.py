@@ -948,6 +948,13 @@ class BotEngine:
                 "filled_qty": filled_qty,
                 "requested_qty": qty,
             }
+            # Paper client reports its simulated fill (decision price +/- slippage) in the response.
+            # Without copying it onto the leg, fills-based PnL silently falls back to the decision
+            # price and drops all paper slippage.
+            _resp_fill = _parse_money((resp or {}).get("fill_price")) if isinstance(resp, dict) else None
+            if _resp_fill and _resp_fill > 0 and leg.get("fill_price") is None:
+                leg["decision_price"] = float(ref_price) if ref_price else None
+                leg["fill_price"] = float(_resp_fill)
 
             if not is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and order_id:
                 try:
