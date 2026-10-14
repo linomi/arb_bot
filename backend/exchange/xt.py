@@ -367,7 +367,11 @@ class XTClient(ExchangeClient):
             )
             self._position_mode_warned = True
 
-        await self._ensure_leverage_margin(unified)
+        # Never touch leverage / margin mode when only reducing a position: re-setting leverage on an
+        # open isolated position changes its margin requirement (e.g. 3x -> 1x needs the full
+        # notional as margin and fails with no_balance), which blocked a real close in testing.
+        if not reduce_only:
+            await self._ensure_leverage_margin(unified)
 
         side_l = side.lower()
         if side_l not in ("buy", "sell"):
@@ -462,6 +466,13 @@ class XTClient(ExchangeClient):
                     return v
         return None
 
+    @staticmethod
+    def _raw_contracts_signed(info: Any, key: str) -> float | None:
+        try:
+            return float(info.get(key)) if isinstance(info, dict) and info.get(key) is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def _fill_from_order(self, order: dict | None, cs: float) -> dict | None:
         if not order:
             return None
@@ -488,6 +499,10 @@ class XTClient(ExchangeClient):
             "status": status,
             "complete": complete,
             "source": "order",
+            # XT's exact realised gross PnL and precise entry price on closing orders (avgPrice is
+            # rounded to the price tick, openPrice/closeProfit are not)
+            "close_profit": self._raw_contracts_signed(info, "closeProfit"),
+            "open_price": self._raw_contracts(info, "openPrice"),
             "raw": order,
         }
 

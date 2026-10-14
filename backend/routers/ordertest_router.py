@@ -391,6 +391,8 @@ async def close_position(body: CloseIn, db: Session = Depends(get_db)):
                 summary={
                     "entry_fill_price": entry_px, "exit_fill_price": fp,
                     "gross_pnl_from_fills": gross, "fees_used_for_pnl": fee,
+                    "exchange_close_profit_gross": (fill or {}).get("close_profit"),
+                    "exchange_entry_price_precise": (fill or {}).get("open_price"),
                     "fees_are_actual": bool(entry_leg.get("fee_actual") is not None and cl.get("fee_actual") is not None),
                     "net_pnl_from_fills": None if gross is None else gross - fee,
                     "bot_old_estimate_net_pnl": old_gross - old_fee,

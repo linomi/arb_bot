@@ -123,3 +123,25 @@ def test_real_xt_record_is_not_double_scaled_by_contract_size(xt):
     assert f["filled_contracts"] == pytest.approx(1.0)
     assert f["filled_base"] == pytest.approx(10.0)
     assert f["price"] == pytest.approx(1.3251) and f["complete"] and f["fee"] is None
+
+
+def test_reduce_only_close_does_not_reset_leverage(xt):
+    """Regression: closing a 3x position through a 1x client must not call set_leverage (it needs the
+    full notional as margin and failed with no_balance in a live test)."""
+    c, ex = xt
+    ex.set_leverage = AsyncMock()
+    ex.set_margin_mode = AsyncMock()
+    ex.create_order = AsyncMock(return_value={"id": "o9", "info": {}})
+    ex.amount_to_precision = lambda s, a: str(a)
+    _run(c.place_order(SYM, "sell", 10.0, reduce_only=True))
+    ex.set_leverage.assert_not_called()
+    ex.set_margin_mode.assert_not_called()
+
+
+def test_close_profit_and_precise_open_price_exposed(xt):
+    c, ex = xt
+    ex.fetch_order = AsyncMock(return_value={
+        "status": "closed", "amount": 20.0, "filled": 20.0, "average": 0.494, "fee": {"cost": None},
+        "info": {"origQty": "20", "executedQty": "20", "avgPrice": "0.494", "openPrice": "0.49303", "closeProfit": "0.0194"}})
+    f = _run(c.get_order_fill("o1", SYM, delay=0))
+    assert f["close_profit"] == pytest.approx(0.0194) and f["open_price"] == pytest.approx(0.49303)
