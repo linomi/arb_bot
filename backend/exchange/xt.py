@@ -430,6 +430,95 @@ class XTClient(ExchangeClient):
             "clientOrderId": client_order_id,
         }
 
+    @staticmethod
+    def _fee_cost(fee_obj, fees_list) -> float | None:
+        """USDT fee from a ccxt order/trade (``fee`` dict or ``fees`` list); None when not reported."""
+        total, seen = 0.0, False
+        items = list(fees_list or [])
+        if fee_obj:
+            items.append(fee_obj)
+        for f in items:
+            try:
+                cur = (f.get("currency") or "USDT").upper()
+                c = f.get("cost")
+                if c is not None and cur in ("USDT", "USD"):
+                    total += abs(float(c))
+                    seen = True
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return total if seen else None
+
+    def _fill_from_order(self, order: dict | None, cs: float) -> dict | None:
+        if not order:
+            return None
+        filled = float(order.get("filled") or 0)
+        if filled <= 0:
+            return None
+        avg = order.get("average")
+        if not avg:
+            cost = order.get("cost")
+            avg = (float(cost) / (filled * cs)) if cost else order.get("price")
+        if not avg or float(avg) <= 0:
+            return None
+        status = str(order.get("status") or "").lower()
+        amount = float(order.get("amount") or filled)
+        return {
+            "price": float(avg),
+            "filled_contracts": filled,
+            "filled_base": filled * cs,
+            "fee": self._fee_cost(order.get("fee"), order.get("fees")),
+            "status": status,
+            # a market order is final once closed / fully filled
+            "complete": status in ("closed", "filled") or filled >= amount - 1e-12,
+            "source": "order",
+        }
+
+    def _fill_from_trades(self, trades: list[dict], cs: float) -> dict | None:
+        qty = sum(float(t.get("amount") or 0) for t in trades)
+        if qty <= 0:
+            return None
+        px = sum(float(t.get("price") or 0) * float(t.get("amount") or 0) for t in trades) / qty
+        fees = [self._fee_cost(t.get("fee"), t.get("fees")) for t in trades]
+        fee = sum(f for f in fees if f is not None) if any(f is not None for f in fees) else None
+        return {"price": px, "filled_contracts": qty, "filled_base": qty * cs, "fee": fee,
+                "status": "trades", "complete": True, "source": "trades"}
+
+    async def get_order_fill(self, order_id: Any, symbol: str, attempts: int = 4, delay: float = 0.5) -> dict | None:
+        """Actual average fill price, filled size (base units) and USDT fee of one order, from XT's
+        order history (fallback: the account's trade list). None when XT does not return it.
+        Rate limits propagate so the engine can pause; every other failure just returns None."""
+        import asyncio
+        await self._ensure_markets()
+        unified = self._normalize_symbol(symbol)
+        cs = self._contract_size(unified)
+        last = None
+        for i in range(max(1, attempts)):
+            if i:
+                await asyncio.sleep(delay)
+            try:
+                order = await self._ex.fetch_order(str(order_id), unified)
+            except RateLimitExceeded:
+                raise
+            except Exception as e:
+                log.debug("fetch_order(%s, %s) failed: %s", order_id, unified, e)
+                continue
+            fill = self._fill_from_order(order, cs)
+            if fill:
+                last = fill
+                if fill["complete"]:
+                    return fill
+        try:
+            trades = await self._ex.fetch_my_trades(unified, None, 50)
+            mine = [t for t in (trades or []) if str(t.get("order")) == str(order_id)]
+            fill = self._fill_from_trades(mine, cs)
+            if fill:
+                return fill
+        except RateLimitExceeded:
+            raise
+        except Exception as e:
+            log.debug("fetch_my_trades(%s) failed: %s", unified, e)
+        return last
+
     def _map_position(self, pos: dict) -> dict:
         """
         Map ccxt unified position to the subset of fields bot_engine reads

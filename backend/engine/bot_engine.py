@@ -849,6 +849,11 @@ class BotEngine:
                         "client_order_id": coid,
                         "filled_qty": close_qty,
                     }
+                    # XT: the exchange's own record of the closing order (price, size, fee).
+                    _cl_order = ((resp or {}).get("order") or {}).get("id") if isinstance(resp, dict) else None
+                    if await self._apply_exchange_fill(trading_client, leg, _cl_order, is_close=True):
+                        out.append(leg)
+                        continue
                     # Poll position for actual exit/fill price (Rial).
                     decision_px = float(leg.get("price") or 0) or None
                     fill = None
@@ -956,6 +961,8 @@ class BotEngine:
                 leg["decision_price"] = float(ref_price) if ref_price else None
                 leg["fill_price"] = float(_resp_fill)
 
+            await self._apply_exchange_fill(trading_client, leg, order_id, is_close=is_close)
+
             if not is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and order_id:
                 try:
                     await asyncio.sleep(0.6)
@@ -976,7 +983,9 @@ class BotEngine:
                                 log.debug("get_position for fill_price failed: %s", e)
                             await asyncio.sleep(0.4)
                         decision_px = float(leg.get("price") or 0) or None
-                        if fill is not None:
+                        if leg.get("fill_source") == "exchange_order":
+                            pass  # already have the exchange's own order fill
+                        elif fill is not None:
                             leg["decision_price"] = decision_px
                             leg["fill_price"] = fill
                             if decision_px and decision_px > 0:
@@ -997,7 +1006,7 @@ class BotEngine:
                     log.debug("resolve_position_id failed: %s", e)
 
             # For closes via place_order fallback, try to capture fill similarly
-            if is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id"):
+            if is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id") and leg.get("fill_source") != "exchange_order":
                 try:
                     pos = await trading_client.get_position(_pos_id(leg["position_id"]))
                     fill = _fill_price_from_position(pos, is_close=True)
@@ -1026,6 +1035,49 @@ class BotEngine:
             raise PartialLegsError("partial entry basket", out)
 
         return out
+
+    @staticmethod
+    def _is_xt(client) -> bool:
+        return XTClient is not None and isinstance(client, XTClient)
+
+    async def _apply_exchange_fill(self, trading_client, leg: dict, order_id, *, is_close: bool) -> bool:
+        """Replace the estimated fill with the exchange's own record of this order (average price,
+        filled size, fee). XT only; returns False (leg untouched) when XT gives nothing."""
+        if not self._is_xt(trading_client) or not order_id:
+            return False
+        try:
+            fill = await trading_client.get_order_fill(order_id, leg["symbol"])
+        except Exception as e:
+            if xt_hooks.handle_rate_limit(self, e, exchange="xt"):
+                return False
+            log.warning("order fill lookup failed for %s (%s): %s", leg.get("symbol"), order_id, e)
+            return False
+        if not fill or not fill.get("complete"):
+            log.warning("no complete fill record for %s order %s — keeping estimated price",
+                        leg.get("symbol"), order_id)
+            return False
+        decision_px = float(leg.get("decision_price") or leg.get("price") or 0) or None
+        leg["decision_price"] = decision_px
+        leg["fill_price"] = float(fill["price"])
+        leg["fill_source"] = "exchange_order"
+        leg.pop("fill_price_estimated", None)
+        if fill.get("filled_base"):
+            leg["filled_qty"] = float(fill["filled_base"])
+        if fill.get("fee") is not None:
+            leg["fee_actual"] = float(fill["fee"])
+        if decision_px:
+            log.info("%s leg %s fill=%.6g decision=%.6g slippage=%+.4f%% fee=%s qty=%.6g",
+                     "close" if is_close else "entry", leg["symbol"], leg["fill_price"], decision_px,
+                     100 * (leg["fill_price"] / decision_px - 1), leg.get("fee_actual"), leg.get("filled_qty") or 0)
+        return True
+
+    @staticmethod
+    def _legs_exchange_exact(legs_entry: list[dict], legs_close: list[dict]) -> bool:
+        """True when every traded leg, entry and close, carries the exchange's own fill record."""
+        ent = [l for l in (legs_entry or []) if not l.get("failed")]
+        cls = [l for l in (legs_close or []) if not l.get("already_closed") and not l.get("failed")]
+        return bool(ent) and len(cls) == len(ent) and all(
+            l.get("fill_source") == "exchange_order" for l in ent + cls)
 
     async def _rollback_filled_entries(
         self, trading_client, legs: list[dict], indices: list[int],
@@ -1273,7 +1325,9 @@ class BotEngine:
         realized = None
         basis = None  # "exchange" (reported by the exchange) | "fills" (rebuilt from fills, net of fees)
         fills_fee = None
-        if trading_mode == "live" and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
+        exact = trading_mode == "live" and self._legs_exchange_exact(legs_entry, legs_close)
+        if (trading_mode == "live" and not exact
+                and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient)))):
             try:
                 realized, _ = await self._realized_pnl_from_exchange(
                     trading_client, legs_entry, legs_close,
@@ -1288,10 +1342,11 @@ class BotEngine:
             # net of the exchange fee so the number is comparable to live results.
             fp = self._fills_pnl_and_fee(legs_entry, legs_close, fee_rate_cfg)
             if fp is not None:
-                realized, fills_fee, basis = fp[0] - fp[1], fp[1], "fills"
+                realized, fills_fee, basis = fp[0] - fp[1], fp[1], ("exchange" if exact else "fills")
                 log.info(
-                    "group %s trade #%s PnL from fills=%.6g (gross %.6g, fees %.4g @ %.4g%%/side)",
-                    group.id, open_trade.id, realized, fp[0], fp[1], fee_rate_cfg * 100,
+                    "group %s trade #%s PnL from %s=%.6g (gross %.6g, fees %.4g%s)",
+                    group.id, open_trade.id, "exchange fills" if exact else "fills", realized, fp[0], fp[1],
+                    "" if exact else f" @ {fee_rate_cfg * 100:.4g}%/side",
                 )
 
         if realized is not None:

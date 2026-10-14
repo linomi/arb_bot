@@ -283,9 +283,12 @@ a position near liquidation is closed.
 
 - Where each PnL comes from. **Paper:** rebuilt from the simulated entry and
   close fills (slippage is in the fill prices) minus `fee_rate` on every fill,
-  so lot/contract rounding at small sizes shows up. **Live:** the exchange's
-  figure when available, otherwise the same fill-based calculation (fees
-  subtracted). The theoretical "model" PnL (spread change minus
+  so lot/contract rounding at small sizes shows up. **Live (XT):** after every order the bot reads XT's own record of it (average
+  fill price, filled size, fee) and computes PnL from those, labelled
+  `exchange`; if XT returns no record for a leg it falls back to the estimated
+  fill (position entry price / decision price) and the configured `fee_rate`,
+  labelled `fills`. **Live (Nobitex):** the exchange's figure when available,
+  otherwise the same fill-based calculation (fees subtracted). The theoretical "model" PnL (spread change minus
   `fee_rate + slippage_rate`, the same formula as backtests) is stored per
   trade as a cross-check: when it differs from the fills by more than 20% the
   log says so, with the hedge-ratio drift caused by rounding. That line is a

@@ -150,5 +150,9 @@ def fills_pnl_and_fee(legs_entry: list[dict], legs_close: list[dict], fee_rate: 
             total += (exit_px - entry_px) * qty
         else:
             total += (entry_px - exit_px) * qty
-        fee += float(fee_rate or 0.0) * qty * (entry_px + exit_px)
+        fe, fc = leg.get("fee_actual"), cl.get("fee_actual")
+        if fe is not None and fc is not None:
+            fee += float(fe) + float(fc)  # fees the exchange actually charged on both fills
+        else:
+            fee += float(fee_rate or 0.0) * qty * (entry_px + exit_px)
     return (float(total), float(fee)) if any_fill else None
