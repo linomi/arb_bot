@@ -33,7 +33,7 @@ def xt():
 
 def test_fill_from_order_converts_contracts_to_base_and_reads_fee(xt):
     c, ex = xt
-    ex.fetch_order = AsyncMock(return_value={"status": "closed", "amount": 5, "filled": 5, "average": 0.1234,
+    ex.fetch_order = AsyncMock(return_value={"status": "closed", "amount": 50, "filled": 50, "average": 0.1234,
                                              "fee": {"cost": 0.0037, "currency": "USDT"}})
     f = _run(c.get_order_fill("o1", SYM, delay=0))
     assert f["price"] == pytest.approx(0.1234) and f["filled_base"] == pytest.approx(50.0)
@@ -44,8 +44,8 @@ def test_fill_falls_back_to_trades_when_order_lookup_fails(xt):
     c, ex = xt
     ex.fetch_order = AsyncMock(side_effect=RuntimeError("not found"))
     ex.fetch_my_trades = AsyncMock(return_value=[
-        {"order": "o1", "price": 0.10, "amount": 2, "fee": {"cost": 0.001, "currency": "USDT"}},
-        {"order": "o1", "price": 0.20, "amount": 2, "fee": {"cost": 0.002, "currency": "USDT"}},
+        {"order": "o1", "price": 0.10, "amount": 20, "fee": {"cost": 0.001, "currency": "USDT"}},
+        {"order": "o1", "price": 0.20, "amount": 20, "fee": {"cost": 0.002, "currency": "USDT"}},
         {"order": "other", "price": 9.0, "amount": 9},
     ])
     f = _run(c.get_order_fill("o1", SYM, attempts=2, delay=0))
@@ -63,7 +63,7 @@ def test_fill_is_none_when_exchange_returns_nothing(xt):
 def test_engine_applies_exchange_fill_to_leg_and_exact_flag(xt):
     from backend.engine.bot_engine import BotEngine
     c, ex = xt
-    ex.fetch_order = AsyncMock(return_value={"status": "closed", "amount": 5, "filled": 5, "average": 0.1234,
+    ex.fetch_order = AsyncMock(return_value={"status": "closed", "amount": 50, "filled": 50, "average": 0.1234,
                                              "fee": {"cost": 0.0037, "currency": "USDT"}})
     leg = {"symbol": SYM, "side": "buy", "qty": 49.0, "price": 0.1230}
     assert _run(BotEngine()._apply_exchange_fill(c, leg, "o1", is_close=False))
@@ -93,8 +93,8 @@ def test_place_legs_entry_and_close_use_exchange_fills_end_to_end(xt):
     ex.set_margin_mode = AsyncMock(return_value={})
     ex.create_order = AsyncMock(side_effect=[{"id": "e1", "status": "closed"}, {"id": "c1", "status": "closed"}])
     ex.fetch_order = AsyncMock(side_effect=[
-        {"status": "closed", "amount": 5, "filled": 5, "average": 0.1234, "fee": {"cost": 0.0037, "currency": "USDT"}},
-        {"status": "closed", "amount": 5, "filled": 5, "average": 0.1250, "fee": {"cost": 0.0038, "currency": "USDT"}},
+        {"status": "closed", "amount": 50, "filled": 50, "average": 0.1234, "fee": {"cost": 0.0037, "currency": "USDT"}},
+        {"status": "closed", "amount": 50, "filled": 50, "average": 0.1250, "fee": {"cost": 0.0038, "currency": "USDT"}},
     ])
     pos = {"symbol": SYM, "side": "long", "contracts": 5, "contractSize": 10, "entryPrice": 0.1233,
            "markPrice": 0.1234, "id": "p1"}
@@ -109,3 +109,17 @@ def test_place_legs_entry_and_close_use_exchange_fills_end_to_end(xt):
     assert BotEngine._legs_exchange_exact(ent, cl)
     gross, fee = fills_pnl_and_fee(ent, cl, 0.0006)
     assert gross == pytest.approx((0.1250 - 0.1234) * 50.0) and fee == pytest.approx(0.0075)
+
+
+def test_real_xt_record_is_not_double_scaled_by_contract_size(xt):
+    """Live XRP order (contractSize 10): 1 contract filled. ccxt reports filled=10 and cost=132.51
+    (already x10 / inflated); the true size is executedQty * contractSize = 10 base units."""
+    c, ex = xt
+    ex.fetch_order = AsyncMock(return_value={
+        "status": "closed", "amount": 10.0, "filled": 10.0, "average": 1.3251, "cost": 132.51,
+        "fee": {"currency": None, "cost": None},
+        "info": {"origQty": "1", "executedQty": "1", "avgPrice": "1.3251", "state": "FILLED"}})
+    f = _run(c.get_order_fill("o1", SYM, delay=0))
+    assert f["filled_contracts"] == pytest.approx(1.0)
+    assert f["filled_base"] == pytest.approx(10.0)
+    assert f["price"] == pytest.approx(1.3251) and f["complete"] and f["fee"] is None

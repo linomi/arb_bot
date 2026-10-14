@@ -448,40 +448,63 @@ class XTClient(ExchangeClient):
                 continue
         return total if seen else None
 
+    @staticmethod
+    def _raw_contracts(info: Any, *keys: str) -> float | None:
+        """Contract count straight from XT's raw record (the only unambiguous source: ccxt already
+        multiplies by contractSize for some fields, and its `cost` is inflated the same way)."""
+        if isinstance(info, dict):
+            for k in keys:
+                try:
+                    v = float(info.get(k))
+                except (TypeError, ValueError):
+                    continue
+                if v > 0:
+                    return v
+        return None
+
     def _fill_from_order(self, order: dict | None, cs: float) -> dict | None:
         if not order:
             return None
-        filled = float(order.get("filled") or 0)
-        if filled <= 0:
-            return None
-        avg = order.get("average")
-        if not avg:
-            cost = order.get("cost")
-            avg = (float(cost) / (filled * cs)) if cost else order.get("price")
+        info = order.get("info")
+        contracts = self._raw_contracts(info, "executedQty")
+        if contracts is None:
+            # No raw record: ccxt's `filled` on XT swaps is already in BASE units (observed live:
+            # 1 contract of a 10-unit contract -> filled 10), so derive contracts from it.
+            base_cc = float(order.get("filled") or 0)
+            if base_cc <= 0:
+                return None
+            contracts = base_cc / cs
+        avg = self._raw_contracts(info, "avgPrice") or order.get("average") or order.get("price")
         if not avg or float(avg) <= 0:
             return None
         status = str(order.get("status") or "").lower()
-        amount = float(order.get("amount") or filled)
+        orig = self._raw_contracts(info, "origQty")
+        complete = status in ("closed", "filled") or (orig is not None and contracts >= orig - 1e-12)
         return {
             "price": float(avg),
-            "filled_contracts": filled,
-            "filled_base": filled * cs,
+            "filled_contracts": contracts,
+            "filled_base": contracts * cs,
             "fee": self._fee_cost(order.get("fee"), order.get("fees")),
             "status": status,
-            # a market order is final once closed / fully filled
-            "complete": status in ("closed", "filled") or filled >= amount - 1e-12,
+            "complete": complete,
             "source": "order",
             "raw": order,
         }
 
     def _fill_from_trades(self, trades: list[dict], cs: float) -> dict | None:
-        qty = sum(float(t.get("amount") or 0) for t in trades)
-        if qty <= 0:
+        # ccxt trade amounts on XT swaps are base units like orders; prefer raw contract counts.
+        raw = [self._raw_contracts(t.get("info"), "quantity", "executedQty", "qty") for t in trades]
+        if raw and all(r is not None for r in raw):
+            qtys = [r * cs for r in raw]
+        else:
+            qtys = [float(t.get("amount") or 0) for t in trades]
+        base = sum(qtys)
+        if base <= 0:
             return None
-        px = sum(float(t.get("price") or 0) * float(t.get("amount") or 0) for t in trades) / qty
+        px = sum(float(t.get("price") or 0) * q for t, q in zip(trades, qtys)) / base
         fees = [self._fee_cost(t.get("fee"), t.get("fees")) for t in trades]
         fee = sum(f for f in fees if f is not None) if any(f is not None for f in fees) else None
-        return {"price": px, "filled_contracts": qty, "filled_base": qty * cs, "fee": fee,
+        return {"price": px, "filled_contracts": base / cs, "filled_base": base, "fee": fee,
                 "status": "trades", "complete": True, "source": "trades", "raw": trades}
 
     async def get_order_fill(self, order_id: Any, symbol: str, attempts: int = 4, delay: float = 0.5) -> dict | None:
