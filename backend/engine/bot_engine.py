@@ -457,11 +457,19 @@ class BotEngine:
                     # still count as known, but log
                     log.error("trade %s leg %s has rollback_failed=true", tr.id, leg.get("symbol"))
 
+        try:  # ordertest (temporary): positions opened by the manual Order Test tab are not orphans
+            from backend.routers.ordertest_router import active_symbols as _ot_syms
+            test_syms = _ot_syms()
+        except Exception:
+            test_syms = set()
+
         for pos in positions or []:
             pid = str(pos.get("id") or "")
             sym = str(pos.get("symbol") or "")
             liab = float(pos.get("liability") or 0)
             if liab <= 0:
+                continue
+            if sym in test_syms:
                 continue
             if pid and pid in covered_ids:
                 continue

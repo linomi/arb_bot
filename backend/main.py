@@ -27,6 +27,7 @@ from backend.routers import (
     bot_router,
     credentials_router,
     manual_router,
+    ordertest_router,  # ordertest (temporary)
     symbols_router,
     debug_router,
     auth_router,
@@ -65,6 +66,7 @@ app.include_router(bot_router.router, dependencies=_auth_dep)
 app.include_router(credentials_router.router, dependencies=_auth_dep)
 app.include_router(debug_router.router, dependencies=_auth_dep)
 app.include_router(logs_router.router, dependencies=_auth_dep)
+app.include_router(ordertest_router.router, dependencies=_auth_dep)  # ordertest (temporary)
 
 
 @app.on_event("startup")

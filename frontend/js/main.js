@@ -33,6 +33,7 @@ function switchTab(tab) {
   if (tab === "init") refreshInitTab();
   if (tab === "settings") refreshSettingsTab();
   if (tab === "logs") LogsView.show(); else LogsView.hide();
+  if (tab === "ordertest") OrderTestView.show(); // ordertest (temporary)
 }
 
 function startFitPoll() {

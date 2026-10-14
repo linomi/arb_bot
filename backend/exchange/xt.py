@@ -471,6 +471,7 @@ class XTClient(ExchangeClient):
             # a market order is final once closed / fully filled
             "complete": status in ("closed", "filled") or filled >= amount - 1e-12,
             "source": "order",
+            "raw": order,
         }
 
     def _fill_from_trades(self, trades: list[dict], cs: float) -> dict | None:
@@ -481,7 +482,7 @@ class XTClient(ExchangeClient):
         fees = [self._fee_cost(t.get("fee"), t.get("fees")) for t in trades]
         fee = sum(f for f in fees if f is not None) if any(f is not None for f in fees) else None
         return {"price": px, "filled_contracts": qty, "filled_base": qty * cs, "fee": fee,
-                "status": "trades", "complete": True, "source": "trades"}
+                "status": "trades", "complete": True, "source": "trades", "raw": trades}
 
     async def get_order_fill(self, order_id: Any, symbol: str, attempts: int = 4, delay: float = 0.5) -> dict | None:
         """Actual average fill price, filled size (base units) and USDT fee of one order, from XT's

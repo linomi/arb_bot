@@ -37,6 +37,8 @@ def categorize(logger_name: str, msg: str) -> str:
         return "init"
     if n in ("groups_router", "main", "db"):
         return "api"
+    if n == "ordertest":  # ordertest (temporary)
+        return "trade"
     if n in ("bot_engine", "sizing"):
         return "trade" if _TRADE_RE.search(msg) else "engine"
     return "other"

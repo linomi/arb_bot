@@ -28,6 +28,7 @@
     <button class="tab-btn active" data-tab="dashboard" data-i18n="tab.backbone">Backbone</button>
     <button class="tab-btn" data-tab="init" data-i18n="tab.init">Initialization</button>
     <button class="tab-btn" data-tab="logs" data-i18n="tab.logs">Logs</button>
+    <button class="tab-btn" data-tab="ordertest">Order Test (temp)</button> <!-- ordertest (temporary) -->
     <button class="tab-btn" data-tab="settings" data-i18n="tab.settings">Settings & Credentials</button>
   </nav>
 
@@ -327,6 +328,35 @@
     </div>
   </section>
 
+  <!-- ordertest (temporary) -->
+  <section class="tab-panel" id="tab-ordertest">
+    <div class="panel ot-panel">
+      <div class="ot-warn">REAL orders on your live XT account. Open one small position, then close it. Temporary feature.</div>
+      <div class="ot-grid">
+        <label>Search <input id="ot-search" type="text" placeholder="e.g. DOGE"></label>
+        <label>Coin <select id="ot-symbol"></select></label>
+        <label>Direction <select id="ot-side"><option value="long">Long (buy)</option><option value="short">Short (sell)</option></select></label>
+        <label>Notional (USDT) <input id="ot-notional" type="number" value="10" min="1" step="1"></label>
+        <label>Leverage <input id="ot-leverage" type="number" value="3" min="1" step="1"></label>
+        <label>Close symbol <input id="ot-symbol-close" type="text" readonly></label>
+      </div>
+      <label class="ot-confirm"><input id="ot-confirm" type="checkbox"> I understand this places real orders</label>
+      <div class="ot-actions">
+        <button id="ot-open" class="btn">Open position</button>
+        <button id="ot-close" class="btn" disabled>Close position</button>
+        <button id="ot-refresh" class="btn">Refresh</button>
+        <a class="btn" href="/api/ordertest/log" download>Download full log</a>
+      </div>
+      <div id="ot-open-list" class="ot-note"></div>
+      <div id="ot-status" class="ot-status"></div>
+      <div id="ot-result" hidden>
+        <table class="ot-facts"><tbody id="ot-facts"></tbody></table>
+        <button id="ot-copy" class="btn">Copy JSON</button>
+        <pre id="ot-json" class="ot-json"></pre>
+      </div>
+    </div>
+  </section>
+
   <section class="tab-panel" id="tab-logs">
     <div class="panel logs-panel">
       <div class="panel-head">
@@ -417,6 +447,7 @@
 <script src="/static/js/tables.js?v=20261011d"></script>
 <script src="/static/js/logs.js?v=20261011d"></script>
 <script src="/static/js/beta_diagram.js?v=20261011d"></script>
+<script src="/static/js/ordertest.js?v=20261014a"></script> <!-- ordertest (temporary) -->
 <script src="/static/js/main.js?v=20261011d"></script>
 <script src="/static/js/ui_fixes.js?v=20261011d"></script>
 <script src="/static/js/backbone_overrides.js?v=20261011d"></script>
