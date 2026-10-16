@@ -15,6 +15,9 @@ from backend.strategy.half_life import half_life_ok
 from backend.strategy.metrics import compute_group_performance, GroupPerformance
 from backend.strategy.pnl import residual_cash_pnl, gross_per_unit_y, entry_target_check
 from backend.strategy.liquidation import legs_from_betas, near_liquidation, DEFAULT_MMR
+from backend.strategy.sizing import (
+    ContractRoundingError, drift_gate, leg_orders, legs_gross_notional, quote_suffix, rounding_info,
+)
 
 
 @dataclass
@@ -28,12 +31,44 @@ class BacktestTrade:
     close_z: float
     close_reason: str
     pnl: float
+    # filled only when whole-contract rounding is simulated (per unit of the dependent, like ``pnl``)
+    pnl_ideal: float | None = None
+    hedge_drift: float | None = None
 
 
 @dataclass
 class BacktestResult:
     trades: list[BacktestTrade]
     performance: GroupPerformance
+    rounding: dict | None = None
+
+
+def rounding_cfg_from_params(params: dict, symbols: list[str]) -> dict | None:
+    """Whole-contract rounding settings for a backtest, or None when it does not apply (not an XT USDT
+    basket, rounding off, or contract sizes not cached yet)."""
+    mode = str(params.get("contract_rounding", "joint") or "off")
+    if mode == "off" or not symbols or any(quote_suffix(s) != "USDT" for s in symbols):
+        return None
+    from backend.exchange import contract_sizes
+    cs = contract_sizes.lookup_many(symbols)
+    if len(cs) < len(symbols):
+        return None  # unknown contract size for some symbol: do not guess
+    return {
+        "contract_sizes": cs, "mode": mode,
+        "max_size_dev": float(params.get("contract_max_size_dev", 0.35) or 0.35),
+        "max_drift": float(params.get("contract_max_drift", 0.15) or 0.0),
+        "move": float(params.get("contract_drift_move", 0.01) or 0.0),
+        "noise_ratio": float(params.get("contract_noise_ratio_max", 0.5) or 0.0),
+    }
+
+
+def _legs_pnl(legs: list[dict], p0: dict, p1: dict, cost_rate: float) -> float:
+    """Cash PnL of an actual basket between two price snapshots, net of round-trip costs."""
+    pnl = 0.0
+    for l in legs:
+        sgn = 1.0 if l["side"] == "buy" else -1.0
+        pnl += sgn * float(l["qty"]) * (float(p1[l["symbol"]]) - float(p0[l["symbol"]]))
+    return pnl - cost_rate * 2.0 * sum(abs(float(l["qty"]) * float(p0[l["symbol"]])) for l in legs)
 
 
 def simulate_pnl(
@@ -74,6 +109,7 @@ def backtest_group(
     liquidation_proximity: float = 0.0,
     maintenance_margin_rate: float = DEFAULT_MMR,
     progress_cb=None,
+    rounding: dict | None = None,
 ) -> BacktestResult:
     """``liquidation_proximity`` > 0 turns on the same guard as the live/paper engine: a trade is
     closed with reason ``risk_exit`` when any leg's mark is within that fraction of its modeled
@@ -83,6 +119,22 @@ def backtest_group(
     n = len(price_df)
     trades: list[BacktestTrade] = []
     position = None
+    _min_notional = 5.0 if quote_suffix(dependent_symbol) == "USDT" else None
+    rstats = {"enabled": bool(rounding), "entries": 0, "skipped_rounding": 0, "skipped_drift": 0,
+              "pnl_ideal_usdt": 0.0, "pnl_ideal_same_size_usdt": 0.0, "pnl_rounded_usdt": 0.0, "drifts": []} if rounding else None
+
+    def _finish(pos, resid_exit, exit_prices, base_pnl):
+        """(pnl, pnl_ideal, drift) for a closing trade; rounded basket PnL replaces the model PnL."""
+        if not rounding or not pos.get("rounded_legs"):
+            return base_pnl, None, None
+        qy = float(pos["ideal_qty_y"])
+        pr = _legs_pnl(pos["rounded_legs"], pos["entry_prices"], exit_prices, transaction_cost_rate)
+        pi = _legs_pnl(pos["ideal_legs"], pos["entry_prices"], exit_prices, transaction_cost_rate)
+        rstats["pnl_rounded_usdt"] += pr
+        rstats["pnl_ideal_usdt"] += pi
+        # the ideal basket scaled to the rounded basket's total size: what is left is the pure hedge-drift effect
+        rstats["pnl_ideal_same_size_usdt"] += pi * float(pos.get("size_ratio") or 1.0)
+        return pr / qy, pi / qy, pos.get("hedge_drift")
 
     i = window_size
     _step = max(1, (n - window_size) // 50)  # ~50 progress ticks
@@ -123,11 +175,13 @@ def backtest_group(
                     cost_rate=transaction_cost_rate,
                     gross_notional=gross,
                 )
+                pnl, pnl_ideal, drift = _finish(position, resid_now, prices_now, pnl)
                 trades.append(BacktestTrade(
                     entry_idx=position["entry_idx"], exit_idx=i,
                     entry_time=position["entry_time"], close_time=price_df.index[i],
                     direction=position["direction"], entry_z=position["entry_z"],
                     close_z=exit_dec.z, close_reason=exit_dec.reason, pnl=pnl,
+                    pnl_ideal=pnl_ideal, hedge_drift=drift,
                 ))
                 position = None
             i += 1
@@ -183,11 +237,10 @@ def backtest_group(
                 continue
             if max_entry_scale is not None and float(max_entry_scale) > 0:
                 try:
-                    from backend.strategy.sizing import leg_orders, ExcessiveScalingError
-                    from backend.strategy.sizing import quote_suffix
+                    from backend.strategy.sizing import ExcessiveScalingError
                     # USDT baskets use a small exchange minimum; the IRT default (50,000) would
                     # make every USDT entry look like a huge scale-up and skip it.
-                    _min = 5.0 if quote_suffix(dependent_symbol) == "USDT" else None
+                    _min = _min_notional
                     leg_orders(
                         dependent_symbol,
                         entry_dec.direction,
@@ -202,12 +255,46 @@ def backtest_group(
                     continue
                 except Exception:
                     pass
+            rounded_legs = ideal_legs = None
+            drift_val = None
+            if rounding:
+                try:
+                    ideal_legs = leg_orders(dependent_symbol, entry_dec.direction, fit.betas, prices_now,
+                                            float(trade_notional), min_order_value=_min_notional)
+                    rounded_legs = leg_orders(
+                        dependent_symbol, entry_dec.direction, fit.betas, prices_now, float(trade_notional),
+                        min_order_value=_min_notional, contract_sizes=rounding["contract_sizes"],
+                        contract_mode=rounding["mode"], contract_max_size_dev=rounding["max_size_dev"],
+                    )
+                except ContractRoundingError:
+                    rstats["skipped_rounding"] += 1
+                    i += 1
+                    continue
+                except Exception:
+                    rounded_legs = ideal_legs = None
+                if rounded_legs:
+                    info = rounding_info(rounded_legs) or {}
+                    gross_r = legs_gross_notional(rounded_legs)
+                    sigma_rel = fit.resid_std / G_unit if G_unit > 0 else 0.0
+                    exp_net = (sigma_rel * (abs(entry_dec.z) - z_close) - 2.0 * transaction_cost_rate) * gross_r
+                    ok_d, _dd = drift_gate(
+                        info, expected_net_profit=exp_net, max_drift=rounding["max_drift"],
+                        move_estimate=rounding["move"], max_noise_ratio=rounding["noise_ratio"],
+                    )
+                    if not ok_d:
+                        rstats["skipped_drift"] += 1
+                        i += 1
+                        continue
+                    drift_val = float(info.get("hedge_drift") or 0.0)
             entry_legs = legs_from_betas(dependent_symbol, entry_dec.direction, fit.betas, prices_now)
             if liquidation_proximity and liquidation_proximity > 0 and near_liquidation(
                 entry_legs, prices_now, leverage, liquidation_proximity, maintenance_margin_rate,
             ):
                 i += 1  # would open inside the guard band: the engine skips these too
                 continue
+            if rounded_legs:
+                rstats["entries"] += 1
+                rstats["drifts"].append(drift_val or 0.0)
             position = {
                 "legs": entry_legs,
                 "direction": entry_dec.direction,
@@ -220,6 +307,13 @@ def backtest_group(
                 "entry_residual": resid_now,
                 "entry_z": entry_dec.z,
                 "entry_prices": prices_now,
+                "rounded_legs": rounded_legs,
+                "ideal_legs": ideal_legs,
+                "ideal_qty_y": (next((l["ideal_qty"] if "ideal_qty" in l else l["qty"]
+                                      for l in (rounded_legs or []) if l["symbol"] == dependent_symbol), None)
+                                if rounded_legs else None),
+                "hedge_drift": drift_val,
+                "size_ratio": float((rounding_info(rounded_legs) or {}).get("size_ratio") or 1.0) if rounded_legs else 1.0,
             }
         i += 1
 
@@ -233,14 +327,29 @@ def backtest_group(
             position["entry_residual"], resid_last, position["direction"],
             qty_dependent=1.0, cost_rate=transaction_cost_rate, gross_notional=gross,
         )
+        pnl, pnl_ideal, drift = _finish(position, resid_last, last_prices, pnl)
         trades.append(BacktestTrade(
             entry_idx=position["entry_idx"], exit_idx=n - 1,
             entry_time=position["entry_time"], close_time=price_df.index[-1],
             direction=position["direction"], entry_z=position["entry_z"],
             close_z=(resid_last - position["mean"]) / position["std"] if position["std"] else 0.0,
-            close_reason="open_mtm", pnl=pnl,
+            close_reason="open_mtm", pnl=pnl, pnl_ideal=pnl_ideal, hedge_drift=drift,
         ))
 
     closed = [{"pnl": t.pnl, "entry_time": t.entry_time, "close_time": t.close_time, "direction": t.direction} for t in trades]
     perf = compute_group_performance(closed)
-    return BacktestResult(trades=trades, performance=perf)
+    rounding_report = None
+    if rstats is not None:
+        import numpy as np
+        d = rstats.pop("drifts")
+        rounding_report = {
+            **rstats,
+            "trades": len(trades),
+            "hedge_drift_mean": float(np.mean(d)) if d else None,
+            "hedge_drift_p90": float(np.percentile(d, 90)) if d else None,
+            "hedge_drift_max": float(np.max(d)) if d else None,
+            "pnl_lost_to_rounding_usdt": rstats["pnl_ideal_usdt"] - rstats["pnl_rounded_usdt"],
+            "pnl_lost_to_size_usdt": rstats["pnl_ideal_usdt"] - rstats["pnl_ideal_same_size_usdt"],
+            "pnl_lost_to_drift_usdt": rstats["pnl_ideal_same_size_usdt"] - rstats["pnl_rounded_usdt"],
+        }
+    return BacktestResult(trades=trades, performance=perf, rounding=rounding_report)

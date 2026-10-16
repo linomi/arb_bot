@@ -177,7 +177,11 @@ are filled in automatically.
 | `entry_retry_cooldown_sec` | Pause for a group after a failed/rolled-back entry. |
 | `data_staleness_mult` | Skip entries when a bar is older than this x `sampling_time`. |
 | `funding_rate_estimate`, `expected_holding_funding_intervals` | Funding cost assumed in the profit gate. |
-| `xt_leverage`, `xt_margin_mode` | XT leverage (applied per symbol, both sides, before the first order) and `isolated`/`cross`. |
+| `xt_leverage`, `xt_margin_mode` | XT leverage (applied per symbol, both sides, before the first order) and `isolated`/`cross`. Leverage must be a whole number (XT takes integers). |
+| `contract_rounding` | XT only. XT trades **whole contracts** (1 XRP contract = 10 XRP, 1 QNT contract = 0.1 QNT, ...), so each leg is rounded to an integer number of contracts in paper, backtests and live alike. `joint` (default) searches nearby whole-contract combinations that keep the hedge closest to plan, `nearest` rounds each leg alone, `floor` truncates, `off` keeps continuous sizes. Contract sizes come from the XT market list and are cached in `data/xt_contract_sizes.json`; a symbol without a cached size is not rounded. |
+| `contract_max_size_dev` | Allowed change of the total notional versus `trade_notional` while searching contract combinations (default 0.35). |
+| `contract_max_drift` | Skip the entry (`contract_drift`) when any leg's share of the hedge drifts more than this after rounding (default 0.15, 0 = off). |
+| `contract_drift_move`, `contract_noise_ratio_max` | Skip the entry when (unhedged notional x `contract_drift_move`) exceeds `contract_noise_ratio_max` x the trade's expected net profit, i.e. when rounding noise could swamp the edge (defaults 0.01 and 0.5, 0 = off). A leg that cannot reach one contract skips the entry as `contract_rounding`. |
 | `chart_history_bars`, `fit_log_interval_sec`, `try_all_dependents` | Display / logging / init options. |
 
 ## 7. Project layout

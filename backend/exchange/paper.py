@@ -78,6 +78,11 @@ class PaperExchangeClient:
     async def get_margin_active_balance_irt(self) -> float | None:
         return None
 
+    async def get_contract_size(self, symbol: str) -> float | None:
+        if hasattr(self.md, "get_contract_size"):
+            return await self.md.get_contract_size(symbol)
+        return None
+
     async def get_min_notional(self, symbol: str) -> float | None:
         if hasattr(self.md, "get_min_notional"):
             return await self.md.get_min_notional(symbol)

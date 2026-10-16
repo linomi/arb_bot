@@ -21,7 +21,7 @@ from typing import Any
 import pandas as pd
 
 from backend.sectors import group_symbols_by_sector
-from backend.engine.backtester import backtest_group
+from backend.engine.backtester import backtest_group, rounding_cfg_from_params
 from backend.strategy.account import leverage_for
 
 # Soft sample-size anchor: at n ≈ this, trade-count confidence ≈ 2/3.
@@ -80,6 +80,7 @@ def _worker_eval(job: tuple) -> dict | None:
             leverage=leverage_for(None, backbone_params, dependent),
             liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
             maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
+            rounding=rounding_cfg_from_params(backbone_params, list(symbols)),
         )
     except Exception:
         return None

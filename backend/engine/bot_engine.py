@@ -38,6 +38,9 @@ from backend.strategy.stats_tests import test_stationarity
 from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
 from backend.strategy.half_life import half_life_ok
 from backend.strategy.sizing import (
+    ContractRoundingError,
+    drift_gate,
+    rounding_info,
     leg_orders,
     close_legs_from_entry,
     MIN_ORDER_VALUE_IRT,
@@ -652,6 +655,7 @@ class BotEngine:
         symbols: list[str] | None = None,
         paper_free: float | None = None,
         paper_leverage: float = 1.0,
+        rounding: dict | None = None,
     ) -> tuple[list[dict] | None, float, str]:
         """
         Build legs for desired_notional (the TOTAL gross of all legs). On live, scale down
@@ -668,10 +672,16 @@ class BotEngine:
         buffer = BALANCE_BUFFER_IRT if exchange == "nobitex" else max(1.0, min_val * 0.1)
 
         def _build(n: float) -> list[dict]:
+            kw = {}
+            if rounding and rounding.get("contract_sizes"):
+                # whole-contract sizes: margin, wallet fit and orders all use what XT will really hold
+                kw = dict(contract_sizes=rounding["contract_sizes"], contract_mode=rounding["mode"],
+                          contract_max_size_dev=rounding["max_size_dev"])
             return leg_orders(
                 dependent_symbol, direction, betas, prices, float(n),
                 min_order_value=min_val,
                 max_scale=max_scale,
+                **kw,
             )
 
         is_live_client = trading_mode == "live" and (
@@ -679,7 +689,10 @@ class BotEngine:
             or (XTClient is not None and isinstance(trading_client, XTClient))
         )
         if not is_live_client and paper_free is None:
-            legs = _build(desired_notional)
+            try:
+                legs = _build(desired_notional)
+            except ContractRoundingError as e:
+                return None, 0.0, f"contract rounding: {e}"
             return legs, float(desired_notional), ""
 
         if is_live_client:
@@ -706,6 +719,8 @@ class BotEngine:
 
         try:
             legs = _build(desired_notional)
+        except ContractRoundingError as e:
+            return None, 0.0, f"contract rounding: {e}"
         except Exception as e:
             return None, 0.0, f"sizing failed: {e}"
         need = total_required_collateral(legs, leverage=lev)
@@ -723,6 +738,8 @@ class BotEngine:
                 )
             try:
                 legs = _build(notional)
+            except ContractRoundingError as e:
+                return None, 0.0, f"contract rounding after margin scale-down: {e}"
             except Exception as e:
                 return None, 0.0, f"sizing failed after scale: {e}"
             need = total_required_collateral(legs, leverage=lev)
@@ -734,7 +751,10 @@ class BotEngine:
                         f"insufficient margin after min-order scale-up: need≈{need:.{dp}f}, "
                         f"usable={usable:.{dp}f}, free={free:.{dp}f}"
                     )
-                legs = _build(notional)
+                try:
+                    legs = _build(notional)
+                except ContractRoundingError as e:
+                    return None, 0.0, f"contract rounding after margin scale-down: {e}"
                 need = total_required_collateral(legs, leverage=lev)
                 if need > usable:
                     return None, 0.0, (
@@ -1626,6 +1646,16 @@ class BotEngine:
             self._diag(group, "scale_cap", str(e), **diag_fields)
             return
 
+        # Whole-contract rounding (XT): same sizes in paper and live. Unknown contract size = not rounded.
+        rounding_cfg = None
+        _mode = str(backbone.get("contract_rounding", "joint") or "off")
+        if group_ex == "xt" and _mode != "off":
+            _cs = await xt_hooks.resolve_contract_sizes(
+                trading_client, list(group.symbols or [group.dependent_symbol]), exchange=group_ex)
+            if _cs:
+                rounding_cfg = {"contract_sizes": _cs, "mode": _mode,
+                                "max_size_dev": float(backbone.get("contract_max_size_dev", 0.35) or 0.35)}
+
         # Paper mode: the same balance fit as live, against the simulated shared USDT wallet.
         paper_free = paper_lev = None
         if trading_mode != "live" and group_ex == "xt":
@@ -1644,7 +1674,13 @@ class BotEngine:
             symbols=list(group.symbols or []),
             paper_free=paper_free,
             paper_leverage=paper_lev,
+            rounding=rounding_cfg,
         )
+        if legs is None and bal_msg.startswith("contract rounding"):
+            # expected skip (the basket cannot be expressed in whole contracts), not an error state
+            log.info("group %s skip entry: %s", group.id, bal_msg)
+            self._diag(group, "contract_rounding", bal_msg, **diag_fields)
+            return
         if legs is None:
             self._last_error = bal_msg
             self._group_errors[group.id] = bal_msg
@@ -1654,6 +1690,36 @@ class BotEngine:
             return
         if bal_msg:
             log.info("group %s: %s", group.id, bal_msg)
+
+        # Hedge-drift gate on the ROUNDED basket: skip when rounding leaves the legs too far from the planned
+        # hedge, or when the unhedged part could swamp the expected profit of the trade.
+        _rinfo = rounding_info(legs)
+        if _rinfo:
+            try:
+                _G = legs_gross_notional(legs)
+                _cost = xt_hooks.effective_cost_rate(backbone, exchange=group_ex)
+                _qy = float(next((l["qty"] for l in legs if l["symbol"] == group.dependent_symbol), 0) or 0)
+                _g_unit = (_G / _qy) if _qy > 0 else 0.0
+                _sigma_rel = (float(fit_res.resid_std) / _g_unit) if _g_unit > 0 else 0.0
+                _exp_net = (_sigma_rel * (abs(float(entry_dec.z)) - float(backbone["z_close"])) - 2.0 * _cost) * _G
+                _ok_d, _dd = drift_gate(
+                    _rinfo, expected_net_profit=_exp_net,
+                    max_drift=float(backbone.get("contract_max_drift", 0.15) or 0.0),
+                    move_estimate=float(backbone.get("contract_drift_move", 0.01) or 0.0),
+                    max_noise_ratio=float(backbone.get("contract_noise_ratio_max", 0.5) or 0.0),
+                )
+            except Exception as e:
+                log.warning("group %s drift gate error (skipping entry, fail-closed): %s", group.id, e)
+                self._diag(group, "gate_error", f"drift gate: {e}", **diag_fields)
+                return
+            if not _ok_d:
+                log.info("group %s skip entry (contract drift): %s [contracts=%s]", group.id, _dd.get("reject_reason"),
+                         [(l["symbol"], l.get("contracts")) for l in legs])
+                self._diag(group, "contract_drift", str(_dd.get("reject_reason")), **diag_fields)
+                return
+            log.info("group %s contract rounding: size_ratio=%.3f hedge_drift=%.1f%% contracts=%s", group.id,
+                     float(_rinfo.get("size_ratio") or 1.0), 100.0 * float(_rinfo.get("hedge_drift") or 0.0),
+                     [(l["symbol"], l.get("contracts")) for l in legs])
 
         # Liquidation guard at entry: a position that starts inside the proximity band would be
         # closed by the risk exit on the next cycle (fees paid for nothing), so do not open it.

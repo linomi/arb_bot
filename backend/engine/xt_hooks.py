@@ -113,3 +113,29 @@ async def read_free_balance(
         except Exception as e:
             log.warning("get_margin_active_balance_irt failed: %s", e)
     return None
+
+
+async def resolve_contract_sizes(
+    trading_client: Any,
+    symbols: list[str],
+    *,
+    exchange: str = "nobitex",
+) -> dict[str, float]:
+    """Base units per contract for XT symbols (empty for other exchanges / unknown symbols).
+    Falls back to the persisted cache so paper mode keeps working without a live market load."""
+    if (exchange or "").lower() != "xt":
+        return {}
+    out: dict[str, float] = {}
+    if hasattr(trading_client, "get_contract_size"):
+        for sym in symbols:
+            try:
+                cs = await trading_client.get_contract_size(sym)
+                if cs is not None and float(cs) > 0:
+                    out[sym] = float(cs)
+            except Exception as e:
+                log.debug("get_contract_size(%s): %s", sym, e)
+    missing = [s for s in symbols if s not in out]
+    if missing:
+        from backend.exchange import contract_sizes
+        out.update(contract_sizes.lookup_many(missing))
+    return out

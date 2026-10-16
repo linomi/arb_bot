@@ -57,6 +57,20 @@ backbone:
   xt_leverage: 2
   # XT-only: "isolated" | "cross" (default isolated).
   xt_margin_mode: isolated
+  # XT trades whole CONTRACTS (e.g. 1 XRP contract = 10 XRP), so every leg is rounded to an integer
+  # number of contracts before an order is sized (paper, backtest and live alike). "joint" searches
+  # nearby whole-contract combinations that keep the hedge ratio closest to plan, "nearest" rounds
+  # each leg on its own, "floor" truncates, "off" keeps continuous sizes.
+  contract_rounding: joint
+  # Allowed change of the TOTAL notional versus trade_notional when searching contract combinations.
+  contract_max_size_dev: 0.35
+  # Skip the entry when any leg's share of the hedge drifts more than this after rounding (0 = off).
+  contract_max_drift: 0.15
+  # Assumed price move of the unhedged part while a trade is open, used by the noise check below.
+  contract_drift_move: 0.01
+  # Skip the entry when (unhedged notional x contract_drift_move) exceeds this fraction of the expected
+  # net profit of the trade, i.e. when rounding noise could swamp the edge (0 = off).
+  contract_noise_ratio_max: 0.5
   # Assumed funding cost per holding interval (fraction). 0.0 = no funding cost
   # so Nobitex behaviour is unchanged. Tune from fetchFundingRateHistory.
   funding_rate_estimate: 0.0

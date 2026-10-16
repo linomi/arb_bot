@@ -120,6 +120,7 @@ class XTClient(ExchangeClient):
         if cached and (time.time() - float(_MARKETS_CACHE.get("ts") or 0)) < _MARKETS_TTL_SEC:
             self._ex.set_markets(cached, _MARKETS_CACHE.get("currencies"))
             self._markets_loaded = True
+            self._publish_contract_sizes()
             return
         try:
             await self._ex.load_markets()
@@ -139,6 +140,28 @@ class XTClient(ExchangeClient):
                 currencies=dict(cur) if isinstance(cur, dict) and cur else None,
             )
         self._markets_loaded = True
+        self._publish_contract_sizes()
+
+    def _publish_contract_sizes(self) -> None:
+        try:
+            from backend.exchange import contract_sizes
+            contract_sizes.update_from_markets(getattr(self._ex, "markets", None))
+        except Exception as e:  # cache problems must never affect trading
+            log.debug("contract size cache update failed: %s", e)
+
+    async def get_contract_size(self, symbol: str) -> float | None:
+        """Base units per contract for ``symbol`` (None when unknown)."""
+        await self._ensure_markets()
+        unified = self._normalize_symbol(symbol)
+        try:
+            m = self._ex.market(unified)
+        except Exception:
+            return None
+        cs = m.get("contractSize")
+        try:
+            return float(cs) if cs is not None and float(cs) > 0 else None
+        except (TypeError, ValueError):
+            return None
 
     def _assert_linear_usdt_swap(self, symbol: str) -> dict:
         """Reject anything that is not a linear USDT-settled perpetual swap."""
@@ -337,7 +360,7 @@ class XTClient(ExchangeClient):
     def _base_to_contracts(self, unified: str, base_qty: float) -> float:
         """Convert base-asset quantity to exchange contracts; round to amount precision."""
         cs = self._contract_size(unified)
-        raw = float(base_qty) / cs
+        raw = round(float(base_qty) / cs, 9)  # k*cs/cs can land at k-1e-16, which precision would truncate to k-1
         amount_str = self._ex.amount_to_precision(unified, raw)
         return float(amount_str)
 

@@ -83,13 +83,15 @@ const BACKBONE_ADVANCED = [
   ["risk", ["max_holding_hours", "max_entry_scale", "max_open_trades", "max_total_gross_notional",
             "liquidation_proximity_fraction", "maintenance_margin_rate", "entry_retry_cooldown_sec", "data_staleness_mult"]],
   ["funding", ["funding_rate_estimate", "expected_holding_funding_intervals"]],
-  ["xt", ["xt_leverage", "xt_margin_mode"]],
+  ["xt", ["xt_leverage", "xt_margin_mode", "contract_rounding", "contract_max_size_dev", "contract_max_drift",
+          "contract_drift_move", "contract_noise_ratio_max"]],
   ["display", ["chart_history_bars", "fit_log_interval_sec", "try_all_dependents"]],
 ];
 // Text settings with a fixed set of values render as a dropdown: key -> [[value, i18n key], ...]
 const SELECT_FIELDS = {
   stationarity_method: [["engle_granger", "opt.engle_granger"], ["adf_kpss", "opt.adf_kpss"]],
   xt_margin_mode: [["isolated", "opt.isolated"], ["cross", "opt.cross"]],
+  contract_rounding: [["joint", "opt.joint"], ["nearest", "opt.nearest"], ["floor", "opt.floor"], ["off", "opt.off"]],
 };
 // Keys never shown as a generic field (they have their own control).
 const HIDDEN_FORM_KEYS = { "init-form": ["method"] };

@@ -233,6 +233,11 @@ def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
         ),
         "trade_notional": float(backbone_cfg.get("trade_notional", 100) or 100),
         "xt_leverage": float(backbone_cfg.get("xt_leverage", 1) or 1),
+        "contract_rounding": str(backbone_cfg.get("contract_rounding", "joint") or "off"),
+        "contract_max_size_dev": float(backbone_cfg.get("contract_max_size_dev", 0.35) or 0.35),
+        "contract_max_drift": float(backbone_cfg.get("contract_max_drift", 0.15) or 0.0),
+        "contract_drift_move": float(backbone_cfg.get("contract_drift_move", 0.01) or 0.0),
+        "contract_noise_ratio_max": float(backbone_cfg.get("contract_noise_ratio_max", 0.5) or 0.0),
         "liquidation_proximity_fraction": float(backbone_cfg.get("liquidation_proximity_fraction", 0) or 0),
         "maintenance_margin_rate": float(backbone_cfg.get("maintenance_margin_rate", 0.005) or 0.005),
     }
