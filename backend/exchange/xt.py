@@ -149,6 +149,12 @@ class XTClient(ExchangeClient):
         except Exception as e:  # cache problems must never affect trading
             log.debug("contract size cache update failed: %s", e)
 
+    async def prepare_symbol(self, symbol: str) -> None:
+        """Margin mode + leverage for a symbol (first use per process only). Called for every leg of a basket
+        BEFORE any order is sent, so the concurrent order sends are not held up by setup calls."""
+        await self._ensure_markets()
+        await self._ensure_leverage_margin(self._normalize_symbol(symbol))
+
     async def get_contract_size(self, symbol: str) -> float | None:
         """Base units per contract for ``symbol`` (None when unknown)."""
         await self._ensure_markets()
@@ -501,6 +507,10 @@ class XTClient(ExchangeClient):
             return None
         info = order.get("info")
         contracts = self._raw_contracts(info, "executedQty")
+        st_raw = str((info or {}).get("state") or order.get("status") or "").upper() if isinstance(info, dict) else ""
+        if contracts is None and st_raw in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
+            return {"price": None, "filled_contracts": 0.0, "filled_base": 0.0, "fee": None,
+                    "status": st_raw.lower(), "complete": True, "unfilled": True, "source": "order", "raw": order}
         if contracts is None:
             # No raw record: ccxt's `filled` on XT swaps is already in BASE units (observed live:
             # 1 contract of a 10-unit contract -> filled 10), so derive contracts from it.
@@ -521,6 +531,8 @@ class XTClient(ExchangeClient):
             "fee": self._fee_cost(order.get("fee"), order.get("fees")),
             "status": status,
             "complete": complete,
+            # size the exchange was actually asked for (after the client's whole-contract conversion)
+            "orig_base": (orig * cs) if orig else None,
             "source": "order",
             # XT's exact realised gross PnL and precise entry price on closing orders (avgPrice is
             # rounded to the price tick, openPrice/closeProfit are not)
@@ -545,7 +557,7 @@ class XTClient(ExchangeClient):
         return {"price": px, "filled_contracts": base / cs, "filled_base": base, "fee": fee,
                 "status": "trades", "complete": True, "source": "trades", "raw": trades}
 
-    async def get_order_fill(self, order_id: Any, symbol: str, attempts: int = 4, delay: float = 0.5) -> dict | None:
+    async def get_order_fill(self, order_id: Any, symbol: str, attempts: int = 5, delay: float = 0.15) -> dict | None:
         """Actual average fill price, filled size (base units) and USDT fee of one order, from XT's
         order history (fallback: the account's trade list). None when XT does not return it.
         Rate limits propagate so the engine can pause; every other failure just returns None."""

@@ -145,3 +145,27 @@ def test_close_profit_and_precise_open_price_exposed(xt):
         "info": {"origQty": "20", "executedQty": "20", "avgPrice": "0.494", "openPrice": "0.49303", "closeProfit": "0.0194"}})
     f = _run(c.get_order_fill("o1", SYM, delay=0))
     assert f["close_profit"] == pytest.approx(0.0194) and f["open_price"] == pytest.approx(0.49303)
+
+
+def test_cancelled_order_is_reported_as_unfilled(xt):
+    c, ex = xt
+    ex.fetch_order = AsyncMock(return_value={"status": "canceled", "amount": 10.0, "filled": 0.0,
+                                             "info": {"origQty": "1", "executedQty": "0", "state": "CANCELED"}})
+    f = _run(c.get_order_fill("o1", SYM, delay=0))
+    assert f["unfilled"] and f["complete"] and f["filled_base"] == 0.0
+
+
+def test_order_record_exposes_the_size_that_was_actually_sent(xt):
+    c, ex = xt
+    ex.fetch_order = AsyncMock(return_value={"status": "closed", "amount": 10.0, "filled": 10.0, "average": 1.3251,
+                                             "info": {"origQty": "1", "executedQty": "1", "avgPrice": "1.3251"}})
+    assert _run(c.get_order_fill("o1", SYM, delay=0))["orig_base"] == pytest.approx(10.0)
+
+
+def test_prepare_symbol_sets_leverage_and_margin_once(xt):
+    c, ex = xt
+    ex.set_leverage = AsyncMock()
+    ex.set_margin_mode = AsyncMock()
+    _run(c.prepare_symbol(SYM))
+    _run(c.prepare_symbol(SYM))
+    assert ex.set_leverage.await_count == 2 and ex.set_margin_mode.await_count == 2   # LONG+SHORT, first call only

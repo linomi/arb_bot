@@ -64,6 +64,9 @@ try:
 except ImportError:
     CcxtRateLimitExceeded = type("CcxtRateLimitExceeded", (Exception,), {})
 
+# Pause between order placement and the exchange lookups that confirm it (was 0.4-0.6 s).
+_CONFIRM_SLEEP_SEC = 0.15
+
 log = logging.getLogger("bot_engine")
 
 # Refuse entry if required collateral exceeds this fraction of free balance.
@@ -823,246 +826,288 @@ class BotEngine:
         is_close: bool = False,
         attempt_id: str | None = None,
     ) -> list[dict]:
-        out: list[dict] = []
+        """Send every leg of a basket AT THE SAME TIME, then confirm each against the exchange.
+
+        1. entries: set margin mode / leverage for every symbol first (first trade per symbol only), so the
+           order sends themselves are not delayed by setup calls;
+        2. all legs are sent concurrently (asyncio.gather) -- the hedge is built within one round trip;
+        3. each leg is confirmed from the exchange's own order record (price, filled size, fee);
+        4. entry: any rejected / unfilled / partially filled leg makes the whole basket fail and every leg that
+           did fill is closed again (``PartialLegsError``); close: failed legs are returned for the caller to retry.
+        """
         attempt_id = attempt_id or uuid.uuid4().hex[:8]
-        filled_entry_indices: list[int] = []
+        legs = list(legs)
 
-        for i, leg in enumerate(legs):
-            if i > 0:
-                await asyncio.sleep(0.35)
+        if not is_close and hasattr(trading_client, "prepare_symbol"):
+            prep = await asyncio.gather(*[trading_client.prepare_symbol(l["symbol"]) for l in legs],
+                                        return_exceptions=True)
+            for l, r in zip(legs, prep):
+                if isinstance(r, BaseException):
+                    out = [{**x, "failed": True, "error": str(r)} if x is l else x for x in legs]
+                    raise PartialLegsError(f"entry leg {l['symbol']} failed: {r}", out) from r
 
-            symbol = leg["symbol"]
-            side = leg["side"]
-            qty = float(leg.get("filled_qty") if leg.get("filled_qty") is not None else leg["qty"])
-            ref_price = leg.get("price")
-            coid = _client_order_id("c" if is_close else "o", symbol, side)
+        results = await asyncio.gather(
+            *[self._place_one_leg(trading_client, l, is_close=is_close) for l in legs],
+            return_exceptions=True,
+        )
+        out: list[dict] = []
+        for l, r in zip(legs, results):
+            if isinstance(r, BaseException):
+                if xt_hooks.handle_rate_limit(self, r, exchange="xt"):
+                    pass
+                log.error("leg %s raised unexpectedly: %s", l.get("symbol"), r)
+                out.append({**l, "failed": True, "error": f"{type(r).__name__}: {r}"})
+            else:
+                out.append(r)
 
-            if is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id"):
-                close_qty = qty
-                already_done = False
+        if is_close:
+            return out
+
+        self._check_entry_fills(out)
+        failed = [l for l in out if l.get("failed")]
+        if failed:
+            # legs that hold a position: the ones that filled, plus partially filled ones (flagged failed)
+            placed = [i for i, l in enumerate(out) if not l.get("failed") or l.get("partial_fill")]
+            if placed:
+                await self._rollback_filled_entries(trading_client, out, placed)
+            first = failed[0]
+            raise PartialLegsError(
+                f"entry leg {first['symbol']} failed: {first.get('error')}"
+                + (" (other legs rolled back)" if placed else ""),
+                out,
+            )
+        return out
+
+    @staticmethod
+    def _check_entry_fills(out: list[dict]) -> None:
+        """Mark a confirmed-by-exchange entry leg as failed when nothing, or clearly too little, was filled:
+        a market IOC order can be accepted and still fill nothing, which would leave the other legs unhedged."""
+        for i, l in enumerate(out):
+            if l.get("failed") or l.get("fill_source") != "exchange_order":
+                continue
+            want = float(l.get("order_qty") or l.get("requested_qty") or 0)
+            got = float(l.get("filled_qty") or 0)
+            if got <= 0:
+                out[i] = {**l, "failed": True, "error": "order accepted but nothing filled (unfilled / cancelled)"}
+            elif want > 0 and got < want * 0.98:
+                out[i] = {**l, "failed": True,
+                          "error": f"partial fill: {got:g} of {want:g}", "partial_fill": True}
+
+    async def _place_one_leg(self, trading_client, leg: dict, *, is_close: bool) -> dict:
+        """Send ONE leg and confirm it. Never raises for an exchange rejection: the result carries
+        ``failed``/``error`` so the caller can decide (roll back the other legs, keep a close open...)."""
+        symbol = leg["symbol"]
+        side = leg["side"]
+        qty = float(leg.get("filled_qty") if leg.get("filled_qty") is not None else leg["qty"])
+        ref_price = leg.get("price")
+        coid = _client_order_id("c" if is_close else "o", symbol, side)
+
+        if is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id"):
+            close_qty = qty
+            already_done = False
+            try:
+                pos = await trading_client.get_position(_pos_id(leg["position_id"]))
+                liab = _parse_money(pos.get("liability"))
+                st = str(pos.get("status") or "").lower()
+                if st in ("closed", "liquidated", "expired") or (liab is not None and liab <= 0):
+                    already_done = True
+                elif liab is not None and liab > 0:
+                    close_qty = liab
+                leg["pre_close_position"] = pos
+            except Exception as e:
+                log.debug("pre-close position fetch failed: %s", e)
+
+            if already_done:
+                leg = {
+                    **leg,
+                    "already_closed": True,
+                    "closed_via": "already_closed",
+                    "filled_qty": 0.0,
+                }
+                return leg
+
+            try:
+                resp = await trading_client.close_position(
+                    _pos_id(leg["position_id"]),
+                    amount=close_qty,
+                    execution="market",
+                    client_order_id=coid,
+                )
+                leg = {
+                    **leg,
+                    "close_response": resp,
+                    "closed_via": "position_close",
+                    "close_qty": close_qty,
+                    "client_order_id": coid,
+                    "filled_qty": close_qty,
+                }
+                # XT: the exchange's own record of the closing order (price, size, fee).
+                _cl_order = ((resp or {}).get("order") or {}).get("id") if isinstance(resp, dict) else None
+                if await self._apply_exchange_fill(trading_client, leg, _cl_order, is_close=True):
+                    return leg
+                # Poll position for actual exit/fill price (Rial).
+                decision_px = float(leg.get("price") or 0) or None
+                fill = None
                 try:
-                    pos = await trading_client.get_position(_pos_id(leg["position_id"]))
-                    liab = _parse_money(pos.get("liability"))
-                    st = str(pos.get("status") or "").lower()
-                    if st in ("closed", "liquidated", "expired") or (liab is not None and liab <= 0):
-                        already_done = True
-                    elif liab is not None and liab > 0:
-                        close_qty = liab
-                    leg["pre_close_position"] = pos
+                    for attempt in range(3):
+                        await asyncio.sleep(_CONFIRM_SLEEP_SEC)
+                        pos_after = await trading_client.get_position(_pos_id(leg["position_id"]))
+                        fill = _fill_price_from_position(pos_after, is_close=True)
+                        if fill is not None:
+                            break
                 except Exception as e:
-                    log.debug("pre-close position fetch failed: %s", e)
-
-                if already_done:
-                    leg = {
-                        **leg,
-                        "already_closed": True,
-                        "closed_via": "already_closed",
-                        "filled_qty": 0.0,
-                    }
-                    out.append(leg)
-                    continue
-
+                    log.debug("post-close fill_price poll failed: %s", e)
+                if fill is not None:
+                    leg["decision_price"] = decision_px
+                    leg["fill_price"] = fill
+                    if decision_px and decision_px > 0:
+                        slip = (fill - decision_px) / decision_px
+                        log.info(
+                            "close leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
+                            symbol, fill, decision_px, slip,
+                        )
+                else:
+                    leg["decision_price"] = decision_px
+                    leg["fill_price"] = decision_px
+                    leg["fill_price_estimated"] = True
+                return leg
+            except (NobitexError, XTError) as e:
+                liab_now = None
                 try:
-                    resp = await trading_client.close_position(
-                        _pos_id(leg["position_id"]),
-                        amount=close_qty,
-                        execution="market",
-                        client_order_id=coid,
-                    )
-                    leg = {
-                        **leg,
-                        "close_response": resp,
-                        "closed_via": "position_close",
-                        "close_qty": close_qty,
-                        "client_order_id": coid,
-                        "filled_qty": close_qty,
-                    }
-                    # XT: the exchange's own record of the closing order (price, size, fee).
-                    _cl_order = ((resp or {}).get("order") or {}).get("id") if isinstance(resp, dict) else None
-                    if await self._apply_exchange_fill(trading_client, leg, _cl_order, is_close=True):
-                        out.append(leg)
-                        continue
-                    # Poll position for actual exit/fill price (Rial).
-                    decision_px = float(leg.get("price") or 0) or None
-                    fill = None
-                    try:
-                        for attempt in range(3):
-                            await asyncio.sleep(0.4 if attempt else 0.2)
-                            pos_after = await trading_client.get_position(_pos_id(leg["position_id"]))
-                            fill = _fill_price_from_position(pos_after, is_close=True)
-                            if fill is not None:
-                                break
-                    except Exception as e:
-                        log.debug("post-close fill_price poll failed: %s", e)
-                    if fill is not None:
-                        leg["decision_price"] = decision_px
-                        leg["fill_price"] = fill
-                        if decision_px and decision_px > 0:
-                            slip = (fill - decision_px) / decision_px
-                            log.info(
-                                "close leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
-                                symbol, fill, decision_px, slip,
-                            )
-                    else:
-                        leg["decision_price"] = decision_px
-                        leg["fill_price"] = decision_px
-                        leg["fill_price_estimated"] = True
-                    out.append(leg)
-                    continue
-                except (NobitexError, XTError) as e:
-                    liab_now = None
-                    try:
-                        pos_now = await trading_client.get_position(_pos_id(leg["position_id"]))
-                        liab_now = _parse_money(pos_now.get("liability"))
-                        st = str(pos_now.get("status") or "").lower()
-                        if st in ("closed", "liquidated", "expired") or (liab_now is not None and liab_now <= 0):
-                            leg = {
-                                **leg,
-                                "already_closed": True,
-                                "closed_via": "already_closed_after_error",
-                                "close_error": str(e),
-                                "filled_qty": 0.0,
-                            }
-                            out.append(leg)
-                            continue
-                    except Exception:
-                        pass
-
-                    if liab_now is not None and liab_now <= 0:
+                    pos_now = await trading_client.get_position(_pos_id(leg["position_id"]))
+                    liab_now = _parse_money(pos_now.get("liability"))
+                    st = str(pos_now.get("status") or "").lower()
+                    if st in ("closed", "liquidated", "expired") or (liab_now is not None and liab_now <= 0):
                         leg = {
                             **leg,
                             "already_closed": True,
+                            "closed_via": "already_closed_after_error",
                             "close_error": str(e),
                             "filled_qty": 0.0,
                         }
-                        out.append(leg)
-                        continue
+                        return leg
+                except Exception:
+                    pass
 
-                    log.warning(
-                        "position close failed id=%s liab=%s: %s — opposite order fallback",
-                        leg.get("position_id"), liab_now, e,
-                    )
+                if liab_now is not None and liab_now <= 0:
+                    leg = {
+                        **leg,
+                        "already_closed": True,
+                        "close_error": str(e),
+                        "filled_qty": 0.0,
+                    }
+                    return leg
 
-            try:
-                kwargs = {"price": None, "client_order_id": coid}
-                if (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
-                    kwargs["ref_price"] = ref_price
-                if is_close and XTClient is not None and isinstance(trading_client, XTClient):
-                    # XT is positionSide-based: an un-flagged opposite order
-                    # would OPEN a new position instead of closing.
-                    kwargs["reduce_only"] = True
-                opened_after = dt.datetime.utcnow().isoformat()
-                resp = await trading_client.place_order(symbol, side, qty, **kwargs)
-            except Exception as e:
-                leg = {**leg, "failed": True, "error": str(e), "client_order_id": coid}
-                out.append(leg)
-                if not is_close and filled_entry_indices:
-                    await self._rollback_filled_entries(trading_client, out, filled_entry_indices)
-                    raise PartialLegsError(
-                        f"leg {symbol} failed after partial fills: {e}", out,
-                    ) from e
-                if not is_close:
-                    raise PartialLegsError(f"entry leg {symbol} failed: {e}", out) from e
+                log.warning(
+                    "position close failed id=%s liab=%s: %s — opposite order fallback",
+                    leg.get("position_id"), liab_now, e,
+                )
+
+        try:
+            kwargs = {"price": None, "client_order_id": coid}
+            if (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))):
+                kwargs["ref_price"] = ref_price
+            if is_close and XTClient is not None and isinstance(trading_client, XTClient):
+                # XT is positionSide-based: an un-flagged opposite order
+                # would OPEN a new position instead of closing.
+                kwargs["reduce_only"] = True
+            opened_after = dt.datetime.utcnow().isoformat()
+            resp = await trading_client.place_order(symbol, side, qty, **kwargs)
+        except Exception as e:
+            if is_close:
                 log.error("close leg %s failed: %s", symbol, e)
-                continue
+            return {**leg, "failed": True, "error": str(e), "client_order_id": coid}
 
-            order = (resp or {}).get("order") or {}
-            order_id = order.get("id") or (resp or {}).get("id")
-            matched = _parse_money(order.get("matchedAmount")) or _parse_money(
-                (resp or {}).get("matchedAmount")
-            )
-            filled_qty = float(matched) if matched is not None and matched > 0 else qty
+        order = (resp or {}).get("order") or {}
+        order_id = order.get("id") or (resp or {}).get("id")
+        matched = _parse_money(order.get("matchedAmount")) or _parse_money(
+            (resp or {}).get("matchedAmount")
+        )
+        filled_qty = float(matched) if matched is not None and matched > 0 else qty
 
-            leg = {
-                **leg,
-                "order_response": resp,
-                "order_id": order_id,
-                "client_order_id": coid,
-                "filled_qty": filled_qty,
-                "requested_qty": qty,
-            }
-            # Paper client reports its simulated fill (decision price +/- slippage) in the response.
-            # Without copying it onto the leg, fills-based PnL silently falls back to the decision
-            # price and drops all paper slippage.
-            _resp_fill = _parse_money((resp or {}).get("fill_price")) if isinstance(resp, dict) else None
-            if _resp_fill and _resp_fill > 0 and leg.get("fill_price") is None:
-                leg["decision_price"] = float(ref_price) if ref_price else None
-                leg["fill_price"] = float(_resp_fill)
+        leg = {
+            **leg,
+            "order_response": resp,
+            "order_id": order_id,
+            "client_order_id": coid,
+            "filled_qty": filled_qty,
+            "requested_qty": qty,
+        }
+        # Paper client reports its simulated fill (decision price +/- slippage) in the response.
+        # Without copying it onto the leg, fills-based PnL silently falls back to the decision
+        # price and drops all paper slippage.
+        _resp_fill = _parse_money((resp or {}).get("fill_price")) if isinstance(resp, dict) else None
+        if _resp_fill and _resp_fill > 0 and leg.get("fill_price") is None:
+            leg["decision_price"] = float(ref_price) if ref_price else None
+            leg["fill_price"] = float(_resp_fill)
 
-            await self._apply_exchange_fill(trading_client, leg, order_id, is_close=is_close)
+        await self._apply_exchange_fill(trading_client, leg, order_id, is_close=is_close)
 
-            if not is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and order_id:
-                try:
-                    await asyncio.sleep(0.6)
-                    pid = await trading_client.resolve_position_id(
-                        symbol, side, opened_after_iso=opened_after,
-                    )
-                    if pid:
-                        leg["position_id"] = pid
-                        # Capture real fill price (Rial) from position status.
-                        fill = None
-                        for attempt in range(3):
-                            try:
-                                pos = await trading_client.get_position(_pos_id(pid))
-                                fill = _fill_price_from_position(pos, is_close=False)
-                                if fill is not None:
-                                    break
-                            except Exception as e:
-                                log.debug("get_position for fill_price failed: %s", e)
-                            await asyncio.sleep(0.4)
-                        decision_px = float(leg.get("price") or 0) or None
-                        if leg.get("fill_source") == "exchange_order":
-                            pass  # already have the exchange's own order fill
-                        elif fill is not None:
-                            leg["decision_price"] = decision_px
-                            leg["fill_price"] = fill
-                            if decision_px and decision_px > 0:
-                                slip = (fill - decision_px) / decision_px
-                                log.info(
-                                    "leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
-                                    symbol, fill, decision_px, slip,
-                                )
-                        else:
-                            leg["decision_price"] = decision_px
-                            leg["fill_price"] = decision_px
-                            leg["fill_price_estimated"] = True
-                            log.info(
-                                "leg %s fill_price unavailable; using decision_price=%.4g",
-                                symbol, decision_px or 0,
-                            )
-                except Exception as e:
-                    log.debug("resolve_position_id failed: %s", e)
-
-            # For closes via place_order fallback, try to capture fill similarly
-            if is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id") and leg.get("fill_source") != "exchange_order":
-                try:
-                    pos = await trading_client.get_position(_pos_id(leg["position_id"]))
-                    fill = _fill_price_from_position(pos, is_close=True)
+        if not is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and order_id:
+            try:
+                await asyncio.sleep(_CONFIRM_SLEEP_SEC)
+                pid = await trading_client.resolve_position_id(
+                    symbol, side, opened_after_iso=opened_after,
+                )
+                if pid:
+                    leg["position_id"] = pid
+                    # Capture real fill price (Rial) from position status.
+                    fill = None
+                    for attempt in range(3):
+                        try:
+                            pos = await trading_client.get_position(_pos_id(pid))
+                            fill = _fill_price_from_position(pos, is_close=False)
+                            if fill is not None:
+                                break
+                        except Exception as e:
+                            log.debug("get_position for fill_price failed: %s", e)
+                        await asyncio.sleep(_CONFIRM_SLEEP_SEC)
                     decision_px = float(leg.get("price") or 0) or None
-                    if fill is not None:
+                    if leg.get("fill_source") == "exchange_order":
+                        pass  # already have the exchange's own order fill
+                    elif fill is not None:
                         leg["decision_price"] = decision_px
                         leg["fill_price"] = fill
                         if decision_px and decision_px > 0:
                             slip = (fill - decision_px) / decision_px
                             log.info(
-                                "close leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
+                                "leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
                                 symbol, fill, decision_px, slip,
                             )
                     else:
                         leg["decision_price"] = decision_px
                         leg["fill_price"] = decision_px
                         leg["fill_price_estimated"] = True
-                except Exception as e:
-                    log.debug("close fill_price poll failed: %s", e)
+                        log.info(
+                            "leg %s fill_price unavailable; using decision_price=%.4g",
+                            symbol, decision_px or 0,
+                        )
+            except Exception as e:
+                log.debug("resolve_position_id failed: %s", e)
 
-            out.append(leg)
-            if not is_close:
-                filled_entry_indices.append(len(out) - 1)
+        # For closes via place_order fallback, try to capture fill similarly
+        if is_close and (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id") and leg.get("fill_source") != "exchange_order":
+            try:
+                pos = await trading_client.get_position(_pos_id(leg["position_id"]))
+                fill = _fill_price_from_position(pos, is_close=True)
+                decision_px = float(leg.get("price") or 0) or None
+                if fill is not None:
+                    leg["decision_price"] = decision_px
+                    leg["fill_price"] = fill
+                    if decision_px and decision_px > 0:
+                        slip = (fill - decision_px) / decision_px
+                        log.info(
+                            "close leg %s fill_price=%.4g decision_price=%.4g slippage=%.4f",
+                            symbol, fill, decision_px, slip,
+                        )
+                else:
+                    leg["decision_price"] = decision_px
+                    leg["fill_price"] = decision_px
+                    leg["fill_price_estimated"] = True
+            except Exception as e:
+                log.debug("close fill_price poll failed: %s", e)
 
-        if not is_close and any(l.get("failed") for l in out):
-            raise PartialLegsError("partial entry basket", out)
-
-        return out
+        return leg
 
     @staticmethod
     def _is_xt(client) -> bool:
@@ -1084,11 +1129,20 @@ class BotEngine:
             log.warning("no complete fill record for %s order %s — keeping estimated price",
                         leg.get("symbol"), order_id)
             return False
+        if fill.get("unfilled"):
+            # accepted but cancelled / expired with nothing executed
+            leg["filled_qty"] = 0.0
+            leg["fill_source"] = "exchange_order"
+            log.error("%s leg %s order %s executed NOTHING (%s)", "close" if is_close else "entry",
+                      leg.get("symbol"), order_id, fill.get("status"))
+            return True
         decision_px = float(leg.get("decision_price") or leg.get("price") or 0) or None
         leg["decision_price"] = decision_px
         leg["fill_price"] = float(fill["price"])
         leg["fill_source"] = "exchange_order"
         leg.pop("fill_price_estimated", None)
+        if fill.get("orig_base"):
+            leg["order_qty"] = float(fill["orig_base"])
         if fill.get("filled_base"):
             leg["filled_qty"] = float(fill["filled_base"])
         if fill.get("fee") is not None:
@@ -1113,7 +1167,7 @@ class BotEngine:
         log.error("rolling back %d filled entry leg(s)", len(indices))
         for idx in reversed(indices):
             leg = legs[idx]
-            if leg.get("failed") or leg.get("rolled_back"):
+            if (leg.get("failed") and not leg.get("partial_fill")) or leg.get("rolled_back"):
                 continue
             try:
                 if (isinstance(trading_client, NobitexClient) or (XTClient is not None and isinstance(trading_client, XTClient))) and leg.get("position_id"):

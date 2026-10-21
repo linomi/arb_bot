@@ -37,9 +37,9 @@ def env(tmp_path, monkeypatch):
         ex.fetch_order_book = AsyncMock(return_value={"bids": [[0.0999, 1000]], "asks": [[0.1001, 1000]]})
         ex.fetch_balance = AsyncMock(return_value={"USDT": {"total": 100, "free": 90, "used": 10}})
         ex.fetch_positions = AsyncMock(return_value=[])
-        ex.create_order = AsyncMock(return_value={"id": "o1", "status": "closed", "amount": 10, "filled": 10,
+        ex.create_order = AsyncMock(return_value={"id": "o1", "status": "closed", "amount": 100, "filled": 100,
                                                   "average": 0.1003, "fee": {"cost": 0.0006, "currency": "USDT"}})
-        ex.fetch_order = AsyncMock(return_value={"id": "o1", "status": "closed", "amount": 10, "filled": 10,
+        ex.fetch_order = AsyncMock(return_value={"id": "o1", "status": "closed", "amount": 100, "filled": 100,
                                                  "average": 0.1003, "fee": {"cost": 0.0006, "currency": "USDT"}})
         mod.xt = MagicMock(return_value=ex)
         from backend.exchange.xt import XTClient
@@ -82,7 +82,7 @@ def test_open_records_slippage_and_state(env):
 def test_open_then_close_clears_state_and_logs_summary(env):
     db, ex = env
     _run(ot.open_position(ot.OpenIn(symbol=SYM, side="short", notional=10, leverage=3, confirm=True), db))
-    ex.create_order.return_value = {"id": "o2", "status": "closed", "amount": 10, "filled": 10, "average": 0.1001,
+    ex.create_order.return_value = {"id": "o2", "status": "closed", "amount": 100, "filled": 100, "average": 0.1001,
                                     "fee": {"cost": 0.0006, "currency": "USDT"}}
     ex.fetch_order.return_value = dict(ex.create_order.return_value)
     ev = _run(ot.close_position(ot.CloseIn(symbol=SYM, confirm=True), db))

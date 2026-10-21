@@ -45,9 +45,14 @@ regressors `X1..Xk`.
    above `max_entry_scale`). The basket is then scaled down to fit the free
    balance: the real wallet in live mode, and in paper mode the simulated
    wallet described under `paper_start_balance`. Margin = gross / leverage.
-6. **Execution.** Legs are sent one after another as market orders. If one
-   fails after others filled, the filled legs are rolled back. Closes use
-   reduce-only orders for the actual open size.
+6. **Execution.** Margin mode and leverage are set for every symbol first
+   (first trade per symbol only), then **all legs are sent at the same time**
+   as market orders and each one is confirmed from the exchange's own order
+   record (price, filled size, fee) about 0.15 s later. An entry leg that is
+   rejected, executed nothing, or filled less than 98% of the size sent makes
+   the whole basket fail, and every leg that did fill is closed again
+   (`failed_partial` if that rollback fails). Closes use reduce-only orders
+   for the actual open size.
 
 ## 2. Requirements
 
