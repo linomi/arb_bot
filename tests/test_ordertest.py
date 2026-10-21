@@ -89,3 +89,26 @@ def test_open_then_close_clears_state_and_logs_summary(env):
     assert ev["ok"] is True, ev
     assert SYM not in ot.active_symbols()
     assert ev.get("summary")
+
+
+def test_close_of_position_that_is_gone_sends_no_order_and_says_so(env):
+    db, ex = env
+    _run(ot.open_position(ot.OpenIn(symbol=SYM, side="long", notional=10, leverage=3, confirm=True), db))
+    st = ot._load_state()
+    st["open"][SYM]["leg"]["position_id"] = SYM        # as recorded by a real open (position id == symbol)
+    ot._save_state(st)
+    ex.fetch_positions = AsyncMock(return_value=[])   # closed by hand on the exchange
+    ex.create_order.reset_mock()
+    ev = _run(ot.close_position(ot.CloseIn(symbol=SYM, confirm=True), db))
+    assert ev["ok"] is True and "NO order" in ev["note"]
+    ex.create_order.assert_not_called()
+    assert SYM not in ot.active_symbols()
+
+
+def test_timing_block_is_logged(env):
+    db, ex = env
+    info = {"createdTime": "1000", "updatedTime": "1040"}
+    ex.fetch_order.return_value = {**ex.fetch_order.return_value, "info": {**info, "executedQty": "1", "origQty": "1",
+                                                                          "avgPrice": "0.1003"}}
+    ev = _run(ot.open_position(ot.OpenIn(symbol=SYM, side="long", notional=10, leverage=3, confirm=True), db))
+    assert ev["timing"]["xt_match_ms"] == 40 and "place_legs_total_ms" in ev["timing"]

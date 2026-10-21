@@ -74,6 +74,26 @@ def _write_event(event: dict) -> None:
         log.warning("could not write ordertest log: %s", e)
 
 
+def _timing(ev: dict, fill: dict | None, t0_wall: float, order_ms: int) -> dict:
+    """Where the time went. XT's own timestamps come from the order record (createdTime = XT received the
+    order, updatedTime = it was matched), ours from the wall clock."""
+    out: dict[str, Any] = {"place_legs_total_ms": order_ms}
+    try:
+        info = ((fill or {}).get("raw") or {}).get("info") or {}
+        c, u = info.get("createdTime"), info.get("updatedTime")
+        if c is not None:
+            c_s = int(c) / 1000.0
+            started = dt.datetime.fromisoformat(ev["started_at"].replace("Z", "+00:00")).timestamp()
+            out["click_to_xt_created_ms"] = int((c_s - started) * 1000)
+            out["place_legs_start_to_xt_created_ms"] = int((c_s - t0_wall) * 1000)
+            out["xt_created_to_place_legs_end_ms"] = int((t0_wall + order_ms / 1000.0 - c_s) * 1000)
+            if u is not None:
+                out["xt_match_ms"] = int(u) - int(c)
+    except Exception as e:  # diagnostics only
+        out["timing_error"] = str(e)[:120]
+    return out
+
+
 def _pct(a: float | None, b: float | None) -> float | None:
     """(a / b - 1) in percent."""
     try:
@@ -244,6 +264,7 @@ async def open_position(body: OpenIn, db: Session = Depends(get_db)):
         legs = await eng._preflight_legs(client, [leg], "xt")
 
         t0 = time.perf_counter()
+        t0_wall = time.time()
         placed = await eng._place_legs(client, legs, is_close=False, attempt_id="ordertest")
         order_ms = _ms(t0)
         leg = placed[0]
@@ -261,7 +282,7 @@ async def open_position(body: OpenIn, db: Session = Depends(get_db)):
         touch = market.get("ask") if side_order == "buy" else market.get("bid")
         sign = 1.0 if side_order == "buy" else -1.0  # positive = paid more / received less than reference
         ev.update(
-            ended_at=_now(), order_total_ms=order_ms,
+            ended_at=_now(), order_total_ms=order_ms, timing=_timing(ev, fill, t0_wall, order_ms),
             before={"market": market, "balance": bal_before, "positions": [_slim_position(p) for p in before_pos]},
             after={"market": market_after, "balance": bal_after, "positions": [_slim_position(p) for p in pos_after]},
             leg={k: v for k, v in leg.items() if k not in ("order_response",)},
@@ -334,6 +355,7 @@ async def close_position(body: CloseIn, db: Session = Depends(get_db)):
                 raise HTTPException(502, f"no price for {symbol}: {market}")
             close_legs = close_legs_from_entry([entry_leg], {symbol: float(last)})
             t0 = time.perf_counter()
+            t0_wall = time.time()
             placed = await BotEngine()._place_legs(client, close_legs, is_close=True, attempt_id="ordertest-x")
             order_ms = _ms(t0)
             cl = placed[0]
@@ -372,6 +394,7 @@ async def close_position(body: CloseIn, db: Session = Depends(get_db)):
                 pass
             ev.update(
                 ended_at=_now(), order_total_ms=order_ms, held_seconds=held,
+                timing=_timing(ev, fill, t0_wall, order_ms),
                 before={"market": market, "balance": bal_before, "positions": [_slim_position(p) for p in pos_before]},
                 after={"market": market_after, "balance": bal_after, "positions": [_slim_position(p) for p in pos_after]},
                 leg={k: v for k, v in cl.items() if k not in ("order_response", "close_response")},
@@ -403,6 +426,11 @@ async def close_position(body: CloseIn, db: Session = Depends(get_db)):
                 },
                 ok=True,
             )
+            if cl.get("already_closed"):
+                ev["note"] = ("No position for this symbol exists on the exchange (closed elsewhere, e.g. by hand), so NO "
+                              "order was sent. The PnL figures below are not meaningful; the recorded test position was "
+                              "only cleared from this tab.")
+                ev["summary"] = {"note": ev["note"]}
             if not still_open:
                 st["open"].pop(symbol, None)
                 _save_state(st)

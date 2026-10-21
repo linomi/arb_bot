@@ -33,7 +33,11 @@ const OrderTestView = (() => {
       const st = await API.get("/api/ordertest/state");
       const keys = Object.keys(st.open || {});
       $("ot-open-list").textContent = keys.length ? "Open test positions: " + keys.join(", ") : "No open test position.";
-      if (keys.length) $("ot-symbol-close").value = keys[0];
+      const sel = $("ot-symbol-close");
+      const prev = sel.value;
+      sel.innerHTML = "";
+      keys.forEach((k) => { const o = document.createElement("option"); o.value = k; o.textContent = k; sel.appendChild(o); });
+      if (keys.includes(prev)) sel.value = prev;
       $("ot-close").disabled = !keys.length;
     } catch (e) { status(e.message, true); }
   }
