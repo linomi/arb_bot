@@ -275,3 +275,101 @@ def test_paper_fill_price_from_order_response_is_kept_on_the_leg():
     out = asyncio.run(go())
     assert out[0]["fill_price"] == pytest.approx(100.05)
     assert out[0]["decision_price"] == 100.0
+
+
+def test_partial_close_is_finished_even_after_z_returns_to_hold_band(world, rec):
+    """A stop closes DEP but X's close fails. z then drifts back between z_close and z_stop: the trade
+    must still finish closing X (under the original reason) instead of leaving X unhedged."""
+    sf, gid, tid, Client = world
+    db = sf()
+    t, g = db.get(Trade, tid), db.get(Group, gid)
+    bb = config_service.get_section(db, "backbone")
+
+    class FlakyX(Client):
+        fail = True
+
+        async def place_order(self, symbol, side, qty, **kw):
+            if symbol == X and FlakyX.fail:
+                raise RuntimeError("exchange 502")
+            return await super().place_order(symbol, side, qty, **kw)
+
+    eng = be.BotEngine()
+    # residual = DEP - 0.04*X; z = -5 is past the -3.5 stop
+    asyncio.run(eng._check_exit(db, g, t, {DEP: 2395.0, X: 60000.0}, bb, FlakyX(), "paper", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "open" and "exit_failed" in rec.kinds()
+    assert [l["symbol"] for l in eng._closed_close_legs(t)] == [DEP]
+
+    FlakyX.fail = False
+    # z = -2: on its own this is a hold, not an exit
+    asyncio.run(eng._check_exit(db, g, t, {DEP: 2398.0, X: 60000.0}, bb, FlakyX(), "paper", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "closed" and t.close_reason == "stop_loss"
+    assert [p[0] for p in Client.placed] == [DEP, X]  # DEP is not closed a second time
+    assert [l["symbol"] for l in t.legs_close] == [DEP, X]
+    assert t.legs_close[0]["price"] == 2395.0  # first attempt's close record is kept
+    db.close()
+
+
+def test_nothing_closed_yet_does_not_force_an_exit(world):
+    """A close where every leg failed leaves the hedge intact: the next cycle decides from z as usual."""
+    sf, gid, tid, Client = world
+    db = sf()
+    t = db.get(Trade, tid)
+    t.legs_close = [{"symbol": DEP, "failed": True}, {"symbol": X, "failed": True}]
+    db.commit()
+    bb = config_service.get_section(db, "backbone")
+    asyncio.run(be.BotEngine()._check_exit(db, db.get(Group, gid), t, {DEP: 2398.0, X: 60000.0}, bb, Client(), "paper", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "open" and Client.placed == []
+    db.close()
+
+
+def test_paper_trading_client_is_closed_with_its_market_data_client(world, monkeypatch):
+    from backend.exchange.paper import PaperExchangeClient
+    sf, gid, tid, Client = world
+    closed = []
+
+    class MD:
+        async def get_last_price(self, s):
+            return 100.0
+
+        async def aclose(self):
+            closed.append("md")
+
+    monkeypatch.setattr(be.factory, "build_trading_client", lambda db: PaperExchangeClient(MD()))
+    asyncio.run(be.BotEngine().close_all("manual_closeall"))
+    assert closed == ["md"]
+
+    closed.clear()
+    db = sf()
+    db.add(Trade(**{c: getattr(db.get(Trade, tid), c) for c in (
+        "group_id", "ols_fit_id", "direction", "mode", "entry_time", "entry_z", "entry_residual",
+        "entry_prices", "legs_entry", "trade_notional", "notional_basis")}, status="open"))
+    db.commit()
+    state = db.query(BotState).first()
+    asyncio.run(be.BotEngine()._run_cycle(db, state))
+    db.close()
+    assert closed == ["md"]
+
+
+def test_factory_builds_market_data_client_only_for_paper(world, monkeypatch):
+    from backend.exchange import factory
+    from backend.exchange.paper import PaperExchangeClient
+    sf, gid, tid, Client = world
+    monkeypatch.undo()  # the real factory functions
+    built = []
+    real = factory.build_market_data_client
+    monkeypatch.setattr(factory, "build_market_data_client", lambda db: built.append(1) or real(db))
+    db = sf()
+    c = factory.build_trading_client(db)
+    assert isinstance(c, PaperExchangeClient) and built == [1]
+    asyncio.run(c.aclose())
+
+    built.clear()
+    db.query(BotState).first().trading_mode = "live"
+    db.commit()
+    with pytest.raises(RuntimeError, match="no credentials"):
+        factory.build_trading_client(db)
+    assert built == []
+    db.close()

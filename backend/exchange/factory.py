@@ -55,7 +55,6 @@ def build_trading_client(db: Session):
     backbone_cfg = config_service.get_section(db, "backbone")
     state = get_or_create_bot_state(db)
     exchange = _active_exchange(db)
-    md_client = build_market_data_client(db)
 
     if state.trading_mode == "live":
         cred = db.query(Credential).filter_by(exchange=exchange).first()
@@ -106,8 +105,9 @@ def build_trading_client(db: Session):
         token = security.decrypt(cred.encrypted_token)
         return NobitexClient(base_url=base, token=token)
 
+    # The paper client owns this market-data client; closing the paper client closes it.
     return PaperExchangeClient(
-        market_data_client=md_client,
+        market_data_client=build_market_data_client(db),
         fee_rate=backbone_cfg.get("fee_rate", 0.001),
         slippage_rate=backbone_cfg.get("slippage_rate", 0.0005),
     )

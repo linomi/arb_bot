@@ -30,7 +30,6 @@ from backend import config_service
 from backend.models import Group, Trade, OLSFit, BotState
 from backend.bot_state_service import get_or_create_bot_state
 from backend.exchange import factory
-from backend.exchange.paper import PaperExchangeClient
 from backend.exchange.nobitex import NobitexClient, NobitexError
 from backend.utils import seconds_to_resolution, fetch_price_df
 from backend.strategy.ols import fit_ols, residual_from_frozen_fit
@@ -261,8 +260,7 @@ class BotEngine:
             self._log_scan_summary(groups)
         finally:
             await md_client.aclose()
-            if not isinstance(trading_client, PaperExchangeClient):
-                await trading_client.aclose()
+            await trading_client.aclose()  # paper: closes its own market-data client
 
     async def _process_group(
         self, db, group: Group, backbone, md_client, trading_client,
@@ -389,7 +387,7 @@ class BotEngine:
                 return result
             finally:
                 for c in (md_client, trading_client):
-                    if c is not None and not isinstance(c, PaperExchangeClient):
+                    if c is not None:
                         try:
                             await c.aclose()
                         except Exception:
@@ -1154,6 +1152,12 @@ class BotEngine:
         return True
 
     @staticmethod
+    def _closed_close_legs(trade) -> list[dict]:
+        """Close legs of an open trade that an earlier, partial exit already closed (empty if none)."""
+        return [l for l in (getattr(trade, "legs_close", None) or [])
+                if isinstance(l, dict) and (not l.get("failed") or l.get("already_closed"))]
+
+    @staticmethod
     def _legs_exchange_exact(legs_entry: list[dict], legs_close: list[dict]) -> bool:
         """True when every traded leg, entry and close, carries the exchange's own fill record."""
         ent = [l for l in (legs_entry or []) if not l.get("failed")]
@@ -1314,6 +1318,16 @@ class BotEngine:
             resid_now, open_trade.direction, fit.resid_mean, fit.resid_std,
             backbone["z_close"], backbone["z_stop_loss"],
         )
+        # An earlier exit closed some legs but not all: the rest are unhedged, so keep closing them
+        # whatever z says now (it may have drifted back inside the hold band since).
+        prev_closed = self._closed_close_legs(open_trade)
+        if prev_closed and not force_reason:
+            force_reason = next(
+                (l["exit_reason"] for l in prev_closed if l.get("exit_reason")), "partial_close_retry")
+            log.warning(
+                "group %s trade #%s retrying partial close (%s); already closed: %s",
+                group.id, open_trade.id, force_reason, [l.get("symbol") for l in prev_closed],
+            )
         if force_reason:
             exit_dec = ExitDecision(True, force_reason, exit_dec.z)
         elif (not exit_dec.should_exit
@@ -1358,10 +1372,12 @@ class BotEngine:
                 basis=basis,
             )
         legs_close = close_legs_from_entry(legs_entry, latest_prices)
+        # Legs closed by an earlier attempt keep their close record and are not sent again.
+        done = {l.get("symbol"): l for l in prev_closed}
 
         try:
-            legs_close = await self._place_legs(
-                trading_client, legs_close, is_close=True,
+            sent = await self._place_legs(
+                trading_client, [l for l in legs_close if l.get("symbol") not in done], is_close=True,
                 attempt_id=f"x{open_trade.id}",
             )
         except Exception as e:
@@ -1370,13 +1386,16 @@ class BotEngine:
             log.error("group %s trade #%s exit place failed: %s", group.id, open_trade.id, e)
             emit("exit_failed", group=group.name, trade_id=open_trade.id, error=str(e)[:300])
             return
+        done.update({l.get("symbol"): l for l in sent})
+        legs_close = [done[l.get("symbol")] for l in legs_close]
 
         still_open = [
             l for l in legs_close
             if l.get("failed") and not l.get("already_closed")
         ]
         if still_open:
-            open_trade.legs_close = legs_close
+            # exit_reason lets the retry close the rest under the original reason
+            open_trade.legs_close = [{**l, "exit_reason": exit_dec.reason} for l in legs_close]
             db.commit()
             log.error(
                 "group %s trade #%s partial close — keeping open; failed=%s",

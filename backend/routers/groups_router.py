@@ -629,8 +629,7 @@ async def equity_curve(
                     ex_name = (getattr(g, "exchange", None) or "nobitex").lower()
                     account_balance = await xt_hooks.read_free_balance(client, exchange=ex_name)
             finally:
-                if not isinstance(client, PaperExchangeClient):
-                    await client.aclose()
+                await client.aclose()
         except Exception as e:
             log.warning("equity_curve: could not read balance: %s", e)
             account_balance = None
