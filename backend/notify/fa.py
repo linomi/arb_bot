@@ -15,6 +15,8 @@ REASON = {
     "close": "بازگشت به میانگین",
     "stop_loss": "حد ضرر",
     "time_stop": "توقف زمانی",
+    "half_life_stop": "توقف زمانی (نیمه‌عمر)",
+    "partial_close_retry": "تکمیل بستن ناقص",
     "risk_exit": "خروج ریسک (نزدیک لیکوئید)",
     "manual_closeall": "بستن دستی همه",
     "entry_rollback": "بازگشت ورودی ناقص",
@@ -42,6 +44,9 @@ STAGE = {
     "order_failed": "سفارش ناموفق",
     "config_error": "خطای پیکربندی",
     "gate_error": "خطای فیلتر سود",
+    "ev_gate": "ارزش مورد انتظار منفی",
+    "regime": "جهش یا نوسان غیرعادی",
+    "z_cap": "z بیش از سقف ورود",
 }
 
 

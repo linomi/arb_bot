@@ -4,21 +4,23 @@
 # Missing keys in an existing install are filled additively from this file.
 
 backbone:
-  window_size: 100          # bars used to fit the OLS
+  window_size: 200          # bars used to fit the OLS
   chart_history_bars: 500   # bars shown on the residual chart (betas still come from window_size)
-  sampling_time: 60         # seconds between bot cycles
+  sampling_time: 900        # seconds between bot cycles = bar size (15m: a 1-minute residual moves ~0.13% of gross, less than round-trip costs)
   adf_alpha: 0.05           # ADF p-value must be <= this
   kpss_alpha: 0.05          # KPSS p-value must be >= this
-  z_entry: 2.0
+  z_entry: 2.5
   z_close: 0.5
-  z_stop_loss: 3.5
+  z_stop_loss: 4.5          # also blocks entries at or beyond this |z|
+  # Skip entries above this |z| (0 = off): large deviations were more often breaks than stretches.
+  z_entry_max: 3.5
   fee_rate: 0.001           # exchange trading fee, fractional
   slippage_rate: 0.0005     # modeled slippage, fractional
   paper_start_balance: 1000 # paper mode (XT groups): starting USDT wallet shared by all groups; entries are sized/refused against it. 0 = no check
   trade_notional: 100       # TOTAL (gross) notional of all legs of one basket; legs split by |beta|
   # Min net profit (as fraction of total leg notional G) required at a perfect
   # close to |z|=z_close, after round-trip costs. 0.01 = 1%. 0 disables the gate.
-  target_profit_rate: 0.01
+  target_profit_rate: 0.003
   # Cap how much leg_orders may inflate a basket to clear MIN_ORDER_VALUE_IRT.
   # Large scale is a proxy for thin books (small natural notional). 3.0 rejects
   # the worst historical thin-cap trades while allowing moderate majors (~1.3x).
@@ -31,8 +33,28 @@ backbone:
   stationarity_method: engle_granger
   # Seconds to wait before re-trying a group after a failed/rolled-back entry.
   entry_retry_cooldown_sec: 600
-  # Close a position that has not reverted after this many hours (0 = off).
-  max_holding_hours: 0
+  # Hard cap: close a position that has not reverted after this many hours (0 = off).
+  max_holding_hours: 48
+  # Time stop in half-lives of the entry fit's residual (0 = off): close after this many half-lives.
+  max_holding_halflives: 3.0
+  # "oos": fit the OLS without the current bar, score the current bar out of sample and scale z by the OLS
+  # prediction-error std (recommended). "in_sample": legacy z of the last fitted residual, whose std is too
+  # small (stops filled at |z| 8-13). The same scale is frozen into the trade for its exits.
+  zscore_method: oos
+  # Expected-value gate: win_rate x gain - (1 - win_rate) x loss-at-stop must be > 0 after costs.
+  # The win rate is the group's backtest win rate shrunk toward ev_win_rate (ev_win_rate alone in backtests).
+  ev_gate: true
+  ev_win_rate: 0.65
+  # How far past z_stop_loss a stop typically fills (discrete cycles), in z.
+  ev_stop_overshoot: 0.5
+  # Skip the entry when a residual move in the last jump_bars bars is > jump_max_sigma x its usual one-bar
+  # move (one coin hit by news / a listing / funding). 0 = off.
+  jump_max_sigma: 4.0
+  jump_bars: 2
+  # Skip the entry while the residual's last vol_regime_bars bars are > vol_regime_max x as volatile
+  # (one-bar moves) as the rest of the fit window. 0 = off.
+  vol_regime_max: 2.0
+  vol_regime_bars: 20
   # Init/backtest: try every symbol of a group as the dependent one.
   try_all_dependents: true
   # Min seconds between stored OLS-fit rows per group while no entry signal
@@ -40,10 +62,10 @@ backbone:
   fit_log_interval_sec: 900
   # Reject groups whose residual AR(1) half-life is > window_size * this
   # fraction (or < 2 bars). 0 disables the filter.
-  half_life_max_fraction: 0.333
+  half_life_max_fraction: 0.25
   # Portfolio caps (0 = off). Entries skipped when exceeded.
   max_total_gross_notional: 0
-  max_open_trades: 0
+  max_open_trades: 3
   # Skip entry if any symbol's latest bar is older than this * sampling_time.
   data_staleness_mult: 3.0
   # Force close when mark is within this fraction of liquidation price (0=off).
@@ -81,13 +103,13 @@ backbone:
 init:
   method: random            # "random" | "sector"
   min_group_size: 2
-  max_group_size: 4
-  top_n_liquid_symbols: 30
-  num_candidate_groups: 200 # only used by "random" method
+  max_group_size: 3         # more legs = more overfitting (paper PnL fell with every extra leg)
+  top_n_liquid_symbols: 60
+  num_candidate_groups: 500 # only used by "random" method; more tries = more luck in the winners
   max_combos_per_sector: 200  # only used by "sector" method
-  keep_top_n: 10
+  keep_top_n: 5
   # Out-of-sample: rank on first 70% of history; keep only if held-out PnL > 0 when true.
-  require_oos_positive: false
+  require_oos_positive: true
   backtest_days: 30
   quote_currency: IRT
 

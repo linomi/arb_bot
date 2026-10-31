@@ -22,15 +22,27 @@ regressors `X1..Xk`.
    (`stationarity_method`: `engle_granger`, the default, or legacy
    `adf_kpss`), plus a half-life filter (`half_life_max_fraction`). Groups
    with more than 5 regressors use a Monte-Carlo p-value.
-3. **Signal.** `z = (e - mean) / std` from the fit window.
-   - Enter when `|z| >= z_entry` (short the residual when z is high, long
-     when low).
-   - Exit at `|z| <= z_close`, or stop at `|z| >= z_stop_loss`, or after
+3. **Signal.** With `zscore_method: oos` (default) the OLS is fit on the
+   window *without* the current bar, the current bar is scored against it,
+   and `z = (e_now - mean) / std` uses the OLS prediction-error std
+   (dof-corrected sigma x sqrt(1 + leverage of the new bar)). The legacy
+   `in_sample` z of the last fitted residual understates risk: on 1-minute
+   bars its stops filled at |z| 8-13.
+   - Enter when `z_entry <= |z| <= z_entry_max` (short the residual when z
+     is high, long when low).
+   - Exit at `|z| <= z_close`, or stop at `|z| >= z_stop_loss`, after
+     `max_holding_halflives` half-lives of the entry fit, or after
      `max_holding_hours`.
+   - If an exit closes some legs but not all, the rest are closed on the
+     next cycle whatever z says by then.
    - Betas, mean and std are **frozen** from entry until exit.
 4. **Gates before an entry** (each is shown in the *Entry status* column and
    in the `entry scan:` log line): stationarity, half-life, expected profit
    vs. costs (`target_profit_rate`), per-group cooldown after a failed entry,
+   an expected-value gate (`ev_gate`: win rate x gain - (1 - win rate) x
+   loss at the stop must be positive after costs; the win rate is the
+   group's backtest win rate shrunk toward `ev_win_rate`), a jump /
+   volatility-regime filter (`jump_max_sigma`, `vol_regime_max`),
    portfolio caps (`max_open_trades`, `max_total_gross_notional`), stale
    data, symbols already used by another open trade, and exchange minimums /
    free balance.
@@ -154,7 +166,10 @@ closed. For a server, run it under systemd.
 
 Defaults live in `config/default_config.yaml` and only seed the database;
 after that, edit everything in the UI. Missing keys in an existing install
-are filled in automatically.
+are filled in automatically. To move an existing install to the recommended
+strategy settings (15-minute bars, tighter stop, small out-of-sample-checked
+groups), run `python scripts/apply_recommended_settings.py` to see the
+changes and add `--apply` to write them, then re-run Initialization.
 
 **Basic**
 

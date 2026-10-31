@@ -89,8 +89,20 @@ def _validate_backbone(data: dict):
     sm = str(data.get("stationarity_method", "engle_granger"))
     if sm not in ("engle_granger", "adf_kpss"):
         raise ValueError("stationarity_method must be 'engle_granger' or 'adf_kpss'")
+    zm = str(data.get("zscore_method", "oos"))
+    if zm not in ("oos", "in_sample"):
+        raise ValueError("zscore_method must be 'oos' or 'in_sample'")
+    zmax = float(data.get("z_entry_max", 0) or 0)
+    if zmax < 0 or (zmax > 0 and zmax < z_entry):
+        raise ValueError(f"z_entry_max must be 0 (off) or >= z_entry ({z_entry})")
+    ewr = float(data.get("ev_win_rate", 0.65) or 0)
+    if not 0 <= ewr <= 1:
+        raise ValueError("ev_win_rate must be in [0, 1]")
+    if int(data.get("jump_bars", 2) or 0) < 1 or int(data.get("vol_regime_bars", 20) or 0) < 5:
+        raise ValueError("jump_bars must be >= 1 and vol_regime_bars >= 5")
     for k in ("entry_retry_cooldown_sec", "max_holding_hours", "fit_log_interval_sec", "half_life_max_fraction",
-              "data_staleness_mult", "max_total_gross_notional", "max_open_trades"):
+              "data_staleness_mult", "max_total_gross_notional", "max_open_trades", "max_holding_halflives",
+              "ev_stop_overshoot", "jump_max_sigma", "vol_regime_max"):
         if float(data.get(k, 0) or 0) < 0:
             raise ValueError(f"{k} must be >= 0")
     lpf = float(data.get("liquidation_proximity_fraction", 0.2) or 0)

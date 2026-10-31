@@ -209,6 +209,7 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
 
 def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
     from backend.engine import xt_hooks
+    from backend.strategy.signal import signal_cfg_from_params
     mhb = backbone_cfg.get("max_holding_hours")
     st = float(backbone_cfg.get("sampling_time", 60) or 60)
     return {
@@ -240,4 +241,6 @@ def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
         "contract_noise_ratio_max": float(backbone_cfg.get("contract_noise_ratio_max", 0.5) or 0.0),
         "liquidation_proximity_fraction": float(backbone_cfg.get("liquidation_proximity_fraction", 0) or 0),
         "maintenance_margin_rate": float(backbone_cfg.get("maintenance_margin_rate", 0.005) or 0.005),
+        # out-of-sample z, EV gate, jump / volatility filter, half-life stop: same as the live engine
+        **signal_cfg_from_params(backbone_cfg),
     }

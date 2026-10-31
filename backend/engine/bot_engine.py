@@ -32,7 +32,11 @@ from backend.bot_state_service import get_or_create_bot_state
 from backend.exchange import factory
 from backend.exchange.nobitex import NobitexClient, NobitexError
 from backend.utils import seconds_to_resolution, fetch_price_df
-from backend.strategy.ols import fit_ols, residual_from_frozen_fit
+from backend.strategy.ols import residual_from_frozen_fit
+from backend.strategy.signal import (
+    ev_check, group_win_rate, half_life_limit_bars, regime_block, scored_fit, signal_cfg_from_params,
+    window_bars, z_cap_block,
+)
 from backend.strategy.stats_tests import test_stationarity
 from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
 from backend.strategy.half_life import half_life_ok
@@ -1347,6 +1351,19 @@ class BotEngine:
                         group.id, open_trade.id, age_h, exit_dec.z,
                     )
                     exit_dec = ExitDecision(True, "time_stop", exit_dec.z)
+        if not exit_dec.should_exit and open_trade.entry_time is not None:
+            # Half-life time stop: the spread was given a few half-lives (measured on the entry fit) to revert.
+            limit = half_life_limit_bars(
+                [float(v) for _, v in (fit.residual_series or [])], signal_cfg_from_params(backbone))
+            if limit is not None:
+                bar_sec = float(backbone.get("sampling_time", 60) or 60)
+                age_bars = (dt.datetime.utcnow() - open_trade.entry_time).total_seconds() / bar_sec
+                if age_bars >= limit:
+                    log.warning(
+                        "group %s trade #%s half-life time stop after %.0f bars (limit %.0f, z=%.2f)",
+                        group.id, open_trade.id, age_bars, limit, exit_dec.z,
+                    )
+                    exit_dec = ExitDecision(True, "half_life_stop", exit_dec.z)
         if not exit_dec.should_exit:
             return
 
@@ -1513,43 +1530,50 @@ class BotEngine:
         self, db, group, price_df, latest_prices, backbone, trading_client, trading_mode,
         exchange: str = "nobitex",
     ):
-        window = price_df.iloc[-int(backbone["window_size"]):]
+        sig = signal_cfg_from_params(backbone)
+        window = price_df.iloc[-window_bars(int(backbone["window_size"]), sig["zscore_method"]):]
         price_matrix = {s: window[s].to_numpy() for s in group.symbols}
         try:
-            fit_res = fit_ols(group.dependent_symbol, price_matrix)
+            sf = scored_fit(group.dependent_symbol, price_matrix, sig["zscore_method"])
         except Exception as e:
             self._diag(group, "fit_failed", f"OLS failed: {e}")
             return
+        fit_res = sf.fit
 
         if self._in_cooldown(group.id):
             left = max(0.0, self._entry_cooldown_until.get(group.id, 0.0) - time.monotonic())
             self._diag(group, "cooldown", f"retry cooldown after a failed entry, {left:.0f}s left")
             return
 
-        dep = group.dependent_symbol
         stat = test_stationarity(
             fit_res.residual, backbone["adf_alpha"], backbone["kpss_alpha"],
-            y=price_matrix[dep],
-            x_cols=[price_matrix[s] for s in price_matrix if s != dep],
+            y=sf.y, x_cols=sf.x_cols,
             method=str(backbone.get("stationarity_method", "engle_granger")),
         )
-        resid_now = float(fit_res.residual[-1])
+        resid_now = sf.resid_now
         entry_dec = decide_entry(
-            resid_now, fit_res.resid_mean, fit_res.resid_std, backbone["z_entry"],
+            resid_now, sf.mean, sf.std, backbone["z_entry"],
             z_stop=float(backbone["z_stop_loss"]),
         )
         hl_frac = float(backbone.get("half_life_max_fraction", 1.0 / 3.0) or 0)
         hl_ok = True
-        if hl_frac > 0 and fit_res.resid_std != 0:
+        if hl_frac > 0 and sf.std != 0:
             hl_ok, _ = half_life_ok(
                 fit_res.residual, int(backbone["window_size"]), max_fraction=hl_frac,
             )
-        candidate = bool(stat.passed and fit_res.resid_std != 0 and entry_dec.should_enter and hl_ok)
+        # Only meaningful once there is a signal: a cap on |z|, and deviations that came from a jump
+        # or a volatility burst rather than a drift away from the mean.
+        regime_msg = None
+        if entry_dec.should_enter:
+            regime_msg = z_cap_block(entry_dec.z, sig) or regime_block(sf.residual, sig)
+        candidate = bool(stat.passed and sf.std != 0 and entry_dec.should_enter and hl_ok and not regime_msg)
 
         # --- diagnostics: every reason that currently blocks an entry ---------
         z_entry_cfg = float(backbone["z_entry"])
         blockers: list[str] = []
-        if fit_res.resid_std == 0:
+        if regime_msg:
+            blockers.append(regime_msg)
+        if sf.std == 0:
             blockers.append("residual std is 0")
         if entry_dec.reason == "beyond_stop":
             blockers.append(f"|z|={abs(entry_dec.z):.2f} is beyond the stop level")
@@ -1578,6 +1602,8 @@ class BotEngine:
             stage = (
                 "not_stationary" if first.startswith("not stationary")
                 else "half_life" if first.startswith("mean-reversion")
+                else "regime" if first.startswith(("jump", "volatility regime"))
+                else "z_cap" if "z_entry_max" in first
                 else "beyond_stop" if "beyond" in first
                 else "waiting_z" if first.startswith("|z|")
                 else "invalid_fit"
@@ -1600,12 +1626,12 @@ class BotEngine:
                 window_end=window.index[-1].to_pydatetime(),
                 betas=fit_res.betas,
                 intercept=fit_res.intercept,
-                resid_mean=fit_res.resid_mean,
-                resid_std=fit_res.resid_std,
+                resid_mean=sf.mean,
+                resid_std=sf.std,  # exits are scored with this same (out-of-sample) scale
                 adf_stat=stat.adf_stat, adf_pvalue=stat.adf_pvalue,
                 kpss_stat=stat.kpss_stat, kpss_pvalue=stat.kpss_pvalue,
                 passed=stat.passed,
-                residual_series=[[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)],
+                residual_series=[[ts.isoformat(), float(v)] for ts, v in zip(window.index, sf.residual)],
             )
             db.add(ols_row)
             db.commit()
@@ -1615,6 +1641,7 @@ class BotEngine:
         if not candidate:
             return
 
+        dep = group.dependent_symbol
         notional = float(backbone.get("trade_notional", 100) or 100)
         if notional <= 0:
             log.error("group %s: trade_notional <= 0 — skip entry", group.id)
@@ -1656,7 +1683,7 @@ class BotEngine:
             target_rate = float(backbone.get("target_profit_rate", 0.0) or 0.0)
             ok_gate, gate_det = entry_target_check(
                 z_now=entry_dec.z,
-                sigma=fit_res.resid_std,
+                sigma=sf.std,
                 z_close=float(backbone["z_close"]),
                 z_stop=float(backbone["z_stop_loss"]),
                 gross_per_unit_y=G_unit,
@@ -1680,6 +1707,22 @@ class BotEngine:
                     gate_det.get("reject_reason"),
                 )
                 return
+            if sig["ev_gate"]:
+                # The profit gate above assumes every trade reaches z_close; this one prices in the stop.
+                ok_ev, ev_det = ev_check(
+                    z_now=entry_dec.z,
+                    sigma_rel=(sf.std / G_unit) if G_unit > 0 else 0.0,
+                    z_close=float(backbone["z_close"]),
+                    z_stop=float(backbone["z_stop_loss"]),
+                    cost_rate=cost_rate,
+                    win_rate=group_win_rate(getattr(group, "backtest_metrics", None), sig["ev_win_rate"]),
+                    stop_overshoot=sig["ev_stop_overshoot"],
+                )
+                if not ok_ev:
+                    self._diag(group, "ev_gate", ev_det["reject_reason"], **diag_fields)
+                    log.info("group %s skip entry (ev gate): z_now=%.3f %s", group.id, entry_dec.z,
+                             ev_det["reject_reason"])
+                    return
         except Exception as e:
             log.warning("group %s profit gate error (skipping entry, fail-closed): %s", group.id, e)
             self._diag(group, "gate_error", str(e), **diag_fields)
@@ -1773,7 +1816,7 @@ class BotEngine:
                 _cost = xt_hooks.effective_cost_rate(backbone, exchange=group_ex)
                 _qy = float(next((l["qty"] for l in legs if l["symbol"] == group.dependent_symbol), 0) or 0)
                 _g_unit = (_G / _qy) if _qy > 0 else 0.0
-                _sigma_rel = (float(fit_res.resid_std) / _g_unit) if _g_unit > 0 else 0.0
+                _sigma_rel = (float(sf.std) / _g_unit) if _g_unit > 0 else 0.0
                 _exp_net = (_sigma_rel * (abs(float(entry_dec.z)) - float(backbone["z_close"])) - 2.0 * _cost) * _G
                 _ok_d, _dd = drift_gate(
                     _rinfo, expected_net_profit=_exp_net,

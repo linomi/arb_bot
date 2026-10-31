@@ -22,6 +22,7 @@ import pandas as pd
 
 from backend.sectors import group_symbols_by_sector
 from backend.engine.backtester import rounding_cfg_from_params, backtest_group
+from backend.strategy.signal import signal_cfg_from_params
 from backend.strategy.account import leverage_for
 
 # Soft sample-size anchor: at n ≈ this, trade-count confidence ≈ 2/3.
@@ -98,6 +99,7 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params, progress_cb=None) 
                 liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
                 maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
                 rounding=rounding_cfg_from_params(backbone_params, list(symbols)),
+                signal=signal_cfg_from_params(backbone_params),
             )
         except Exception:
             continue
@@ -127,6 +129,7 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params, progress_cb=None) 
                 liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
                 maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
                     rounding=rounding_cfg_from_params(backbone_params, list(symbols)),
+                    signal=signal_cfg_from_params(backbone_params),
                 )
                 oos_perf = bt_oos.performance.as_dict()
                 oos_score = _score_group(bt_oos.performance)

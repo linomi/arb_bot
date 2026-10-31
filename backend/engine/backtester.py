@@ -8,7 +8,10 @@ Gross notional uses G = P_y + Σ|β|·P_x (same as live legs_gross_notional).
 from dataclasses import dataclass
 import pandas as pd
 
-from backend.strategy.ols import fit_ols, residual_from_frozen_fit
+from backend.strategy.ols import residual_from_frozen_fit
+from backend.strategy.signal import (
+    ev_check, half_life_limit_bars, regime_block, scored_fit, signal_cfg_from_params, z_cap_block,
+)
 from backend.strategy.stats_tests import test_stationarity
 from backend.strategy.zscore import decide_entry, decide_exit, ExitDecision
 from backend.strategy.half_life import half_life_ok
@@ -110,13 +113,22 @@ def backtest_group(
     maintenance_margin_rate: float = DEFAULT_MMR,
     progress_cb=None,
     rounding: dict | None = None,
+    signal: dict | None = None,
 ) -> BacktestResult:
-    """``liquidation_proximity`` > 0 turns on the same guard as the live/paper engine: a trade is
+    """``signal`` (strategy.signal.signal_cfg_from_params) turns on the same out-of-sample z-score,
+    expected-value gate, jump / volatility filter and half-life time stop as the live engine; None keeps
+    the legacy in-sample replay.
+
+    ``liquidation_proximity`` > 0 turns on the same guard as the live/paper engine: a trade is
     closed with reason ``risk_exit`` when any leg's mark is within that fraction of its modeled
     liquidation price (see strategy/liquidation.py), and entries that would start inside the band
     are skipped. ``leverage`` is the exchange leverage (1 for Nobitex)."""
     symbols = list(price_df.columns)
     n = len(price_df)
+    sig = signal or {**signal_cfg_from_params({}), "zscore_method": "in_sample", "ev_gate": False,
+                     "jump_max_sigma": 0.0, "vol_regime_max": 0.0, "z_entry_max": 0.0,
+                     "max_holding_halflives": 0.0}
+    oos = sig["zscore_method"] == "oos"
     trades: list[BacktestTrade] = []
     position = None
     _min_notional = 5.0 if quote_suffix(dependent_symbol) == "USDT" else None
@@ -165,6 +177,9 @@ def backtest_group(
             )
             if time_stop:
                 exit_dec = ExitDecision(True, "time_stop", exit_dec.z)
+            if (not exit_dec.should_exit and position.get("hl_limit") is not None
+                    and (i - position["entry_idx"]) >= position["hl_limit"]):
+                exit_dec = ExitDecision(True, "half_life_stop", exit_dec.z)
             if exit_dec.should_exit:
                 gross = gross_per_unit_y(
                     position["entry_prices"], dependent_symbol, position["betas"],
@@ -187,29 +202,31 @@ def backtest_group(
             i += 1
             continue
 
-        window = price_df.iloc[i - window_size:i]
+        # oos: fit on the W bars before bar i and score bar i (whose prices are also the entry fill);
+        # legacy: fit on those W bars and use the last fitted residual
+        window = price_df.iloc[i - window_size:i + 1] if oos else price_df.iloc[i - window_size:i]
         price_matrix = {s: window[s].to_numpy() for s in symbols}
         try:
-            fit = fit_ols(dependent_symbol, price_matrix)
+            sf = scored_fit(dependent_symbol, price_matrix, sig["zscore_method"])
         except Exception:
             i += 1
             continue
+        fit = sf.fit
 
-        if fit.resid_std == 0:
+        if sf.std == 0:
             i += 1
             continue
 
-        resid_now = float(fit.residual[-1])
+        resid_now = sf.resid_now
         entry_dec = decide_entry(
-            resid_now, fit.resid_mean, fit.resid_std, z_entry, z_stop=z_stop_loss,
+            resid_now, sf.mean, sf.std, z_entry, z_stop=z_stop_loss,
         )
         if entry_dec.should_enter:
             # Signal first, expensive stationarity test only when a signal exists
             # (identical result, ~50x fewer ADF/EG runs).
             stat = test_stationarity(
                 fit.residual, adf_alpha, kpss_alpha,
-                y=price_matrix[dependent_symbol],
-                x_cols=[price_matrix[s] for s in symbols if s != dependent_symbol],
+                y=sf.y, x_cols=sf.x_cols,
                 method=stationarity_method,
             )
             if not stat.passed:
@@ -222,10 +239,13 @@ def backtest_group(
                 if not ok_hl:
                     i += 1
                     continue
+            if z_cap_block(entry_dec.z, sig) or regime_block(sf.residual, sig):
+                i += 1
+                continue
             G_unit = gross_per_unit_y(prices_now, dependent_symbol, fit.betas)
             ok, _det = entry_target_check(
                 z_now=entry_dec.z,
-                sigma=fit.resid_std,
+                sigma=sf.std,
                 z_close=z_close,
                 z_stop=z_stop_loss,
                 gross_per_unit_y=G_unit,
@@ -235,6 +255,15 @@ def backtest_group(
             if not ok:
                 i += 1
                 continue
+            if sig["ev_gate"]:
+                ok_ev, _ev = ev_check(
+                    z_now=entry_dec.z, sigma_rel=(sf.std / G_unit) if G_unit > 0 else 0.0,
+                    z_close=z_close, z_stop=z_stop_loss, cost_rate=transaction_cost_rate,
+                    win_rate=sig["ev_win_rate"], stop_overshoot=sig["ev_stop_overshoot"],
+                )
+                if not ok_ev:
+                    i += 1
+                    continue
             if max_entry_scale is not None and float(max_entry_scale) > 0:
                 try:
                     from backend.strategy.sizing import ExcessiveScalingError
@@ -275,7 +304,7 @@ def backtest_group(
                 if rounded_legs:
                     info = rounding_info(rounded_legs) or {}
                     gross_r = legs_gross_notional(rounded_legs)
-                    sigma_rel = fit.resid_std / G_unit if G_unit > 0 else 0.0
+                    sigma_rel = sf.std / G_unit if G_unit > 0 else 0.0
                     exp_net = (sigma_rel * (abs(entry_dec.z) - z_close) - 2.0 * transaction_cost_rate) * gross_r
                     ok_d, _dd = drift_gate(
                         info, expected_net_profit=exp_net, max_drift=rounding["max_drift"],
@@ -300,8 +329,9 @@ def backtest_group(
                 "direction": entry_dec.direction,
                 "betas": fit.betas,
                 "intercept": fit.intercept,
-                "mean": fit.resid_mean,
-                "std": fit.resid_std,
+                "mean": sf.mean,
+                "std": sf.std,
+                "hl_limit": half_life_limit_bars(sf.residual, sig),
                 "entry_idx": i,
                 "entry_time": price_df.index[i],
                 "entry_residual": resid_now,

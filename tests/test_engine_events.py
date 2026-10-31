@@ -373,3 +373,83 @@ def test_factory_builds_market_data_client_only_for_paper(world, monkeypatch):
         factory.build_trading_client(db)
     assert built == []
     db.close()
+
+
+def test_half_life_time_stop_closes_a_trade_that_did_not_revert(world, rec):
+    import numpy as np
+    sf, gid, tid, Client = world
+    db = sf()
+    fit = db.query(OLSFit).first()
+    r, rng = np.zeros(200), np.random.default_rng(0)
+    for i in range(1, 200):
+        r[i] = 0.5 * r[i - 1] + rng.normal()  # half-life ~1 bar
+    fit.residual_series = [[str(i), float(v)] for i, v in enumerate(r)]
+    db.commit()
+    t, g = db.get(Trade, tid), db.get(Group, gid)
+    bb = dict(config_service.get_section(db, "backbone"))
+    bb["max_holding_halflives"] = 0
+    # z = -2: a hold. With the half-life stop off the trade stays open ...
+    asyncio.run(be.BotEngine()._check_exit(db, g, t, {DEP: 2398.0, X: 60000.0}, bb, Client(), "paper", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "open"
+    # ... and with it on, 2 hours is far more than 3 half-lives of a 1-bar half-life
+    bb["max_holding_halflives"] = 3
+    asyncio.run(be.BotEngine()._check_exit(db, g, t, {DEP: 2398.0, X: 60000.0}, bb, Client(), "paper", exchange="xt"))
+    db.refresh(t)
+    assert t.status == "closed" and t.close_reason == "half_life_stop"
+    db.close()
+
+
+def _entry_setup(sf, gid, spike_z):
+    """W+1 bars of a cointegrated pair whose last bar sits ``spike_z`` out-of-sample sigmas from the fit."""
+    import numpy as np
+    from backend.strategy.signal import scored_fit
+    db = sf()
+    db.query(Trade).delete()
+    db.commit()
+    bb = dict(config_service.get_section(db, "backbone"))
+    bb.update(adf_alpha=1.0, kpss_alpha=0.0, half_life_max_fraction=0, target_profit_rate=0, ev_gate=False,
+              vol_regime_max=0, window_size=200)
+    rng = np.random.default_rng(11)
+    x = 60000 + np.cumsum(rng.normal(0, 30, 201))
+    y = 0.04 * x + rng.normal(0, 1.0, 201)
+    s = scored_fit(DEP, {DEP: y, X: x}, "oos")
+    y[-1] = y[-1] - s.resid_now + s.mean + spike_z * s.std
+    df = pd.DataFrame({DEP: y, X: x}, index=pd.date_range("2026-01-01", periods=201, freq="15min"))
+    return db, bb, df
+
+
+def test_entry_skips_a_one_bar_jump(world):
+    sf, gid, tid, Client = world
+    db, bb, df = _entry_setup(sf, gid, spike_z=3.0)
+    bb["jump_max_sigma"] = 1.5  # the 3-sigma spike is > 1.5x the usual one-bar move
+    eng = be.BotEngine()
+    asyncio.run(eng._check_entry(db, db.get(Group, gid), df, df.iloc[-1].to_dict(), bb, Client(), "paper", exchange="xt"))
+    d = eng._group_diag[gid]
+    assert d["stage"] == "regime" and d["text"].startswith("jump") and d["z"] == pytest.approx(3.0, rel=1e-6)
+    assert Client.placed == []
+    db.close()
+
+
+def test_entry_skips_above_z_entry_max(world):
+    sf, gid, tid, Client = world
+    db, bb, df = _entry_setup(sf, gid, spike_z=4.0)
+    bb.update(jump_max_sigma=0, z_entry_max=3.5)
+    eng = be.BotEngine()
+    asyncio.run(eng._check_entry(db, db.get(Group, gid), df, df.iloc[-1].to_dict(), bb, Client(), "paper", exchange="xt"))
+    assert eng._group_diag[gid]["stage"] == "z_cap" and Client.placed == []
+    db.close()
+
+
+def test_entry_ev_gate_blocks_and_frozen_std_is_the_oos_scale(world):
+    from backend.strategy.signal import scored_fit
+    sf, gid, tid, Client = world
+    db, bb, df = _entry_setup(sf, gid, spike_z=3.0)
+    bb.update(jump_max_sigma=0, ev_gate=True, ev_win_rate=0.05)  # hopeless win rate: EV < 0
+    eng = be.BotEngine()
+    asyncio.run(eng._check_entry(db, db.get(Group, gid), df, df.iloc[-1].to_dict(), bb, Client(), "paper", exchange="xt"))
+    assert eng._group_diag[gid]["stage"] == "ev_gate" and Client.placed == []
+    row = db.query(OLSFit).order_by(OLSFit.id.desc()).first()
+    s = scored_fit(DEP, {DEP: df[DEP].to_numpy(), X: df[X].to_numpy()}, "oos")
+    assert row.resid_std == pytest.approx(s.std) and len(row.residual_series) == 201
+    db.close()

@@ -11,7 +11,8 @@ from backend import config_service
 from backend.models import Group, OLSFit, Trade
 from backend.schemas import GroupStatusUpdate
 from backend.strategy.metrics import compute_group_performance
-from backend.strategy.ols import fit_ols, residual_from_frozen_fit
+from backend.strategy.ols import residual_from_frozen_fit
+from backend.strategy.signal import scored_fit, signal_cfg_from_params, window_bars
 from backend.strategy.stats_tests import test_stationarity
 from backend.exchange import factory
 from backend.exchange.paper import PaperExchangeClient
@@ -328,14 +329,17 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
             f"(got {0 if price_df.empty else len(price_df)} bars, need >= 30).",
         )
 
-    effective_window = min(window_size, len(price_df))
+    # Same fit as the engine: with the out-of-sample z the current bar is scored, not fitted.
+    z_method = signal_cfg_from_params(backbone)["zscore_method"]
+    effective_window = min(window_bars(window_size, z_method), len(price_df))
     window = price_df.iloc[-effective_window:]
     shown = price_df.iloc[-max(effective_window, history):] if history else window
     dependent = g.dependent_symbol if g.dependent_symbol in window.columns else list(window.columns)[0]
     price_matrix = {s: window[s].to_numpy() for s in window.columns}
 
     try:
-        fit_res = fit_ols(dependent, price_matrix)
+        sf = scored_fit(dependent, price_matrix, z_method)
+        fit_res = sf.fit
     except Exception as e:
         raise HTTPException(422, f"OLS fit failed: {e}") from e
 
@@ -343,12 +347,11 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
     kpss_alpha = float(backbone.get("kpss_alpha", 0.05))
     stat = test_stationarity(
         fit_res.residual, adf_alpha, kpss_alpha,
-        y=price_matrix[dependent],
-        x_cols=[price_matrix[s] for s in price_matrix if s != dependent],
+        y=sf.y, x_cols=sf.x_cols,
         method=str(backbone.get("stationarity_method", "engle_granger")),
     )
 
-    residual_series = [[ts.isoformat(), float(v)] for ts, v in zip(window.index, fit_res.residual)]
+    residual_series = [[ts.isoformat(), float(v)] for ts, v in zip(window.index, sf.residual)]
     # Same betas applied to the whole shown range, so the chart can show more history
     # than the OLS window without changing the fit itself.
     residual_full = (
@@ -380,8 +383,8 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
         "window_end": window.index[-1].to_pydatetime().isoformat(),
         "betas": {str(k): float(v) for k, v in fit_res.betas.items()},
         "intercept": float(fit_res.intercept),
-        "resid_mean": float(fit_res.resid_mean),
-        "resid_std": float(fit_res.resid_std),
+        "resid_mean": float(sf.mean),
+        "resid_std": float(sf.std),
         "adf_stat": _py(stat.adf_stat),
         "adf_pvalue": _py(stat.adf_pvalue),
         "kpss_stat": _py(stat.kpss_stat),
@@ -404,8 +407,8 @@ async def _compute_live_fit(group_id: int, persist: bool, db: Session) -> dict:
                 window_end=window.index[-1].to_pydatetime(),
                 betas=fit_res.betas,
                 intercept=fit_res.intercept,
-                resid_mean=fit_res.resid_mean,
-                resid_std=fit_res.resid_std,
+                resid_mean=sf.mean,
+                resid_std=sf.std,
                 adf_stat=stat.adf_stat,
                 adf_pvalue=stat.adf_pvalue,
                 kpss_stat=stat.kpss_stat,

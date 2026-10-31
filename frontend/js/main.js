@@ -68,6 +68,14 @@ function FIELD_HINTS() {
     chart_history_bars: t("hint.chart_history_bars"),
     paper_start_balance: t("hint.paper_start_balance"),
     trade_notional: t("hint.trade_notional"),
+    zscore_method: t("hint.zscore_method"),
+    z_entry_max: t("hint.z_entry_max"),
+    ev_gate: t("hint.ev_gate"),
+    ev_win_rate: t("hint.ev_win_rate"),
+    ev_stop_overshoot: t("hint.ev_stop_overshoot"),
+    jump_max_sigma: t("hint.jump_max_sigma"),
+    vol_regime_max: t("hint.vol_regime_max"),
+    max_holding_halflives: t("hint.max_holding_halflives"),
   };
 }
 
@@ -79,6 +87,8 @@ const BACKBONE_BASIC = [
   ["costs", ["paper_start_balance", "trade_notional", "fee_rate", "slippage_rate", "target_profit_rate"]],
 ];
 const BACKBONE_ADVANCED = [
+  ["signal_adv", ["zscore_method", "z_entry_max", "ev_gate", "ev_win_rate", "ev_stop_overshoot",
+                  "jump_max_sigma", "jump_bars", "vol_regime_max", "vol_regime_bars", "max_holding_halflives"]],
   ["stats_adv", ["adf_alpha", "kpss_alpha", "half_life_max_fraction"]],
   ["risk", ["max_holding_hours", "max_entry_scale", "max_open_trades", "max_total_gross_notional",
             "liquidation_proximity_fraction", "maintenance_margin_rate", "entry_retry_cooldown_sec", "data_staleness_mult"]],
@@ -90,6 +100,7 @@ const BACKBONE_ADVANCED = [
 // Text settings with a fixed set of values render as a dropdown: key -> [[value, i18n key], ...]
 const SELECT_FIELDS = {
   stationarity_method: [["engle_granger", "opt.engle_granger"], ["adf_kpss", "opt.adf_kpss"]],
+  zscore_method: [["oos", "opt.oos"], ["in_sample", "opt.in_sample"]],
   xt_margin_mode: [["isolated", "opt.isolated"], ["cross", "opt.cross"]],
   contract_rounding: [["joint", "opt.joint"], ["nearest", "opt.nearest"], ["floor", "opt.floor"], ["off", "opt.off"]],
 };
