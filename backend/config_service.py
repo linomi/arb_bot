@@ -102,7 +102,7 @@ def _validate_backbone(data: dict):
         raise ValueError("jump_bars must be >= 1 and vol_regime_bars >= 5")
     for k in ("entry_retry_cooldown_sec", "max_holding_hours", "fit_log_interval_sec", "half_life_max_fraction",
               "data_staleness_mult", "max_total_gross_notional", "max_open_trades", "max_holding_halflives",
-              "ev_stop_overshoot", "jump_max_sigma", "vol_regime_max"):
+              "ev_stop_overshoot", "jump_max_sigma", "vol_regime_max", "exit_check_sec"):
         if float(data.get(k, 0) or 0) < 0:
             raise ValueError(f"{k} must be >= 0")
     lpf = float(data.get("liquidation_proximity_fraction", 0.2) or 0)

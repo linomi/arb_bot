@@ -453,3 +453,61 @@ def test_entry_ev_gate_blocks_and_frozen_std_is_the_oos_scale(world):
     s = scored_fit(DEP, {DEP: df[DEP].to_numpy(), X: df[X].to_numpy()}, "oos")
     assert row.resid_std == pytest.approx(s.std) and len(row.residual_series) == 201
     db.close()
+
+
+def test_sleep_checks_exits_often_and_wakes_just_after_each_new_bar():
+    sleep = be.BotEngine._sleep_seconds
+    bb = {"sampling_time": 900, "exit_check_sec": 60}
+    assert sleep(bb, 900 * 1000 + 100) == 60          # mid-bar: next exit check
+    assert sleep(bb, 900 * 1000 + 870) == 32          # 30 s before the bar ends: wake 2 s after it opens
+    assert sleep({"sampling_time": 900, "exit_check_sec": 0}, 900 * 1000 + 100) == 802  # 0 = once per bar
+    assert sleep({"sampling_time": 60, "exit_check_sec": 60}, 60 * 7 + 10) == 52
+
+
+def test_entries_are_scanned_once_per_bar():
+    eng = be.BotEngine()
+    bb = {"sampling_time": 900}
+    t0 = 900 * 1000
+    assert eng._entry_scan_due(bb, t0 + 5)
+    assert not eng._entry_scan_due(bb, t0 + 65)
+    assert not eng._entry_scan_due(bb, t0 + 899)
+    assert eng._entry_scan_due(bb, t0 + 902)
+
+
+def test_between_bars_open_trades_are_checked_but_entries_are_not(world, monkeypatch):
+    sf, gid, tid, Client = world
+    db = sf()
+    eng = be.BotEngine()
+    exits, entries, fetched = [], [], []
+
+    async def fake_exit(db_, group, trade, prices, *a, **k):
+        exits.append((trade.id, prices))
+
+    async def fake_entry(*a, **k):
+        entries.append(1)
+
+    async def counting_prices(client, symbols, resolution, bars):
+        fetched.append(bars)
+        idx = pd.date_range(end=pd.Timestamp.utcnow().tz_localize(None), periods=bars, freq="15min")
+        return pd.DataFrame({DEP: [2500.0] * bars, X: [60000.0] * bars}, index=idx)
+
+    monkeypatch.setattr(eng, "_check_exit", fake_exit)
+    monkeypatch.setattr(eng, "_check_entry", fake_entry)
+    monkeypatch.setattr(be, "fetch_price_df", counting_prices)
+    bb = config_service.get_section(db, "backbone")
+    g = db.get(Group, gid)
+
+    # open trade: checked even when no entry scan is due, from a short price fetch
+    asyncio.run(eng._process_group(db, g, bb, Client(), Client(), "15", "paper", True, entry_due=False))
+    assert [e[0] for e in exits] == [tid] and exits[0][1][DEP] == 2500.0 and fetched == [5]
+
+    # no open trade: nothing at all between bars ...
+    db.get(Trade, tid).status = "closed"
+    db.commit()
+    fetched.clear()
+    asyncio.run(eng._process_group(db, g, bb, Client(), Client(), "15", "paper", True, entry_due=False))
+    assert entries == [] and fetched == []
+    # ... and a full-window entry scan on the bar's first cycle
+    asyncio.run(eng._process_group(db, g, bb, Client(), Client(), "15", "paper", True, entry_due=True))
+    assert entries == [1] and fetched == [int(bb["window_size"]) + 5]
+    db.close()

@@ -6,7 +6,8 @@
 backbone:
   window_size: 200          # bars used to fit the OLS
   chart_history_bars: 500   # bars shown on the residual chart (betas still come from window_size)
-  sampling_time: 900        # seconds between bot cycles = bar size (15m: a 1-minute residual moves ~0.13% of gross, less than round-trip costs)
+  sampling_time: 900        # bar size in seconds; entries are scanned once per bar (15m: a 1-minute residual moves ~0.13% of gross, less than round-trip costs)
+  exit_check_sec: 60        # open trades (exits, stops, liquidation guard) are checked this often; 0 = once per bar
   adf_alpha: 0.05           # ADF p-value must be <= this
   kpss_alpha: 0.05          # KPSS p-value must be >= this
   z_entry: 2.5

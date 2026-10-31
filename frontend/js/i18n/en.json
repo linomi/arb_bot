@@ -404,5 +404,7 @@
   "hint.max_holding_halflives": "Close a trade open longer than this many half-lives of the entry fit; 0 disables",
   "diag.stage.ev_gate": "EV gate",
   "diag.stage.regime": "Jump / vol regime",
-  "diag.stage.z_cap": "Above z cap"
+  "diag.stage.z_cap": "Above z cap",
+  "param.exit_check_sec": "Exit Check Interval (s)",
+  "hint.exit_check_sec": "Open trades (exits, stops, liquidation guard) are checked this often; entries are scanned once per bar. 0 = once per bar"
 }

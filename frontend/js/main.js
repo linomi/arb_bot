@@ -76,6 +76,7 @@ function FIELD_HINTS() {
     jump_max_sigma: t("hint.jump_max_sigma"),
     vol_regime_max: t("hint.vol_regime_max"),
     max_holding_halflives: t("hint.max_holding_halflives"),
+    exit_check_sec: t("hint.exit_check_sec"),
   };
 }
 
@@ -90,7 +91,7 @@ const BACKBONE_ADVANCED = [
   ["signal_adv", ["zscore_method", "z_entry_max", "ev_gate", "ev_win_rate", "ev_stop_overshoot",
                   "jump_max_sigma", "jump_bars", "vol_regime_max", "vol_regime_bars", "max_holding_halflives"]],
   ["stats_adv", ["adf_alpha", "kpss_alpha", "half_life_max_fraction"]],
-  ["risk", ["max_holding_hours", "max_entry_scale", "max_open_trades", "max_total_gross_notional",
+  ["risk", ["exit_check_sec", "max_holding_hours", "max_entry_scale", "max_open_trades", "max_total_gross_notional",
             "liquidation_proximity_fraction", "maintenance_margin_rate", "entry_retry_cooldown_sec", "data_staleness_mult"]],
   ["funding", ["funding_rate_estimate", "expected_holding_funding_intervals"]],
   ["xt", ["xt_leverage", "xt_margin_mode", "contract_rounding", "contract_max_size_dev", "contract_max_drift",

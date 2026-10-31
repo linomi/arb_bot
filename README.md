@@ -176,7 +176,8 @@ changes and add `--apply` to write them, then re-run Initialization.
 | Key | Meaning |
 |---|---|
 | `window_size` | Bars used to fit the OLS. |
-| `sampling_time` | Seconds between bot cycles (also the candle size). |
+| `sampling_time` | Candle size in seconds; entries are scanned once per candle, just after it opens. |
+| `exit_check_sec` | How often open trades are checked (exits, stops, liquidation guard), default 60; 0 = once per candle. |
 | `z_entry` / `z_close` / `z_stop_loss` | Thresholds; require `stop > entry > close`. |
 | `stationarity_method` | `engle_granger` (recommended) or `adf_kpss`. |
 | `paper_start_balance` | Paper mode, XT groups: starting USDT wallet shared by all groups. Free balance = start + realized PnL - margin of open trades; new entries are scaled down or refused when it is too low. Also the equity-curve baseline. 0 turns the check off. |

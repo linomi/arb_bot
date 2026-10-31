@@ -152,6 +152,7 @@ class BotEngine:
         self._last_orphan_check: float = 0.0
         self._lock = asyncio.Lock()                         # one cycle / close-all at a time
         self._known_orphans: set[str] = set()
+        self._last_entry_bar: int | None = None             # bar (epoch // sampling_time) last scanned for entries
 
     def start_background_loop(self):
         if self._task is None or self._task.done():
@@ -164,16 +165,34 @@ class BotEngine:
                 state = get_or_create_bot_state(db)
                 async with self._lock:
                     await self._run_cycle(db, state)
-                sampling_time = config_service.get_section(db, "backbone").get("sampling_time", 60)
+                pause = self._sleep_seconds(config_service.get_section(db, "backbone"), time.time())
                 self._write_heartbeat()
             except Exception:
                 self._last_error = traceback.format_exc()
                 log.exception("bot cycle failed")
                 emit("cycle_error", error=self._last_error.strip().splitlines()[-1])
-                sampling_time = 30
+                pause = 30
             finally:
                 db.close()
-            await asyncio.sleep(max(1, int(sampling_time)))
+            await asyncio.sleep(pause)
+
+    @staticmethod
+    def _sleep_seconds(backbone: dict, now: float) -> float:
+        """Pause before the next cycle: every ``exit_check_sec`` (exits, stops, liquidation guard), and just
+        after each new bar opens (entries are scanned once per bar, on ``sampling_time`` bars)."""
+        bar = max(1.0, float(backbone.get("sampling_time", 60) or 60))
+        every = float(backbone.get("exit_check_sec", 60) or 0) or bar
+        to_next_bar = bar - (now % bar) + 2.0  # a moment after the boundary, so the exchange has the new bar
+        return max(1.0, min(every, bar, to_next_bar))
+
+    def _entry_scan_due(self, backbone: dict, now: float) -> bool:
+        """True on the first cycle of each new bar: entries are evaluated once per bar, the way the
+        backtest replays them, while exits are checked every cycle."""
+        bar = int(now // max(1.0, float(backbone.get("sampling_time", 60) or 60)))
+        if bar == self._last_entry_bar:
+            return False
+        self._last_entry_bar = bar
+        return True
 
     def _write_heartbeat(self) -> None:
         """Touch data/heartbeat so an external watchdog can tell the loop is alive."""
@@ -222,6 +241,7 @@ class BotEngine:
             return
 
         resolution = seconds_to_resolution(backbone["sampling_time"])
+        entry_due = self._entry_scan_due(backbone, time.time())
 
         # Orphan position reconcile on start and every ~N cycles (default 10 * sampling)
         try:
@@ -242,6 +262,7 @@ class BotEngine:
                         resolution, trading_mode, state.is_running,
                         allow_new_entries=allow_entries,
                         exchange=exchange,
+                        entry_due=entry_due,
                     )
                     self._group_errors.pop(gid, None)
                 except ObjectDeletedError:
@@ -271,7 +292,9 @@ class BotEngine:
         resolution, trading_mode, is_running: bool,
         allow_new_entries: bool = True,
         exchange: str = "nobitex",
+        entry_due: bool = True,
     ):
+        """Exits are checked on every call; entries only when ``entry_due`` (first cycle of a new bar)."""
         group_ex = (getattr(group, "exchange", None) or exchange or "nobitex").strip().lower()
         try:
             assert_same_exchange(list(group.symbols or []), group_ex, group.dependent_symbol)
@@ -280,6 +303,26 @@ class BotEngine:
             self._group_errors[group.id] = str(e)
             self._diag(group, "config_error", str(e))
             return
+
+        open_trade = (
+            db.query(Trade)
+            .filter_by(group_id=group.id, status="open", mode=trading_mode)
+            .first()
+        )
+        if open_trade is not None:
+            # an exit only needs the latest prices
+            price_df = await fetch_price_df(md_client, group.symbols, resolution, 5)
+            if price_df.empty:
+                log.warning("group %s: no prices for the exit check of trade #%s", group.id, open_trade.id)
+                return
+            self._diag(group, "position_open", f"trade #{open_trade.id} open since {open_trade.entry_time}")
+            await self._check_exit(
+                db, group, open_trade, price_df.iloc[-1].to_dict(), dict(backbone), trading_client, trading_mode,
+                exchange=group_ex,
+            )
+            return
+        if not entry_due:
+            return  # between bars: keep the last entry evaluation
 
         configured_window = int(backbone["window_size"])
         bars_needed = configured_window + 5
@@ -304,19 +347,7 @@ class BotEngine:
         backbone_local["window_size"] = effective_window
         latest_prices = price_df.iloc[-1].to_dict()
 
-        open_trade = (
-            db.query(Trade)
-            .filter_by(group_id=group.id, status="open", mode=trading_mode)
-            .first()
-        )
-
-        if open_trade is not None:
-            self._diag(group, "position_open", f"trade #{open_trade.id} open since {open_trade.entry_time}")
-            await self._check_exit(
-                db, group, open_trade, latest_prices, backbone_local, trading_client, trading_mode,
-                exchange=group_ex,
-            )
-        elif not is_running:
+        if not is_running:
             self._diag(group, "bot_stopped", "bot is stopped: no new entries")
         elif not allow_new_entries:
             self._diag(group, "paused", f"entries paused until {self._pause_until}")
