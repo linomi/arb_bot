@@ -148,6 +148,9 @@ def backtest_group(
         rstats["pnl_ideal_same_size_usdt"] += pi * float(pos.get("size_ratio") or 1.0)
         return pr / qy, pi / qy, pos.get("hedge_drift")
 
+    # plain arrays: per-bar pandas indexing was ~30% of a replay
+    P = price_df.to_numpy(dtype=float)
+    idx = price_df.index
     i = window_size
     _step = max(1, (n - window_size) // 50)  # ~50 progress ticks
     while i < n:
@@ -156,7 +159,7 @@ def backtest_group(
                 progress_cb((i - window_size) / max(1, n - window_size))
             except Exception:
                 pass
-        prices_now = price_df.iloc[i].to_dict()
+        prices_now = dict(zip(symbols, P[i].tolist()))
 
         if position is not None:
             resid_now = residual_from_frozen_fit(
@@ -193,7 +196,7 @@ def backtest_group(
                 pnl, pnl_ideal, drift = _finish(position, resid_now, prices_now, pnl)
                 trades.append(BacktestTrade(
                     entry_idx=position["entry_idx"], exit_idx=i,
-                    entry_time=position["entry_time"], close_time=price_df.index[i],
+                    entry_time=position["entry_time"], close_time=idx[i],
                     direction=position["direction"], entry_z=position["entry_z"],
                     close_z=exit_dec.z, close_reason=exit_dec.reason, pnl=pnl,
                     pnl_ideal=pnl_ideal, hedge_drift=drift,
@@ -204,8 +207,8 @@ def backtest_group(
 
         # oos: fit on the W bars before bar i and score bar i (whose prices are also the entry fill);
         # legacy: fit on those W bars and use the last fitted residual
-        window = price_df.iloc[i - window_size:i + 1] if oos else price_df.iloc[i - window_size:i]
-        price_matrix = {s: window[s].to_numpy() for s in symbols}
+        hi = i + 1 if oos else i
+        price_matrix = {s: P[i - window_size:hi, j] for j, s in enumerate(symbols)}
         try:
             sf = scored_fit(dependent_symbol, price_matrix, sig["zscore_method"])
         except Exception:
@@ -222,16 +225,6 @@ def backtest_group(
             resid_now, sf.mean, sf.std, z_entry, z_stop=z_stop_loss,
         )
         if entry_dec.should_enter:
-            # Signal first, expensive stationarity test only when a signal exists
-            # (identical result, ~50x fewer ADF/EG runs).
-            stat = test_stationarity(
-                fit.residual, adf_alpha, kpss_alpha,
-                y=sf.y, x_cols=sf.x_cols,
-                method=stationarity_method,
-            )
-            if not stat.passed:
-                i += 1
-                continue
             if half_life_max_fraction and half_life_max_fraction > 0:
                 ok_hl, _hl = half_life_ok(
                     fit.residual, window_size, max_fraction=float(half_life_max_fraction),
@@ -284,6 +277,16 @@ def backtest_group(
                     continue
                 except Exception:
                     pass
+            # The stationarity test (~10 ms) runs only for signals that passed every cheap gate above; all of
+            # them must pass anyway, so the order does not change which bars are entered.
+            stat = test_stationarity(
+                fit.residual, adf_alpha, kpss_alpha,
+                y=sf.y, x_cols=sf.x_cols,
+                method=stationarity_method,
+            )
+            if not stat.passed:
+                i += 1
+                continue
             rounded_legs = ideal_legs = None
             drift_val = None
             if rounding:
@@ -333,7 +336,7 @@ def backtest_group(
                 "std": sf.std,
                 "hl_limit": half_life_limit_bars(sf.residual, sig),
                 "entry_idx": i,
-                "entry_time": price_df.index[i],
+                "entry_time": idx[i],
                 "entry_residual": resid_now,
                 "entry_z": entry_dec.z,
                 "entry_prices": prices_now,

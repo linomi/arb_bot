@@ -76,70 +76,57 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params, progress_cb=None) 
     is_df = sub_df.iloc[:split]
     oos_df = sub_df.iloc[split - int(backbone_params["window_size"]):]  # overlap window for continuity
     is_share = len(is_df) / max(1, len(is_df) + max(0, len(oos_df) - int(backbone_params["window_size"])))
-    for dependent in candidates:
+    W = int(backbone_params["window_size"])
+
+    def _bt(df, dependent, cb):
+        return backtest_group(
+            progress_cb=cb,
+            price_df=df,
+            dependent_symbol=dependent,
+            window_size=W,
+            adf_alpha=float(backbone_params["adf_alpha"]),
+            kpss_alpha=float(backbone_params["kpss_alpha"]),
+            z_entry=float(backbone_params["z_entry"]),
+            z_close=float(backbone_params["z_close"]),
+            z_stop_loss=float(backbone_params["z_stop_loss"]),
+            transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
+            target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
+            max_entry_scale=backbone_params.get("max_entry_scale"),
+            trade_notional=float(backbone_params.get("trade_notional", 100.0) or 100.0),
+            max_holding_bars=backbone_params.get("max_holding_bars"),
+            stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
+            half_life_max_fraction=float(backbone_params.get("half_life_max_fraction", 1.0/3.0) or 0),
+            leverage=leverage_for(None, backbone_params, dependent),
+            liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
+            maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
+            rounding=rounding_cfg_from_params(backbone_params, list(symbols)),
+            signal=signal_cfg_from_params(backbone_params),
+        )
+
+    # In-sample backtest for every dependent; the held-out part is only needed for the one that is kept.
+    is_part = is_share / len(candidates)
+    for k, dependent in enumerate(candidates):
         try:
-            bt = backtest_group(
-                progress_cb=(lambda f: progress_cb(f * is_share)) if progress_cb else None,
-                price_df=is_df,
-                dependent_symbol=dependent,
-                window_size=int(backbone_params["window_size"]),
-                adf_alpha=float(backbone_params["adf_alpha"]),
-                kpss_alpha=float(backbone_params["kpss_alpha"]),
-                z_entry=float(backbone_params["z_entry"]),
-                z_close=float(backbone_params["z_close"]),
-                z_stop_loss=float(backbone_params["z_stop_loss"]),
-                transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
-                target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
-                max_entry_scale=backbone_params.get("max_entry_scale"),
-                trade_notional=float(backbone_params.get("trade_notional", 100.0) or 100.0),
-                max_holding_bars=backbone_params.get("max_holding_bars"),
-                stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
-                half_life_max_fraction=float(backbone_params.get("half_life_max_fraction", 1.0/3.0) or 0),
-                leverage=leverage_for(None, backbone_params, dependent),
-                liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
-                maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
-                rounding=rounding_cfg_from_params(backbone_params, list(symbols)),
-                signal=signal_cfg_from_params(backbone_params),
-            )
+            bt = _bt(is_df, dependent,
+                     (lambda f, k=k: progress_cb((k + f) * is_part)) if progress_cb else None)
         except Exception:
             continue
         sc = _score_group(bt.performance)
-        oos_perf = None
-        oos_score = None
-        if len(oos_df) > int(backbone_params["window_size"]) + 5:
-            try:
-                bt_oos = backtest_group(
-                    progress_cb=(lambda f: progress_cb(is_share + f * (1 - is_share))) if progress_cb else None,
-                    price_df=oos_df,
-                    dependent_symbol=dependent,
-                    window_size=int(backbone_params["window_size"]),
-                    adf_alpha=float(backbone_params["adf_alpha"]),
-                    kpss_alpha=float(backbone_params["kpss_alpha"]),
-                    z_entry=float(backbone_params["z_entry"]),
-                    z_close=float(backbone_params["z_close"]),
-                    z_stop_loss=float(backbone_params["z_stop_loss"]),
-                    transaction_cost_rate=float(backbone_params["transaction_fee_rate"]),
-                    target_profit_rate=float(backbone_params.get("target_profit_rate", 0.0) or 0.0),
-                    max_entry_scale=backbone_params.get("max_entry_scale"),
-                    trade_notional=float(backbone_params.get("trade_notional", 100.0) or 100.0),
-                    max_holding_bars=backbone_params.get("max_holding_bars"),
-                    stationarity_method=backbone_params.get("stationarity_method", "engle_granger"),
-                    half_life_max_fraction=float(backbone_params.get("half_life_max_fraction", 1.0/3.0) or 0),
-                leverage=leverage_for(None, backbone_params, dependent),
-                liquidation_proximity=float(backbone_params.get("liquidation_proximity_fraction", 0) or 0),
-                maintenance_margin_rate=float(backbone_params.get("maintenance_margin_rate", 0.005) or 0.005),
-                    rounding=rounding_cfg_from_params(backbone_params, list(symbols)),
-                    signal=signal_cfg_from_params(backbone_params),
-                )
-                oos_perf = bt_oos.performance.as_dict()
-                oos_score = _score_group(bt_oos.performance)
-            except Exception:
-                pass
         if best is None or sc > best[2]:
-            best = (dependent, bt, sc, oos_perf, oos_score)
+            best = (dependent, bt, sc)
     if best is None:
         return None
-    dependent, bt, _sc, oos_perf, oos_score = best
+    dependent, bt, _sc = best
+    oos_perf = None
+    oos_score = None
+    if len(oos_df) > W + 5:
+        try:
+            bt_oos = _bt(oos_df, dependent,
+                         (lambda f: progress_cb(is_share + f * (1 - is_share))) if progress_cb else None)
+            oos_perf = bt_oos.performance.as_dict()
+            oos_score = _score_group(bt_oos.performance)
+        except Exception:
+            pass
     if backbone_params.get("require_oos_positive") and oos_perf is not None:
         if float(oos_perf.get("total_pnl") or 0) <= 0:
             return None
@@ -158,14 +145,16 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params, progress_cb=None) 
 
 
 def _align_price_df(ohlc_by_symbol: dict[str, dict]) -> pd.DataFrame:
+    """Outer-join every symbol's closes on time. Rows are NOT dropped here: each group keeps the bars where
+    ITS symbols all have a price (``_evaluate_job``), so one recently listed coin cannot shorten every other
+    group's history."""
     series = {}
     for sym, ohlc in ohlc_by_symbol.items():
         if not ohlc.get("t"):
             continue
         idx = pd.to_datetime(ohlc["t"], unit="s")
         series[sym] = pd.Series(ohlc["c"], index=idx)
-    df = pd.DataFrame(series).dropna(how="any").sort_index()
-    return df
+    return pd.DataFrame(series).dropna(how="all").sort_index()
 
 
 def _score_group(perf) -> float:
@@ -227,6 +216,15 @@ def _select_top(ranked: list[dict], keep_top_n: int) -> list[dict]:
 
 
 def _default_workers() -> int:
+    # Physical cores when known: hyper-threads add little to this CPU-bound work, and on a 4-core / 8-thread
+    # PC 7 workers were ~15% slower than 4.
+    try:
+        import psutil
+        physical = psutil.cpu_count(logical=False)
+    except ImportError:
+        physical = None
+    if physical:
+        return max(1, min(physical, 12))
     n = os.cpu_count() or 4
     if n <= 2:
         return n

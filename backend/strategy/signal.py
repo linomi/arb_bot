@@ -69,23 +69,33 @@ def scored_fit(dependent: str, price_matrix: dict[str, np.ndarray], method: str 
                          np.asarray(price_matrix[dependent], dtype=float),
                          [np.asarray(price_matrix[s], dtype=float) for s in others])
 
+    if not others:
+        raise ValueError("Group needs at least 2 symbols (1 dependent + >=1 independent).")
     fit_part = {s: np.asarray(v, dtype=float)[:-1] for s, v in price_matrix.items()}
-    fit = fit_ols(dependent, fit_part)
-    x_now = np.array([1.0] + [float(price_matrix[s][-1]) for s in fit.independents])
-    resid_now = float(price_matrix[dependent][-1]) - float(
-        fit.intercept + sum(fit.betas[s] * x_now[i + 1] for i, s in enumerate(fit.independents)))
+    y = fit_part[dependent]
+    X = np.column_stack([np.ones(len(y))] + [fit_part[s] for s in others])
+    # One SVD gives both the least-squares fit (what np.linalg.lstsq does, same rank cutoff) and the
+    # leverage of the scored bar, x0' (X'X)^+ x0 = |diag(1/s) V' x0|^2. Refits run on every backtest bar.
+    U, sv, Vt = np.linalg.svd(X, full_matrices=False)
+    inv = np.where(sv > np.finfo(float).eps * max(X.shape) * sv[0], 1.0 / sv, 0.0)
+    coeffs = Vt.T @ (inv * (U.T @ y))
+    fitted = X @ coeffs
+    residual = y - fitted
+    fit = OLSResult(
+        dependent=dependent, independents=others,
+        betas={s: float(b) for s, b in zip(others, coeffs[1:])}, intercept=float(coeffs[0]),
+        residual=residual, resid_mean=float(np.mean(residual)),
+        resid_std=float(np.std(residual, ddof=1)) if len(residual) > 1 else 0.0, fitted_values=fitted,
+    )
+    x_now = np.array([1.0] + [float(price_matrix[s][-1]) for s in others])
+    resid_now = float(price_matrix[dependent][-1]) - float(x_now @ coeffs)
 
-    X = np.column_stack([np.ones(len(fit.residual))] + [fit_part[s] for s in fit.independents])
     n, p = X.shape
-    dof = max(1, n - p)
-    sigma = float(np.sqrt(np.dot(fit.residual, fit.residual) / dof))
-    try:
-        lev = float(x_now @ np.linalg.pinv(X.T @ X) @ x_now)
-    except np.linalg.LinAlgError:
-        lev = 0.0
-    std = sigma * float(np.sqrt(1.0 + max(0.0, lev)))
-    return ScoredFit(fit, resid_now, fit.resid_mean, std, np.append(fit.residual, resid_now),
-                     fit_part[dependent], [fit_part[s] for s in others])
+    sigma = float(np.sqrt(np.dot(residual, residual) / max(1, n - p)))
+    lev = float(np.sum((inv * (Vt @ x_now)) ** 2))
+    std = sigma * float(np.sqrt(1.0 + lev))
+    return ScoredFit(fit, resid_now, fit.resid_mean, std, np.append(residual, resid_now),
+                     y, [fit_part[s] for s in others])
 
 
 def ev_check(

@@ -54,7 +54,7 @@ async def _backtest_manual(db, symbols: list[str], dependent: str, exchange: str
             if isinstance(item, Exception):
                 return None, f"price download failed for {sym}: {item}"
             ohlc[sym] = item
-        df = _align_price_df(ohlc)
+        df = _align_price_df(ohlc).dropna()  # bars where every symbol of the group has a price
         missing = [s for s in symbols if s not in df.columns]
         if missing or len(df) < int(backbone_cfg["window_size"]) + 5:
             return None, f"not enough aligned price history ({len(df)} bars) for {', '.join(missing) or 'the group'}"

@@ -175,3 +175,72 @@ def test_apply_recommended_settings_script(monkeypatch, capsys):
     s.close()
     mod.main()
     assert "already up to date" in capsys.readouterr().out
+
+
+def test_oos_leverage_is_accurate_for_mixed_price_scales():
+    """A $0.0015 coin regressed with a $2,500 coin: X'X is too ill-conditioned for pinv(X'X); the SVD of X is not."""
+    r = np.random.default_rng(5)
+    n = 201
+    cols = {s: p * np.exp(np.cumsum(r.normal(0, 0.004, n))) for s, p in (("A", 0.0015), ("B", 0.0015), ("C", 2500.0))}
+    sf = scored_fit("A", cols, "oos")
+    X = np.column_stack([np.ones(n - 1), cols["B"][:-1], cols["C"][:-1]])
+    x0 = np.array([1.0, cols["B"][-1], cols["C"][-1]])
+    d = np.abs(X).max(axis=0)
+    _, R = np.linalg.qr(X / d)
+    lev_ref = np.sum(np.linalg.solve(R.T, x0 / d) ** 2)
+    sigma = np.sqrt(sf.fit.residual @ sf.fit.residual / (n - 1 - 3))
+    assert sf.std == pytest.approx(sigma * np.sqrt(1 + lev_ref), rel=1e-6)
+    ref = fit_ols("A", {k: v[:-1] for k, v in cols.items()})
+    assert sf.fit.betas["C"] == pytest.approx(ref.betas["C"], rel=1e-6)
+
+
+def test_init_history_is_not_cut_by_a_recently_listed_coin(monkeypatch):
+    from backend.engine import init_methods as im
+    n = 600
+    t = [1_700_000_000 + 900 * i for i in range(n)]
+    full = {"t": t, "c": list(np.linspace(1, 2, n))}
+    late = {"t": t[-100:], "c": list(np.linspace(1, 2, 100))}
+    df = im._align_price_df({"A": full, "B": full, "NEW": late})
+    assert len(df) == n and df["NEW"].isna().sum() == n - 100
+
+    seen = []
+
+    def fake_bt(price_df, **kw):
+        seen.append((kw["dependent_symbol"], len(price_df)))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(im, "backtest_group", fake_bt)
+    params = {**signal_cfg_from_params({}), "window_size": 200, "adf_alpha": 0.05, "kpss_alpha": 0.05,
+              "z_entry": 2.5, "z_close": 0.5, "z_stop_loss": 4.5, "transaction_fee_rate": 0.001,
+              "try_all_dependents": True}
+    im._evaluate_job((("A", "B"), "random", None), df, params)
+    assert seen and all(rows == int(n * 0.7) for _, rows in seen)  # the in-sample 70% of the FULL history
+
+
+def test_held_out_backtest_runs_only_for_the_kept_dependent(monkeypatch):
+    from types import SimpleNamespace
+    from backend.engine import init_methods as im
+    from backend.strategy.metrics import compute_group_performance
+    n = 600
+    df = pd.DataFrame({s: np.linspace(1, 2, n) for s in ("A", "B", "C")},
+                      index=pd.date_range("2026-01-01", periods=n, freq="15min"))
+    calls = []
+    n_trades = {"A": 1, "B": 3, "C": 2}  # the score grows with the number of winning trades
+
+    def fake_bt(price_df, **kw):
+        dep = kw["dependent_symbol"]
+        calls.append((dep, len(price_df)))
+        perf = compute_group_performance([{"pnl": 1.0, "entry_time": price_df.index[2 * k],
+                                           "close_time": price_df.index[2 * k + 1], "direction": "long_residual"}
+                                          for k in range(n_trades[dep])])
+        return SimpleNamespace(performance=perf, rounding=None)
+
+    monkeypatch.setattr(im, "backtest_group", fake_bt)
+    params = {**signal_cfg_from_params({}), "window_size": 100, "adf_alpha": 0.05, "kpss_alpha": 0.05,
+              "z_entry": 2.5, "z_close": 0.5, "z_stop_loss": 4.5, "transaction_fee_rate": 0.001,
+              "try_all_dependents": True}
+    res = im._evaluate_job((("A", "B", "C"), "random", None), df, params)
+    is_rows = int(n * 0.7)
+    assert [c for c in calls if c[1] == is_rows] == [("A", is_rows), ("B", is_rows), ("C", is_rows)]
+    assert [c[0] for c in calls if c[1] != is_rows] == ["B"]  # held-out run only for the best dependent
+    assert res["dependent_symbol"] == "B" and res["oos_metrics"] is not None
