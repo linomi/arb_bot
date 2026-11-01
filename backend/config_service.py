@@ -129,6 +129,8 @@ def _validate_init(data: dict):
     keep = int(data.get("keep_top_n", 10))
     if keep < 1:
         raise ValueError("keep_top_n must be >= 1")
+    if int(data.get("min_trades", 0) or 0) < 0:
+        raise ValueError("min_trades must be >= 0")
 
 
 def update_section(db: Session, section: str, patch: dict) -> dict:

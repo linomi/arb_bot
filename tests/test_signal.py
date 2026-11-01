@@ -233,7 +233,8 @@ def test_held_out_backtest_runs_only_for_the_kept_dependent(monkeypatch):
         perf = compute_group_performance([{"pnl": 1.0, "entry_time": price_df.index[2 * k],
                                            "close_time": price_df.index[2 * k + 1], "direction": "long_residual"}
                                           for k in range(n_trades[dep])])
-        return SimpleNamespace(performance=perf, rounding=None)
+        return SimpleNamespace(performance=perf, rounding=None,
+                               trades=[SimpleNamespace(pnl=1.0)] * n_trades[dep])
 
     monkeypatch.setattr(im, "backtest_group", fake_bt)
     params = {**signal_cfg_from_params({}), "window_size": 100, "adf_alpha": 0.05, "kpss_alpha": 0.05,
@@ -295,3 +296,45 @@ def test_require_oos_positive_reaches_the_init_search():
           "z_stop_loss": 4.5}
     assert _backbone_params(bb, "xt", {"require_oos_positive": True})["require_oos_positive"] is True
     assert _backbone_params(bb, "xt")["require_oos_positive"] is False  # manual groups: never rejected
+
+
+def test_init_score_counts_trades():
+    from types import SimpleNamespace
+    from backend.engine.init_methods import _score_group
+
+    def score(pnls):
+        return _score_group([SimpleNamespace(pnl=p) for p in pnls])
+
+    assert score([]) == -1e9
+    assert score([1.0]) == pytest.approx(1.0)
+    assert score([1.0, 1.0]) < score([1.0, 1.0, 1.0]) < score([1.0] * 10)  # more winners = more evidence
+    assert score([1.0] * 10) == pytest.approx(5.70, abs=0.01)
+    assert score([1.0, 1.0]) > score([1.0] * 7 + [-1.0] * 3)  # 7/10 is barely stronger than chance
+    assert score([1.0] * 12 + [-1.0] * 3) > score([1.0, 1.0, 1.0])  # ... 12/15 is
+    assert score([0.001] * 5) == pytest.approx(score([1000.0] * 5))  # scale-free across price levels
+    assert score([-1.0, -1.0]) < 0
+
+
+def test_min_trades_drops_thin_groups(monkeypatch):
+    from types import SimpleNamespace
+    from backend.engine import init_methods as im
+    from backend.routers.init_router import _backbone_params
+    from backend.strategy.metrics import compute_group_performance
+    n = 600
+    df = pd.DataFrame({s: np.linspace(1, 2, n) for s in ("A", "B")},
+                      index=pd.date_range("2026-01-01", periods=n, freq="15min"))
+
+    def fake_bt(price_df, **kw):
+        trades = [{"pnl": 1.0, "entry_time": price_df.index[2 * k], "close_time": price_df.index[2 * k + 1]}
+                  for k in range(2)]
+        return SimpleNamespace(performance=compute_group_performance(trades), rounding=None,
+                               trades=[SimpleNamespace(pnl=1.0)] * 2)
+
+    monkeypatch.setattr(im, "backtest_group", fake_bt)
+    bb = {"window_size": 100, "adf_alpha": 0.05, "kpss_alpha": 0.05, "z_entry": 2.5, "z_close": 0.5,
+          "z_stop_loss": 4.5}
+    job = (("A", "B"), "random", None)
+    assert im._evaluate_job(job, df, _backbone_params(bb, "xt", {"min_trades": 3})) is None
+    kept = im._evaluate_job(job, df, _backbone_params(bb, "xt", {"min_trades": 2}))
+    assert kept is not None and kept["score"] == pytest.approx(1.58, abs=0.01)
+    assert _backbone_params(bb, "xt")["min_trades"] == 0  # manual groups: never dropped

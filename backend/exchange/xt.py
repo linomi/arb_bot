@@ -229,13 +229,31 @@ class XTClient(ExchangeClient):
                 continue
             if (m.get("settle") or "").upper() != "USDT":
                 continue
+            # Delisted contracts (MATIC, FTM, RNDR, ...) stay "active" in ccxt but are switched off and hidden
+            # on XT; their tickers are frozen with the volume of their last day, so they used to rank high.
+            info = m.get("info") or {}
+            if info.get("openSwitch") is False or info.get("isDisplay") is False:
+                continue
             candidates.append(sym)
 
-        # Rank by quote volume from tickers when available
+        # Rank by quote volume over ALL candidates (only the first 200, in listing order, used to be fetched,
+        # so most liquid newer listings got volume 0); a ticker not updated for a day is not traded.
         vol_by: dict[str, float] = {}
+        cand_set = set(candidates)
+        stale_before = (time.time() - 86400) * 1000
         try:
-            tickers = await self._ex.fetch_tickers(candidates[:200] if len(candidates) > 200 else candidates)
+            try:
+                tickers = await self._ex.fetch_tickers()
+            except Exception:
+                tickers = {}
+                for i in range(0, len(candidates), 200):
+                    tickers.update(await self._ex.fetch_tickers(candidates[i:i + 200]) or {})
             for sym, t in (tickers or {}).items():
+                if sym not in cand_set:
+                    continue
+                ts = t.get("timestamp")
+                if ts and ts < stale_before:
+                    continue
                 try:
                     vol_by[sym] = float(t.get("quoteVolume") or t.get("baseVolume") or 0)
                 except (TypeError, ValueError):
@@ -243,6 +261,8 @@ class XTClient(ExchangeClient):
         except Exception as e:
             log.warning("fetch_tickers failed, returning unsorted: %s", e)
 
+        if vol_by:
+            candidates = [s for s in candidates if s in vol_by]
         ranked = sorted(candidates, key=lambda s: vol_by.get(s, 0.0), reverse=True)
         return ranked[: max(1, int(top_n))]
 

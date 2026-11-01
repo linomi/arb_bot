@@ -196,3 +196,29 @@ def test_map_position_exposes_liquidation(mock_ccxt_xt):
     m = c._map_position({"contracts": 2, "contractSize": 0.001, "side": "long",
                          "symbol": "BTC/USDT:USDT", "liquidationPrice": 50000.0})
     assert m["liquidationPrice"] == 50000.0
+
+
+def test_liquid_symbols_skip_delisted_and_rank_every_market(mock_ccxt_xt):
+    import time
+    from backend.exchange.xt import XTClient
+
+    def swap(sym, **info):
+        return {"symbol": sym, "active": True, "swap": True, "linear": True, "settle": "USDT", "type": "swap",
+                "info": info}
+
+    # 250 listed contracts: only the first 200 used to get a ticker, so a liquid late listing ranked 0
+    markets = {f"C{i}/USDT:USDT": swap(f"C{i}/USDT:USDT") for i in range(248)}
+    markets["MATIC/USDT:USDT"] = swap("MATIC/USDT:USDT", openSwitch=False, isDisplay=False)  # delisted
+    markets["NEW/USDT:USDT"] = swap("NEW/USDT:USDT", openSwitch=True, isDisplay=True)
+    mock_ccxt_xt.markets = markets
+    mock_ccxt_xt.load_markets.return_value = markets
+    now = time.time() * 1000
+    tickers = {s: {"quoteVolume": 1.0, "timestamp": now} for s in markets}
+    tickers["MATIC/USDT:USDT"] = {"quoteVolume": 5e7, "timestamp": now}
+    tickers["C3/USDT:USDT"] = {"quoteVolume": 9e9, "timestamp": now - 3 * 86400 * 1000}  # frozen ticker
+    tickers["NEW/USDT:USDT"] = {"quoteVolume": 1e9, "timestamp": now}
+    mock_ccxt_xt.fetch_tickers.return_value = tickers
+
+    top = _run(XTClient(api_key=None, api_secret=None).get_liquid_symbols(3))
+    assert top[0] == "NEW/USDT:USDT"
+    assert "MATIC/USDT:USDT" not in top and "C3/USDT:USDT" not in top

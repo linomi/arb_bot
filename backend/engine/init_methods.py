@@ -5,9 +5,9 @@ Candidate-group backtests run in a process pool so OLS + ADF/KPSS
 use multiple CPU cores.
 
 Ranking (after backtest):
-  1. Keep only groups with total_pnl > 0
-  2. Score balances low max drawdown vs sample size (few trades with
-     tiny DD are not preferred over steadier series with more trades)
+  1. Keep only groups with total_pnl > 0 (and, from the Initialization tab / run_init, at least
+     min_trades in-sample trades and a positive held-out PnL when require_oos_positive)
+  2. Score = t-statistic of the mean trade PnL (see _score_group), so the trade count counts
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from backend.sectors import group_symbols_by_sector
@@ -25,8 +26,8 @@ from backend.engine.backtester import rounding_cfg_from_params, backtest_group
 from backend.strategy.signal import signal_cfg_from_params
 from backend.strategy.account import leverage_for
 
-# Soft sample-size anchor: at n ≈ this, trade-count confidence ≈ 2/3.
-_TRADE_CONF_HALF = 20
+# Trades of typical size pooled into the score's spread estimate (see _score_group).
+_PRIOR_TRADES = 4
 
 _WORKER_PRICE_DF: pd.DataFrame | None = None
 _WORKER_PARAMS: dict | None = None
@@ -111,12 +112,14 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params, progress_cb=None) 
                      (lambda f, k=k: progress_cb((k + f) * is_part)) if progress_cb else None)
         except Exception:
             continue
-        sc = _score_group(bt.performance)
+        sc = _score_group(bt.trades)
         if best is None or sc > best[2]:
             best = (dependent, bt, sc)
     if best is None:
         return None
-    dependent, bt, _sc = best
+    dependent, bt, score = best
+    if len(bt.trades) < int(backbone_params.get("min_trades", 0) or 0):
+        return None
     oos_perf = None
     oos_score = None
     if len(oos_df) > W + 5:
@@ -124,7 +127,7 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params, progress_cb=None) 
             bt_oos = _bt(oos_df, dependent,
                          (lambda f: progress_cb(is_share + f * (1 - is_share))) if progress_cb else None)
             oos_perf = bt_oos.performance.as_dict()
-            oos_score = _score_group(bt_oos.performance)
+            oos_score = _score_group(bt_oos.trades)
         except Exception:
             pass
     if backbone_params.get("require_oos_positive") and oos_perf is not None:
@@ -138,7 +141,7 @@ def _evaluate_job(job: tuple, price_df_full, backbone_params, progress_cb=None) 
         "sector": sector,
         "backtest_metrics": bt.performance.as_dict(),
         "contract_rounding": bt.rounding,
-        "score": _score_group(bt.performance),
+        "score": score,
         "oos_metrics": oos_perf,
         "oos_score": oos_score,
     }
@@ -157,52 +160,28 @@ def _align_price_df(ohlc_by_symbol: dict[str, dict]) -> pd.DataFrame:
     return pd.DataFrame(series).dropna(how="all").sort_index()
 
 
-def _score_group(perf) -> float:
+def _score_group(trades) -> float:
     """
-    Balanced rank score (higher = better).
+    Rank score (higher = better): the t-statistic of the mean trade PnL, i.e. how many standard errors the
+    edge is above zero. It grows like sqrt(trade count) for a given edge, so a group that made money on many
+    trades outranks one that got lucky on two, and it is scale-free (raw-price PnL of a QNT basket and an
+    ARB basket compare directly).
 
-    Design:
-      - Non-positive PnL or zero trades → buried at the bottom
-      - Primary quality: PnL / effective_drawdown (Calmar-style)
-      - effective_drawdown floors tiny DDs that only look good because
-        there were 1–2 lucky trades
-      - trade_conf ∈ (0, 1) grows with trade_count so low-n series
-        cannot dominate solely on a near-zero DD
-      - Small secondary terms for win_rate and sharpe
+    The spread is pooled with ``_PRIOR_TRADES`` trades of the group's typical |PnL|, so 1-3 winners cannot
+    claim a near-zero spread: 1 winner scores 1.0, 2 equal winners 1.6, 3 -> 2.1, 10 -> 5.7, while 7 equal
+    wins and 3 equal losses out of 10 score about 1.3. No trades -> -1e9.
     """
-    n = int(getattr(perf, "trade_count", 0) or 0)
-    pnl = float(getattr(perf, "total_pnl", 0.0) or 0.0)
-    dd = float(getattr(perf, "max_drawdown", 0.0) or 0.0)
-    avg = float(getattr(perf, "avg_pnl", 0.0) or 0.0)
-    wr = float(getattr(perf, "win_rate", 0.0) or 0.0)
-    sharpe = float(getattr(perf, "sharpe_ratio", 0.0) or 0.0)
-
-    if n < 1 or pnl <= 0:
-        # Still differentiate slightly so sort is stable among rejects
-        return -1e9 + min(pnl, 0.0) - 0.01 * dd
-
-    # Confidence in the sample: n=6 → ~0.5, n=18 → ~0.75, asymptote 1
-    trade_conf = n / (n + _TRADE_CONF_HALF)
-
-    # Floor DD so a single small loss (or none) cannot inflate Calmar.
-    # Use a fraction of mean |trade| × sqrt(n) as a statistical noise floor.
-    avg_abs = abs(avg) if avg else abs(pnl) / max(n, 1)
-    noise_floor = avg_abs * 0.35 * math.sqrt(max(n, 1))
-    # Also absolute tiny floor for near-zero scale series
-    dd_eff = max(dd, noise_floor, 1e-9)
-
-    calmar = pnl / dd_eff
-
-    # Prefer lower raw DD among similar Calmar (secondary tie-break via inverse)
-    dd_bonus = 1.0 / (1.0 + dd / max(avg_abs, 1e-9))
-
-    score = (
-        calmar * trade_conf
-        + 0.25 * trade_conf * max(wr, 0.0)
-        + 0.10 * trade_conf * max(sharpe, 0.0)
-        + 0.05 * trade_conf * dd_bonus
-    )
-    return float(score)
+    pnl = np.array([float(getattr(t, "pnl", t)) for t in trades], dtype=float)
+    n = len(pnl)
+    if n == 0:
+        return -1e9
+    mean = float(pnl.mean())
+    typical = float(np.mean(np.abs(pnl)))
+    if typical <= 0:
+        return 0.0
+    var = float(np.var(pnl, ddof=1)) if n > 1 else 0.0
+    spread = math.sqrt(((n - 1) * var + _PRIOR_TRADES * typical ** 2) / (n - 1 + _PRIOR_TRADES))
+    return mean / spread * math.sqrt(n)
 
 
 def _select_top(ranked: list[dict], keep_top_n: int) -> list[dict]:

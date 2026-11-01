@@ -114,8 +114,12 @@ closed. For a server, run it under systemd.
 1. **Initialization tab.** Edit the Backbone and Initialization parameters,
    pick **Random Groups** or **Sector-Based**, and run. It pulls liquid
    markets from the active exchange, backtests candidate groups with the
-   same backbone logic as the live engine, keeps the best by Sharpe/PnL and
-   saves them as groups. You can also create a **manual group**.
+   same backbone logic as the live engine and saves the best as groups.
+   Groups are ranked on the first 70% of the history by the t-statistic of
+   their mean trade PnL, so the number of trades counts (2 lucky winners do
+   not beat 10 steady ones); groups with fewer than `min_trades` in-sample
+   trades are dropped, and with `require_oos_positive` the held-out 30% must
+   be profitable too. You can also create a **manual group**.
    The candidates table uses the same columns, filters and expandable
    "all metrics" block as the Backbone performance table (win rate, profit
    factor, net profit, expected payoff, max drawdown, streaks, long/short

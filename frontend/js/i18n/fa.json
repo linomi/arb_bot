@@ -217,6 +217,8 @@
   "param.max_open_trades": "حداکثر معاملات باز",
   "hint.require_oos_positive": "مقداردهی: فقط گروه‌های با سود خارج از نمونه (۳۰٪) نگه داشته شوند",
   "param.require_oos_positive": "الزام سود خارج از نمونه",
+  "hint.min_trades": "مقداردهی: گروه‌های با معاملات درون‌نمونه کمتر از این حذف می‌شوند؛ رتبه‌بندی با آماره t سود معاملات است",
+  "param.min_trades": "حداقل معاملات",
   "status.candidate": "کاندید",
   "bool.true": "بله",
   "bool.false": "خیر",

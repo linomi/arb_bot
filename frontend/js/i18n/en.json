@@ -217,6 +217,8 @@
   "param.max_open_trades": "Max Open Trades",
   "hint.require_oos_positive": "Init: keep only groups with positive held-out (30%) PnL",
   "param.require_oos_positive": "Require OOS Positive",
+  "hint.min_trades": "Init: drop groups with fewer in-sample trades; groups are ranked by the t-statistic of their trade PnL",
+  "param.min_trades": "Min Trades",
   "status.candidate": "candidate",
   "bool.true": "true",
   "bool.false": "false",

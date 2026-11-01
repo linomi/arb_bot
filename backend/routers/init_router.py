@@ -209,7 +209,7 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
 
 def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex", init_cfg: dict | None = None) -> dict:
     """Settings for the init / manual-group backtests. ``init_cfg`` adds the Initialization-only ones
-    (require_oos_positive); without it they were silently never applied."""
+    (require_oos_positive, min_trades); without it they were silently never applied."""
     from backend.engine import xt_hooks
     from backend.strategy.signal import signal_cfg_from_params
     mhb = backbone_cfg.get("max_holding_hours")
@@ -246,4 +246,5 @@ def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex", init_cfg: di
         # out-of-sample z, EV gate, jump / volatility filter, half-life stop: same as the live engine
         **signal_cfg_from_params(backbone_cfg),
         "require_oos_positive": bool((init_cfg or {}).get("require_oos_positive", False)),
+        "min_trades": int((init_cfg or {}).get("min_trades", 0) or 0),
     }

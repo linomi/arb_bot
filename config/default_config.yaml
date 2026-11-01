@@ -109,6 +109,9 @@ init:
   num_candidate_groups: 500 # only used by "random" method; more tries = more luck in the winners
   max_combos_per_sector: 200  # only used by "sector" method
   keep_top_n: 5
+  # Groups are ranked by the t-statistic of their mean in-sample trade PnL (grows with the trade count).
+  # Fewer in-sample trades than this = dropped; 1-2 trades say nothing about an edge.
+  min_trades: 3
   # Out-of-sample: rank on first 70% of history; keep only if held-out PnL > 0 when true.
   require_oos_positive: true
   backtest_days: 30
