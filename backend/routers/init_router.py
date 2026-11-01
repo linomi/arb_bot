@@ -128,7 +128,7 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
             percent=40,
         )
 
-        backbone_params = _backbone_params(backbone_cfg, exchange)
+        backbone_params = _backbone_params(backbone_cfg, exchange, init_cfg)
         loop = asyncio.get_event_loop()
 
         def _do_backtest():
@@ -207,7 +207,9 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
         db.close()
 
 
-def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
+def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex", init_cfg: dict | None = None) -> dict:
+    """Settings for the init / manual-group backtests. ``init_cfg`` adds the Initialization-only ones
+    (require_oos_positive); without it they were silently never applied."""
     from backend.engine import xt_hooks
     from backend.strategy.signal import signal_cfg_from_params
     mhb = backbone_cfg.get("max_holding_hours")
@@ -243,4 +245,5 @@ def _backbone_params(backbone_cfg: dict, exchange: str = "nobitex") -> dict:
         "maintenance_margin_rate": float(backbone_cfg.get("maintenance_margin_rate", 0.005) or 0.005),
         # out-of-sample z, EV gate, jump / volatility filter, half-life stop: same as the live engine
         **signal_cfg_from_params(backbone_cfg),
+        "require_oos_positive": bool((init_cfg or {}).get("require_oos_positive", False)),
     }

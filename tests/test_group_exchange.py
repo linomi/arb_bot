@@ -19,4 +19,4 @@ def test_init_group_gets_active_exchange():
     import inspect
     from backend.routers import init_router
     src = inspect.getsource(init_router._run_init_job)
-    assert "exchange=exchange" in src and "_backbone_params(backbone_cfg, exchange)" in src
+    assert "exchange=exchange" in src and "_backbone_params(backbone_cfg, exchange, init_cfg)" in src

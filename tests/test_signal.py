@@ -244,3 +244,54 @@ def test_held_out_backtest_runs_only_for_the_kept_dependent(monkeypatch):
     assert [c for c in calls if c[1] == is_rows] == [("A", is_rows), ("B", is_rows), ("C", is_rows)]
     assert [c[0] for c in calls if c[1] != is_rows] == ["B"]  # held-out run only for the best dependent
     assert res["dependent_symbol"] == "B" and res["oos_metrics"] is not None
+
+
+def test_import_groups_script(monkeypatch, capsys, tmp_path):
+    import importlib.util
+    import json
+    from pathlib import Path
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from backend import db as dbmod
+    from backend.models import Base, Group
+
+    eng = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(eng)
+    sf = sessionmaker(bind=eng)
+    s = sf()
+    s.add(Group(name="old", symbols=["B", "A"], dependent_symbol="A", exchange="xt", status="active"))
+    s.commit(); s.close()
+    monkeypatch.setattr(dbmod, "SessionLocal", sf)
+    f = tmp_path / "groups.json"
+    f.write_text(json.dumps({"exchange": "xt", "backbone": {"sampling_time": 900}, "groups": [
+        {"symbols": ["A", "B"], "dependent_symbol": "A", "source": "random", "backtest_metrics": {"trade_count": 3}},
+        {"symbols": ["C", "D", "E"], "dependent_symbol": "D", "source": "random", "backtest_metrics": {"trade_count": 9}},
+    ]}))
+    spec = importlib.util.spec_from_file_location(
+        "import_groups", Path(__file__).resolve().parent.parent / "scripts" / "import_groups.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    monkeypatch.setattr(sys, "argv", ["x", str(f)])
+    mod.main()
+    assert "dry run: 1 group(s)" in capsys.readouterr().out
+    s = sf(); assert s.query(Group).count() == 1; s.close()
+
+    monkeypatch.setattr(sys, "argv", ["x", str(f), "--apply"])
+    mod.main()
+    s = sf()
+    new = s.query(Group).filter(Group.name != "old").all()
+    assert len(new) == 1 and new[0].status == "candidate" and new[0].dependent_symbol == "D"
+    assert new[0].exchange == "xt" and new[0].params_snapshot == {"sampling_time": 900}
+    assert new[0].backtest_metrics == {"trade_count": 9}
+    assert s.query(Group).filter_by(name="old").one().status == "active"  # existing group untouched
+    s.close()
+
+
+def test_require_oos_positive_reaches_the_init_search():
+    from backend.routers.init_router import _backbone_params
+    bb = {"window_size": 200, "adf_alpha": 0.05, "kpss_alpha": 0.05, "z_entry": 2.5, "z_close": 0.5,
+          "z_stop_loss": 4.5}
+    assert _backbone_params(bb, "xt", {"require_oos_positive": True})["require_oos_positive"] is True
+    assert _backbone_params(bb, "xt")["require_oos_positive"] is False  # manual groups: never rejected
