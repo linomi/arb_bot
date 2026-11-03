@@ -1,5 +1,5 @@
 """
-Initialization approaches: random_init / sector_init.
+Initialization approaches: random_init / sector_init / correlation_init.
 
 Candidate-group backtests run in a process pool so OLS + ADF/KPSS
 use multiple CPU cores.
@@ -326,4 +326,91 @@ def sector_init(
         candidates, ohlc_by_symbol, backbone_params, source="sector",
         sector_lookup=sector_lookup, progress_cb=progress_cb, max_workers=max_workers,
     )
+    return _select_top(ranked, keep_top_n)
+
+
+# A hedge leg is only added when it raises the group's R^2 by at least this much.
+_MIN_R2_GAIN = 0.02
+
+
+def _group_r2(corr: np.ndarray, target: int, hedges: list[int]) -> float:
+    """R^2 of the target's returns regressed on the hedges' returns, from the correlation matrix alone:
+    c' R^-1 c (c = target-hedge correlations, R = hedge-hedge correlations)."""
+    c = corr[target, hedges]
+    r = corr[np.ix_(hedges, hedges)]
+    w = np.linalg.lstsq(r, c, rcond=None)[0]  # lstsq: twin listings (XAU / XAUT) make R near-singular
+    return float(min(1.0, max(0.0, c @ w)))
+
+
+def correlation_candidates(
+    price_df: pd.DataFrame,
+    min_group_size: int,
+    max_group_size: int,
+    min_r2: float,
+    top_hedges: int = 3,
+    is_fraction: float = 0.7,
+) -> list[tuple[tuple[str, ...], float]]:
+    """Groups built from the return-correlation matrix instead of drawn at random.
+
+    For every symbol as the target (the OLS dependent): start from each of its ``top_hedges`` most
+    correlated symbols, then greedily add the hedge that raises the group R^2 most, up to
+    ``max_group_size``, stopping when a leg adds less than ``_MIN_R2_GAIN``. Every group of an allowed size
+    along the way with R^2 >= ``min_r2`` is a candidate. R^2 is the share of the target's bar-to-bar moves
+    the hedge legs explain together; below it the "spread" is mostly the target's own volatility.
+
+    Correlations use log returns of the first ``is_fraction`` of the bars only -- a group's held-out 30%
+    starts at or after that point (_evaluate_job), so the held-out check stays out of sample.
+
+    Returns [((target, *hedges), r2), ...]; the target comes first so it is backtested as the dependent."""
+    is_rows = max(3, int(len(price_df) * is_fraction))
+    rets = np.log(price_df.iloc[:is_rows]).diff()
+    corr_df = rets.corr(min_periods=50)
+    syms = [s for s in corr_df.columns if corr_df[s].notna().sum() > 1]
+    corr = corr_df.loc[syms, syms].to_numpy()
+    out: dict[tuple[str, frozenset], tuple[tuple[str, ...], float]] = {}
+
+    def record(t: int, hedges: list[int], r2: float):
+        if len(hedges) + 1 >= min_group_size and r2 >= min_r2:
+            out.setdefault((syms[t], frozenset(syms[h] for h in hedges)),
+                           ((syms[t], *(syms[h] for h in hedges)), r2))
+
+    for t in range(len(syms)):
+        others = [h for h in range(len(syms)) if h != t and np.isfinite(corr[t, h])]
+        firsts = sorted(others, key=lambda h: -corr[t, h] ** 2)[: max(1, int(top_hedges))]
+        for first in firsts:
+            hedges, r2 = [first], float(corr[t, first] ** 2)
+            record(t, hedges, r2)
+            while len(hedges) + 1 < max_group_size:
+                pool = [h for h in others if h not in hedges and np.all(np.isfinite(corr[h, hedges]))]
+                if not pool:
+                    break
+                gain, best = max((_group_r2(corr, t, hedges + [h]), h) for h in pool)
+                if gain - r2 < _MIN_R2_GAIN:
+                    break
+                hedges, r2 = hedges + [best], gain
+                record(t, hedges, r2)
+    return sorted(out.values(), key=lambda c: -c[1])
+
+
+def correlation_init(
+    ohlc_by_symbol: dict[str, dict],
+    min_group_size: int,
+    max_group_size: int,
+    keep_top_n: int,
+    backbone_params: dict,
+    min_r2: float = 0.3,
+    top_hedges: int = 3,
+    progress_cb=None,
+    max_workers: int | None = None,
+) -> list[dict]:
+    cands = correlation_candidates(_align_price_df(ohlc_by_symbol), min_group_size, max_group_size,
+                                   min_r2, top_hedges)
+    r2_by = {syms: r2 for syms, r2 in cands}
+    # the target is the dependent by construction; trying the others would undo the R^2 selection
+    ranked = _backtest_candidates(
+        [syms for syms, _ in cands], ohlc_by_symbol, {**backbone_params, "try_all_dependents": False},
+        source="correlation", progress_cb=progress_cb, max_workers=max_workers,
+    )
+    for row in ranked:
+        row["corr_r2"] = r2_by.get(tuple(row["symbols"]))
     return _select_top(ranked, keep_top_n)

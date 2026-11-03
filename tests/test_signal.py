@@ -338,3 +338,78 @@ def test_min_trades_drops_thin_groups(monkeypatch):
     kept = im._evaluate_job(job, df, _backbone_params(bb, "xt", {"min_trades": 2}))
     assert kept is not None and kept["score"] == pytest.approx(1.58, abs=0.01)
     assert _backbone_params(bb, "xt")["min_trades"] == 0  # manual groups: never dropped
+
+
+def _corr_world(n=2000, seed=1):
+    """A ~ B + C (three related coins), D unrelated. Prices from random-walk log returns."""
+    r = np.random.default_rng(seed)
+    b, c, d = (r.normal(0, 0.01, n) for _ in range(3))
+    a = 0.6 * b + 0.6 * c + r.normal(0, 0.003, n)
+    t = [1_700_000_000 + 900 * i for i in range(n)]
+    return {s: {"t": t, "c": list(100 * np.exp(np.cumsum(x)))} for s, x in (("A", a), ("B", b), ("C", c), ("D", d))}
+
+
+def test_correlation_candidates_grow_groups_by_joint_r2():
+    from backend.engine import init_methods as im
+    df = im._align_price_df(_corr_world())
+    cands = dict(im.correlation_candidates(df, min_group_size=2, max_group_size=3, min_r2=0.5, top_hedges=2))
+    assert ("A", "B", "C") in cands or ("A", "C", "B") in cands  # the pair hedges together explain A
+    abc = cands.get(("A", "B", "C"), cands.get(("A", "C", "B")))
+    assert abc == pytest.approx(0.72 / 0.81, abs=0.03)
+    # B or C alone explains only 0.36/0.81 = 44% of A: no A pair passes, only the three together do
+    assert not [syms for syms in cands if syms[0] == "A" and len(syms) == 2]
+    assert all("D" not in syms for syms in cands)  # unrelated coin: neither target nor hedge
+    # each group's first symbol is its target; sizes respect the limits
+    assert all(2 <= len(syms) <= 3 for syms in cands)
+    only_pairs = im.correlation_candidates(df, 2, 2, 0.4, 2)
+    assert {syms for syms, _ in only_pairs} == {("A", "B"), ("B", "A"), ("A", "C"), ("C", "A")}
+
+
+def test_correlation_uses_in_sample_bars_only():
+    from backend.engine import init_methods as im
+    world = _corr_world()
+    n = len(world["A"]["c"])
+    # break D into a perfect copy of A in the held-out 30% only: it must not be picked
+    a = np.array(world["A"]["c"])
+    world["D"]["c"] = list(np.where(np.arange(n) >= int(n * 0.7), a * 0.5, world["D"]["c"]))
+    cands = im.correlation_candidates(im._align_price_df(world), 2, 3, 0.5, 3)
+    assert all("D" not in syms for syms, _ in cands)
+
+
+def test_correlation_init_backtests_the_target_as_dependent(monkeypatch):
+    from types import SimpleNamespace
+    from backend.engine import init_methods as im
+    from backend.strategy.metrics import compute_group_performance
+
+    def fake_eval(job, price_df_full, params, progress_cb=None):
+        symbols, source, _ = job
+        assert params["try_all_dependents"] is False and source == "correlation"
+        perf = compute_group_performance([{"pnl": 1.0}])
+        return {"symbols": list(symbols), "dependent_symbol": symbols[0], "source": source, "sector": None,
+                "backtest_metrics": perf.as_dict(), "score": float(len(symbols)), "oos_metrics": None,
+                "oos_score": None}
+
+    monkeypatch.setattr(im, "_evaluate_job", fake_eval)
+
+    class InlinePool:  # run the jobs in-process so the patched _evaluate_job is used
+        def __init__(self, max_workers, initializer, initargs):
+            initializer(*initargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def submit(self, fn, job):
+            from concurrent.futures import Future
+            f = Future()
+            f.set_result(fn(job))
+            return f
+
+    monkeypatch.setattr(im, "ProcessPoolExecutor", InlinePool)
+    kept = im.correlation_init(_corr_world(), 2, 3, keep_top_n=10, backbone_params={"window_size": 100},
+                               min_r2=0.5, top_hedges=2)
+    assert kept and all(g["dependent_symbol"] == g["symbols"][0] for g in kept)
+    assert all(g["corr_r2"] is not None and g["corr_r2"] >= 0.5 for g in kept)
+    assert all("D" not in g["symbols"] for g in kept)

@@ -13,7 +13,7 @@ from backend.schemas import InitRunRequest
 from backend.exchange import factory
 from backend.bot_state_service import get_or_create_bot_state
 from backend.utils import seconds_to_resolution
-from backend.engine.init_methods import random_init, sector_init
+from backend.engine.init_methods import correlation_init, random_init, sector_init
 from backend import init_progress
 from backend.group_names import generate_group_name
 
@@ -132,6 +132,17 @@ async def _run_init_job(method: str, activate: bool, init_cfg: dict, backbone_cf
         loop = asyncio.get_event_loop()
 
         def _do_backtest():
+            if method == "correlation":
+                return correlation_init(
+                    ohlc_by_symbol=ohlc_by_symbol,
+                    min_group_size=int(init_cfg["min_group_size"]),
+                    max_group_size=int(init_cfg["max_group_size"]),
+                    keep_top_n=int(init_cfg["keep_top_n"]),
+                    backbone_params=backbone_params,
+                    min_r2=float(init_cfg.get("corr_min_r2", 0.3)),
+                    top_hedges=int(init_cfg.get("corr_top_hedges", 3)),
+                    progress_cb=backtest_progress,
+                )
             if method == "sector":
                 return sector_init(
                     ohlc_by_symbol=ohlc_by_symbol,

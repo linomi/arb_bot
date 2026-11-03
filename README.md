@@ -112,7 +112,13 @@ closed. For a server, run it under systemd.
 ## 5. Using the UI
 
 1. **Initialization tab.** Edit the Backbone and Initialization parameters,
-   pick **Random Groups** or **Sector-Based**, and run. It pulls liquid
+   pick **Random Groups**, **Sector-Based** or **Correlation-Based**, and run.
+   Correlation-Based builds the groups from the return-correlation matrix
+   of the in-sample bars instead of drawing them at random: for every
+   symbol as the dependent it starts from its `corr_top_hedges` most
+   correlated symbols and adds the leg that raises the group R² most, up to
+   `max_group_size`, keeping groups with R² ≥ `corr_min_r2`. It backtests a
+   few hundred groups instead of thousands. It pulls liquid
    markets from the active exchange, backtests candidate groups with the
    same backbone logic as the live engine and saves the best as groups.
    Groups are ranked on the first 70% of the history by the t-statistic of

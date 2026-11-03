@@ -62,6 +62,8 @@ function FIELD_HINTS() {
     half_life_max_fraction: t("hint.half_life_max_fraction"),
     require_oos_positive: t("hint.require_oos_positive"),
     min_trades: t("hint.min_trades"),
+    corr_min_r2: t("hint.corr_min_r2"),
+    corr_top_hedges: t("hint.corr_top_hedges"),
     max_open_trades: t("hint.max_open_trades"),
     max_total_gross_notional: t("hint.max_total_gross_notional"),
     data_staleness_mult: t("hint.data_staleness_mult"),

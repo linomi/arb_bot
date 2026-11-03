@@ -10,7 +10,7 @@ class ConfigSectionUpdate(BaseModel):
 
 
 class InitRunRequest(BaseModel):
-    method: Optional[str] = None  # overrides init.method if provided ("random"|"sector")
+    method: Optional[str] = None  # overrides init.method if provided ("random"|"sector"|"correlation")
     activate: bool = True         # if true, surviving groups get status="active" immediately
     exchange: Optional[str] = None  # "nobitex" | "xt"; defaults to BotState.exchange
 

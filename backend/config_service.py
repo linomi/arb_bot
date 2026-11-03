@@ -131,6 +131,12 @@ def _validate_init(data: dict):
         raise ValueError("keep_top_n must be >= 1")
     if int(data.get("min_trades", 0) or 0) < 0:
         raise ValueError("min_trades must be >= 0")
+    if str(data.get("method", "random")) not in ("random", "sector", "correlation"):
+        raise ValueError("method must be 'random', 'sector' or 'correlation'")
+    if not 0 <= float(data.get("corr_min_r2", 0.3)) < 1:
+        raise ValueError("corr_min_r2 must be in [0, 1)")
+    if int(data.get("corr_top_hedges", 3)) < 1:
+        raise ValueError("corr_top_hedges must be >= 1")
 
 
 def update_section(db: Session, section: str, patch: dict) -> dict:

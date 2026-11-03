@@ -102,12 +102,15 @@ backbone:
   expected_holding_funding_intervals: 1
 
 init:
-  method: random            # "random" | "sector"
+  method: random            # "random" | "sector" | "correlation"
   min_group_size: 2
   max_group_size: 3         # more legs = more overfitting (paper PnL fell with every extra leg)
   top_n_liquid_symbols: 60
   num_candidate_groups: 500 # only used by "random" method; more tries = more luck in the winners
   max_combos_per_sector: 200  # only used by "sector" method
+  # "correlation" method: groups grown from the return-correlation matrix (in-sample bars only).
+  corr_min_r2: 0.3          # min share of the target's moves the hedge legs explain together (R^2)
+  corr_top_hedges: 3        # groups started per target, one from each of its most correlated symbols
   keep_top_n: 5
   # Groups are ranked by the t-statistic of their mean in-sample trade PnL (grows with the trade count).
   # Fewer in-sample trades than this = dropped; 1-2 trades say nothing about an edge.

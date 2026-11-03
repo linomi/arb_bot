@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the group initializer headless (e.g. on a many-core PC) and write the kept groups to a JSON file.
 
-    python scripts/run_init.py --config server_config.json --out groups.json [--workers N] [--method random|sector]
+    python scripts/run_init.py --config server_config.json --out groups.json [--workers N] [--method random|sector|correlation]
 
 When XT is unreachable from the PC, download on a host that can reach it and backtest on the PC:
 
@@ -74,10 +74,11 @@ def main() -> int:
     ap.add_argument("--data", help="use OHLC saved with --save-data instead of downloading")
     ap.add_argument("--fetch-only", action="store_true", help="download (and --save-data) only, no backtests")
     ap.add_argument("--workers", type=int, default=None, help="worker processes (default: physical cores)")
-    ap.add_argument("--method", choices=("random", "sector"), default=None, help="default: the config's init.method")
+    ap.add_argument("--method", choices=("random", "sector", "correlation"), default=None,
+                    help="default: the config's init.method")
     args = ap.parse_args()
 
-    from backend.engine.init_methods import random_init, sector_init, _default_workers
+    from backend.engine.init_methods import correlation_init, random_init, sector_init, _default_workers
     from backend.routers.init_router import _backbone_params
 
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
@@ -121,7 +122,10 @@ def main() -> int:
                   max_group_size=int(init_cfg["max_group_size"]), keep_top_n=int(init_cfg["keep_top_n"]),
                   backbone_params=params, progress_cb=progress, max_workers=workers)
     print(f"{method} search with {workers} workers")
-    if method == "sector":
+    if method == "correlation":
+        ranked = correlation_init(min_r2=float(init_cfg.get("corr_min_r2", 0.3)),
+                                  top_hedges=int(init_cfg.get("corr_top_hedges", 3)), **common)
+    elif method == "sector":
         ranked = sector_init(max_combos_per_sector=int(init_cfg.get("max_combos_per_sector", 200)), **common)
     else:
         ranked = random_init(num_candidate_groups=int(init_cfg["num_candidate_groups"]), **common)
@@ -135,14 +139,15 @@ def main() -> int:
         "backbone": backbone_cfg,
         "init": init_cfg,
         "groups": [{k: g.get(k) for k in ("symbols", "dependent_symbol", "source", "sector", "score",
-                                           "backtest_metrics", "oos_metrics", "oos_score")}
+                                           "backtest_metrics", "oos_metrics", "oos_score", "corr_r2")}
                    for g in ranked],
     }
     Path(args.out).write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     print(f"kept {len(ranked)} group(s) in {time.perf_counter() - t0:.0f}s -> {args.out}")
     for g in ranked:
         m, o = g["backtest_metrics"], g.get("oos_metrics") or {}
-        print(f"  {g['dependent_symbol']:>18} ~ {', '.join(s for s in g['symbols'] if s != g['dependent_symbol'])}: "
+        r2 = f" R2={g['corr_r2']:.2f}" if g.get("corr_r2") is not None else ""
+        print(f"  {g['dependent_symbol']:>18} ~ {', '.join(s for s in g['symbols'] if s != g['dependent_symbol'])}:{r2} "
               f"IS trades={m['trade_count']} win={m['win_rate']:.0%} pnl={m['total_pnl']:.4g} | "
               f"OOS trades={o.get('trade_count')} pnl={o.get('total_pnl')}")
     return 0
